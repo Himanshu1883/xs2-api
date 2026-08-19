@@ -143,10 +143,16 @@ class ListingPublishRuleSettingService
             $errors['rules'] = ['At least one publish rule is required.'];
         }
 
+        $seenRuleIds = [];
         foreach ($settings['rules'] ?? [] as $index => $rule) {
             $prefix = "rules.{$index}";
-            if (($rule['id'] ?? '') === '') {
+            $ruleId = (string) ($rule['id'] ?? '');
+            if ($ruleId === '') {
                 $errors["{$prefix}.id"] = ['Rule id is required.'];
+            } elseif (isset($seenRuleIds[$ruleId])) {
+                $errors["{$prefix}.id"] = ['Rule ids must be unique.'];
+            } else {
+                $seenRuleIds[$ruleId] = true;
             }
             if (($rule['label'] ?? '') === '') {
                 $errors["{$prefix}.label"] = ['Rule label is required.'];

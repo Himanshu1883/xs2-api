@@ -67,4 +67,54 @@ class AdminListingPublishRulesTest extends TestCase
             ->assertJsonPath('data.mode', 'split')
             ->assertJsonPath('data.listings_count', 4);
     }
+
+    public function test_admin_can_add_a_new_publish_rule(): void
+    {
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('listing-publish-rules-add')->plainTextToken;
+
+        $payload = app(ListingPublishRuleSettingService::class)->get();
+        $payload['rules'][] = [
+            'id' => 'custom_rule_test',
+            'label' => 'Medium stock (5–8 tickets)',
+            'enabled' => true,
+            'priority' => 15,
+            'conditions' => [
+                [
+                    'field' => 'stock',
+                    'operator' => 'between',
+                    'min' => 5,
+                    'max' => 8,
+                ],
+            ],
+            'action' => [
+                'mode' => 'single',
+                'listing_quantity' => 2,
+                'listing_quantity_cap_to_stock' => true,
+                'split_size' => 2,
+                'pairs_only' => false,
+            ],
+        ];
+
+        $this->withToken($token)
+            ->patchJson('/api/admin/settings/listing-publish-rules', $payload)
+            ->assertOk()
+            ->assertJsonPath('data.rules.1.id', 'custom_rule_test')
+            ->assertJsonPath('data.rules.1.action.mode', 'single')
+            ->assertJsonCount(3, 'data.rules');
+    }
+
+    public function test_admin_cannot_save_duplicate_rule_ids(): void
+    {
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('listing-publish-rules-duplicate')->plainTextToken;
+
+        $payload = app(ListingPublishRuleSettingService::class)->get();
+        $payload['rules'][] = $payload['rules'][0];
+
+        $this->withToken($token)
+            ->patchJson('/api/admin/settings/listing-publish-rules', $payload)
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['rules.1.id']);
+    }
 }
