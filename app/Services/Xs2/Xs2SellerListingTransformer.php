@@ -4,7 +4,6 @@ namespace App\Services\Xs2;
 
 use App\Exceptions\Integrations\ListingTransformationException;
 use App\Models\EventMapping;
-use App\Models\Xs2CategoryMapping;
 use App\Models\Xs2Ticket;
 use App\Models\Xs2TicketMappingState;
 use App\Services\SellerApi\ListingSalesService;
@@ -64,11 +63,7 @@ class Xs2SellerListingTransformer
                 $this->resolveSellerTicketType($ticketForTransform)
             ),
             'quantity' => $active ? $remaining : 0,
-            ...$this->categoryFields(
-                $ticket,
-                data_get($catalog, 'category', []),
-                $mappingState,
-            ),
+            'category_name' => $this->required($ticket->category_name, 'XS2 ticket category'),
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
             'ticket_row' => (string) data_get($ticket->options, 'ticket_row', ''),
             'home_town' => 0,
@@ -134,129 +129,6 @@ class Xs2SellerListingTransformer
         $id = data_get($item, 'id');
 
         return (is_numeric($id) && (int) $id >= 1) ? (int) $id : null;
-    }
-
-    /**
-     * @param  list<array<string, mixed>>  $catalogCategories
-     * @return array{ticket_category: int}|array{category_name: string}
-     */
-    private function categoryFields(Xs2Ticket $ticket, array $catalogCategories, ?Xs2TicketMappingState $mappingState): array
-    {
-        $categoryName = $this->required($ticket->category_name, 'XS2 ticket category');
-
-        if ($this->usesMappedCategoryId($mappingState)) {
-            return [
-                'ticket_category' => $this->lookupCategoryId(
-                    $catalogCategories,
-                    $categoryName,
-                    $mappingState,
-                ),
-            ];
-        }
-
-        return ['category_name' => $categoryName];
-    }
-
-    private function usesMappedCategoryId(?Xs2TicketMappingState $mappingState): bool
-    {
-        $categoryMapping = $mappingState?->categoryMapping;
-        if (! $categoryMapping || $categoryMapping->status !== 'mapped') {
-            return false;
-        }
-
-        if (! config('xs2.mapping.require_stadium_detail', true)) {
-            return true;
-        }
-
-        return $categoryMapping->relationLoaded('details')
-            ? $categoryMapping->details->isNotEmpty()
-            : $categoryMapping->details()->exists();
-    }
-
-    /** @param list<array<string, mixed>> $items */
-    private function lookupCategoryId(array $items, string $rawName, ?Xs2TicketMappingState $mappingState): int
-    {
-        $categoryMapping = $mappingState?->categoryMapping;
-        if ($categoryMapping?->status === 'mapped') {
-            foreach ($this->categorySeatIds($categoryMapping) as $seatId) {
-                $id = $this->findIdByNumericId($items, $seatId);
-                if ($id !== null) {
-                    return $id;
-                }
-            }
-        }
-
-        $tried = [];
-        foreach ($this->categoryCandidates($rawName, $mappingState) as $candidate) {
-            $tried[] = $candidate;
-            $id = $this->findId($items, 'category_name', $candidate);
-            if ($id !== null) {
-                return $id;
-            }
-        }
-
-        throw new ListingTransformationException(
-            'Seller API ticket dropdown has no category_name value for any of: '.implode(', ', $tried).'.'
-        );
-    }
-
-    /** @return list<int> */
-    private function categorySeatIds(Xs2CategoryMapping $categoryMapping): array
-    {
-        $seatIds = [];
-        if ($categoryMapping->stadium_seat_id !== null) {
-            $seatIds[] = (int) $categoryMapping->stadium_seat_id;
-        }
-
-        foreach ($categoryMapping->details as $detail) {
-            if ($detail->stadium_seat_id !== null) {
-                $seatIds[] = (int) $detail->stadium_seat_id;
-            }
-        }
-
-        foreach ($categoryMapping->candidate_scores ?? [] as $candidate) {
-            $seatId = data_get($candidate, 'stadium_seat_id');
-            if (is_numeric($seatId)) {
-                $seatIds[] = (int) $seatId;
-            }
-        }
-
-        return array_values(array_unique($seatIds));
-    }
-
-    /**
-     * @return list<string>
-     */
-    private function categoryCandidates(string $rawName, ?Xs2TicketMappingState $mappingState): array
-    {
-        $names = [$rawName];
-
-        $categoryMapping = $mappingState?->categoryMapping;
-        if ($categoryMapping?->status === 'mapped') {
-            foreach ($categoryMapping->details as $detail) {
-                $names[] = (string) ($detail->stadium_seat_name ?: $detail->name ?: '');
-            }
-
-            foreach ($categoryMapping->candidate_scores ?? [] as $candidate) {
-                $names[] = (string) data_get($candidate, 'stadium_seat_name', '');
-            }
-        }
-
-        $seen = [];
-        $result = [];
-        foreach ($names as $name) {
-            if ($name === '') {
-                continue;
-            }
-            $key = $this->normalise($name);
-            if ($key === '' || isset($seen[$key])) {
-                continue;
-            }
-            $seen[$key] = true;
-            $result[] = $name;
-        }
-
-        return $result;
     }
 
     /** @return array{id: int, name: string} */
