@@ -9,6 +9,7 @@ use App\Models\ListingSplitActivity;
 use App\Models\Xs2Ticket;
 use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
+use App\Services\Xs2\ListingPublishValidator;
 use App\Services\Xs2\Xs2SellerListingTransformer;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Support\Facades\DB;
@@ -37,6 +38,7 @@ class SplitListingService
         private readonly Xs2SellerListingTransformer $transformer,
         private readonly SellerApiClient $sellerApi,
         private readonly Xs2TicketMappingStatusService $mappingStatuses,
+        private readonly ListingPublishValidator $publishValidator,
         private readonly ?ListingSalesService $listingSales = null,
     ) {}
 
@@ -723,9 +725,13 @@ class SplitListingService
             $transformOverrides = ['pairs_only' => true];
         }
 
+        $this->publishValidator->validateForPublish($ticket, $mapping, $mappingState);
+
         $payload = $mappingState
             ? $this->transformer->transform($ticket, $mapping, $mappingState, $transformOverrides)
             : $this->transformer->transform($ticket, $mapping, null, $transformOverrides);
+
+        $this->publishValidator->validatePayload($payload);
 
         $planned = max(0, (int) $plan['quantity']);
         $remaining = $split !== null

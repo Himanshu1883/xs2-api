@@ -12,6 +12,9 @@ use App\Models\Xs2Event;
 use App\Models\Xs2Ticket;
 use App\Services\SellerApi\SellerApiClient;
 use App\Services\Xs2\EventMappingService;
+use App\Services\Xs2\MappedListingPublishService;
+use App\Services\Xs2\Xs2TicketMappingStatusService;
+use App\Services\Xs2\ListingPublishValidator;
 use App\Services\Xs2\Xs2SellerListingTransformer;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Http;
@@ -47,6 +50,7 @@ class SellerListingPublisherTest extends TestCase
             (new PushXs2TicketToSellerApi($ticket->id))->handle(
                 app(SellerApiClient::class),
                 $this->transformer($reference),
+                app(ListingPublishValidator::class),
             );
             $this->fail('A Seller API create response without an ID must fail the job.');
         } catch (SellerApiRequestException) {
@@ -72,6 +76,7 @@ class SellerListingPublisherTest extends TestCase
         (new PushXs2TicketToSellerApi($ticket->id))->handle(
             app(SellerApiClient::class),
             $this->transformer($reference),
+            app(ListingPublishValidator::class),
         );
 
         $listing = ExternalListingMapping::query()->sole();
@@ -105,7 +110,7 @@ class SellerListingPublisherTest extends TestCase
         ), $reference)->andReturn(['ticket_id' => 'seller-456']);
         $client->shouldReceive('listingId')->once()->with(['ticket_id' => 'seller-456'])->andReturn('seller-456');
 
-        (new PushXs2TicketToSellerApi($ticket->id))->handle($client, $this->transformer($reference, 46));
+        (new PushXs2TicketToSellerApi($ticket->id))->handle($client, $this->transformer($reference, 46), app(ListingPublishValidator::class));
 
         $listing = ExternalListingMapping::query()->sole();
         $this->assertSame('seller-456', $listing->seller_listing_id);
@@ -133,7 +138,10 @@ class SellerListingPublisherTest extends TestCase
 
         Queue::assertPushed(ReconcileSellerListingsForMapping::class, fn ($job): bool => $job->mappingId === $ticket->xs2Event->mapping->id);
 
-        (new ReconcileSellerListingsForMapping($ticket->xs2Event->mapping->id))->handle();
+        (new ReconcileSellerListingsForMapping($ticket->xs2Event->mapping->id))->handle(
+            app(Xs2TicketMappingStatusService::class),
+            app(MappedListingPublishService::class),
+        );
 
         Queue::assertPushed(DisableSellerListing::class, fn ($job): bool => $job->ticketId === $ticket->id);
 
@@ -165,7 +173,7 @@ class SellerListingPublisherTest extends TestCase
         $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
         $transformer->shouldNotReceive('transform');
 
-        (new PushXs2TicketToSellerApi($ticket->id))->handle($client, $transformer);
+        (new PushXs2TicketToSellerApi($ticket->id))->handle($client, $transformer, app(ListingPublishValidator::class));
 
         Queue::assertPushed(
             DisableSellerListing::class,
@@ -193,7 +201,7 @@ class SellerListingPublisherTest extends TestCase
         $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
         $transformer->shouldNotReceive('transform');
 
-        (new PushXs2TicketToSellerApi($ticket->id))->handle($client, $transformer);
+        (new PushXs2TicketToSellerApi($ticket->id))->handle($client, $transformer, app(ListingPublishValidator::class));
 
         Queue::assertPushed(
             DisableSellerListing::class,
@@ -203,7 +211,10 @@ class SellerListingPublisherTest extends TestCase
 
     private function ticket(): Xs2Ticket
     {
-        $event = Xs2Event::query()->create();
+        $event = Xs2Event::query()->create([
+            'event_status' => 'notstarted',
+            'date_start_local' => now()->addDay(),
+        ]);
         $mapping = EventMapping::query()->create([
             'xs2_event_id' => $event->id,
             'm_id' => 45,
@@ -215,6 +226,9 @@ class SellerListingPublisherTest extends TestCase
             'external_ticket_id' => 'xs2-ticket-1',
             'ticket_status' => 'available',
             'stock' => 2,
+            'category_name' => 'Longside Upper Tier',
+            'currency_code' => 'EUR',
+            'net_rate' => 11000,
             'sync_status' => 'pending',
         ]);
     }
@@ -225,6 +239,9 @@ class SellerListingPublisherTest extends TestCase
         $transformer->shouldReceive('transform')->once()->andReturn([
             'seller_reference' => $reference,
             'match_id' => $matchId,
+            'ticket_category' => 4,
+            'ticket_type' => 2,
+            'split_type' => 3,
             'quantity' => 2,
             'price' => 11000,
             'seller_id' => 77,
@@ -263,6 +280,9 @@ class SellerListingPublisherTest extends TestCase
             $table->string('external_ticket_id')->unique();
             $table->string('ticket_status')->nullable();
             $table->unsignedInteger('stock')->default(0);
+            $table->string('category_name')->nullable();
+            $table->string('currency_code')->nullable();
+            $table->unsignedBigInteger('net_rate')->nullable();
             $table->string('sync_status')->nullable();
             $table->text('sync_error')->nullable();
             $table->timestamps();

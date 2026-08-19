@@ -24,6 +24,7 @@ use App\Services\Mapping\MappingTextNormalizer;
 use App\Services\Mapping\StadiumCategoryMappingService;
 use App\Services\Mapping\StadiumMappingService;
 use App\Services\SellerApi\SellerApiClient;
+use App\Services\Xs2\ListingPublishValidator;
 use App\Services\Xs2\Xs2SellerListingTransformer;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Database\Schema\Blueprint;
@@ -264,7 +265,7 @@ class Xs2InventoryMappingTest extends TestCase
         $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
         $transformer->shouldNotReceive('transform');
 
-        (new PushXs2TicketToSellerApi($ticket->id))->handle($client, $transformer);
+        (new PushXs2TicketToSellerApi($ticket->id))->handle($client, $transformer, app(ListingPublishValidator::class));
 
         $this->assertSame(0, ExternalListingMapping::count());
     }
@@ -1891,8 +1892,8 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping.details')
         );
 
-        $this->assertSame('Category 1', $payload['category_name']);
-        $this->assertArrayNotHasKey('ticket_category', $payload);
+        $this->assertSame(16, $payload['ticket_category']);
+        $this->assertArrayNotHasKey('category_name', $payload);
     }
 
     public function test_transformer_falls_back_to_a_mapped_candidate_category_name_when_the_raw_name_is_unmatched(): void
@@ -1942,11 +1943,11 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping.details')
         );
 
-        $this->assertSame('Matchday Premium', $payload['category_name']);
-        $this->assertArrayNotHasKey('ticket_category', $payload);
+        $this->assertSame(22, $payload['ticket_category']);
+        $this->assertArrayNotHasKey('category_name', $payload);
     }
 
-    public function test_transformer_sends_category_name_when_category_mapping_is_not_confirmed(): void
+    public function test_transformer_blocks_publish_when_category_mapping_is_not_confirmed_and_dropdown_does_not_match(): void
     {
         Cache::forget('seller-api:ticket-dropdown:9947');
         $event = Xs2Event::create(['external_event_id' => 'event-category-name-fallback']);
@@ -1980,17 +1981,17 @@ class Xs2InventoryMappingTest extends TestCase
                 'category' => [['id' => 4, 'category_name' => 'Away']],
             ],
         ]);
-        $client->shouldReceive('sellerId')->once()->andReturn(77);
+        $client->shouldReceive('sellerId')->never();
 
-        $payload = (new Xs2SellerListingTransformer($client))->transform(
+        $this->expectException(\App\Exceptions\Integrations\ListingTransformationException::class);
+        $this->expectExceptionMessage('Could not resolve XS2 category');
+
+        (new Xs2SellerListingTransformer($client))->transform(
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping')
         );
-
-        $this->assertSame('Longside Upper', $payload['category_name']);
-        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
-    public function test_transformer_sends_raw_category_name_when_category_mapping_is_pending_even_if_catalog_matches(): void
+    public function test_transformer_resolves_ticket_category_when_category_mapping_is_pending_and_dropdown_matches(): void
     {
         Cache::forget('seller-api:ticket-dropdown:9947');
         $event = Xs2Event::create(['external_event_id' => 'event-category-name-lookup']);
@@ -2030,11 +2031,11 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping')
         );
 
-        $this->assertSame('Longside Upper', $payload['category_name']);
-        $this->assertArrayNotHasKey('ticket_category', $payload);
+        $this->assertSame(4, $payload['ticket_category']);
+        $this->assertArrayNotHasKey('category_name', $payload);
     }
 
-    public function test_transformer_sends_raw_category_name_for_unmatched_mapping_and_skips_candidate_scores(): void
+    public function test_transformer_resolves_ticket_category_from_mapping_seat_id_hint_when_raw_name_differs(): void
     {
         Cache::forget('seller-api:ticket-dropdown:9947');
         $event = Xs2Event::create(['external_event_id' => 'event-lateral-candidate-skip']);
@@ -2085,8 +2086,8 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping')
         );
 
-        $this->assertSame('Lateral', $payload['category_name']);
-        $this->assertArrayNotHasKey('ticket_category', $payload);
+        $this->assertSame(4, $payload['ticket_category']);
+        $this->assertArrayNotHasKey('category_name', $payload);
     }
 
     public function test_can_auto_publish_with_pending_category_mapping_when_category_name_exists(): void
@@ -2099,7 +2100,7 @@ class Xs2InventoryMappingTest extends TestCase
         $this->assertTrue($service->canAutoPublish($ticket, 'ready_to_publish'));
     }
 
-    public function test_transformer_fallback_payload_has_same_keys_as_mapped_payload_except_category_field(): void
+    public function test_transformer_fallback_payload_matches_mapped_payload_when_dropdown_resolves(): void
     {
         Cache::forget('seller-api:ticket-dropdown:9947');
         $event = Xs2Event::create(['external_event_id' => 'event-category-parity']);
@@ -2183,10 +2184,10 @@ class Xs2InventoryMappingTest extends TestCase
             $fallbackState->fresh('categoryMapping'),
         );
 
-        $this->assertSame('Longside Upper', $mappedPayload['category_name']);
-        $this->assertSame('Longside Upper', $fallbackPayload['category_name']);
-        $this->assertArrayNotHasKey('ticket_category', $mappedPayload);
-        $this->assertArrayNotHasKey('ticket_category', $fallbackPayload);
+        $this->assertSame(4, $mappedPayload['ticket_category']);
+        $this->assertSame(4, $fallbackPayload['ticket_category']);
+        $this->assertArrayNotHasKey('category_name', $mappedPayload);
+        $this->assertArrayNotHasKey('category_name', $fallbackPayload);
         $this->assertSame($mappedPayload, $fallbackPayload);
     }
 
@@ -2235,11 +2236,11 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping.details')
         );
 
-        $this->assertSame('Matchday Premium', $payload['category_name']);
-        $this->assertArrayNotHasKey('ticket_category', $payload);
+        $this->assertSame(22, $payload['ticket_category']);
+        $this->assertArrayNotHasKey('category_name', $payload);
     }
 
-    public function test_transformer_sends_category_name_even_when_catalog_has_no_matching_category(): void
+    public function test_transformer_blocks_publish_when_catalog_has_no_matching_category(): void
     {
         Cache::forget('seller-api:ticket-dropdown:9947');
         $event = Xs2Event::create(['external_event_id' => 'event-category-fallback-4']);
@@ -2278,14 +2279,14 @@ class Xs2InventoryMappingTest extends TestCase
                 'category' => [['id' => 1, 'category_name' => 'Away']],
             ],
         ]);
-        $client->shouldReceive('sellerId')->once()->andReturn(77);
+        $client->shouldReceive('sellerId')->never();
 
-        $payload = (new Xs2SellerListingTransformer($client))->transform(
+        $this->expectException(\App\Exceptions\Integrations\ListingTransformationException::class);
+        $this->expectExceptionMessage('Could not resolve XS2 category');
+
+        (new Xs2SellerListingTransformer($client))->transform(
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping.details')
         );
-
-        $this->assertSame('Matchday Premium', $payload['category_name']);
-        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_still_throws_for_an_unmatched_category_when_no_mapping_state_exists(): void

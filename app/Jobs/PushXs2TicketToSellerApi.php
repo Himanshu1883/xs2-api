@@ -7,6 +7,7 @@ use App\Models\EventMapping;
 use App\Models\ExternalListingMapping;
 use App\Models\Xs2Ticket;
 use App\Services\SellerApi\SellerApiClient;
+use App\Services\Xs2\ListingPublishValidator;
 use App\Services\Xs2\Xs2SellerListingTransformer;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
@@ -55,7 +56,7 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
         ];
     }
 
-    public function handle(SellerApiClient $client, Xs2SellerListingTransformer $transformer): void
+    public function handle(SellerApiClient $client, Xs2SellerListingTransformer $transformer, ListingPublishValidator $validator): void
     {
         $query = Xs2Ticket::with('xs2Event.mapping');
         if (Schema::hasTable('xs2_ticket_mapping_states')) {
@@ -125,9 +126,13 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
         $transformOverrides = $this->transformOverrides();
 
         try {
+            $validator->validateForPublish($ticket, $mapping, $mappingState, $this->strictPublish);
+
             $payload = $mappingState
                 ? $transformer->transform($ticket, $mapping, $mappingState, $transformOverrides)
                 : $transformer->transform($ticket, $mapping, null, $transformOverrides);
+
+            $validator->validatePayload($payload);
         } catch (\Throwable $e) {
             Log::error('XS2 listing transformation failed', [
                 'match_id' => $mapping->m_id,

@@ -1,0 +1,40 @@
+---
+description: Seats Broker listing publish rules — never call SB API without valid ticket_category
+globs: xs2-api/app/**/*.{php},xs2-api/tests/**/*.{php},xs2-api/docs/**/*.md
+alwaysApply: false
+---
+
+# Listing Publish Rules (Seats Broker)
+
+When publishing XS2 listings to Seats Broker (SB), **always** follow `docs/listing-publish-rules.md`.
+
+## Non-negotiable
+
+- SB `POST /api/ticket/create` requires **`ticket_category` as a positive integer** from `ticket_dropdown`.
+- **Never** call SB create/update if validation fails — use `ListingPublishValidator` + `Xs2SellerListingTransformer`.
+- `category_name` alone is **not** a valid create payload; resolve XS2 `category_name` → SB dropdown ID first.
+
+## Category resolution
+
+```php
+// ✅ GOOD — integer from dropdown match
+'ticket_category' => $this->lookupCategoryId($catalogCategories, $ticket->category_name, $mappingState),
+
+// ❌ BAD — string or name-only (SB rejects)
+'ticket_category' => $ticket->category_name,
+'category_name' => $ticket->category_name, // without ticket_category
+```
+
+Resolution: match normalized XS2 name against dropdown; optionally use mapping seat IDs / detail names as hints. Throw `ListingTransformationException` when unresolved.
+
+## Publish flow
+
+```
+validateForPublish() → transform() → validatePayload() → SellerApiClient::createListing()
+```
+
+Entry points: `PushXs2TicketToSellerApi`, `SplitListingService`, `MappedListingPublishService`.
+
+## Tests
+
+Add/update tests for blocked publish (unresolved category, missing match_id) and allowed publish (dropdown match returns integer `ticket_category`).
