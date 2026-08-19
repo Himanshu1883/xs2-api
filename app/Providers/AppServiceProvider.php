@@ -46,7 +46,11 @@ class AppServiceProvider extends ServiceProvider
         }
 
         $this->app->booted(function (): void {
-            app(CronExecutionLogService::class)->attachScheduleHooks();
+            try {
+                app(CronExecutionLogService::class)->attachScheduleHooks();
+            } catch (\Throwable) {
+                // Ignore during migrations or when the database is temporarily unavailable.
+            }
         });
     }
 }

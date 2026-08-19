@@ -12,6 +12,8 @@ node_modules
 npm-debug.log
 .phpunit.result.cache
 .phpunit.cache
+bootstrap/cache/*.php
+!bootstrap/cache/.gitignore
 staging_db_z2.sql
 *.sql
 storage/logs/*

@@ -1,6 +1,7 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+# Set Railway service Root Directory to this folder (xs2-api) in the dashboard.
 
 [deploy]
 healthcheckPath = "/up"

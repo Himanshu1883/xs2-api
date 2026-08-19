@@ -31,7 +31,9 @@ RUN composer install \
     --no-interaction
 
 COPY . .
-RUN composer dump-autoload --optimize --no-dev --no-scripts \
+RUN rm -f bootstrap/cache/packages.php bootstrap/cache/services.php bootstrap/cache/config.php bootstrap/cache/routes-v7.php \
+    && composer dump-autoload --optimize --no-dev \
+    && php artisan package:discover --ansi \
     && mkdir -p \
         storage/framework/cache \
         storage/framework/sessions \
@@ -42,7 +44,11 @@ RUN composer dump-autoload --optimize --no-dev --no-scripts \
     && chmod +x docker-entrypoint.sh
 
 ENV APP_ENV=production
+ENV APP_DEBUG=false
 ENV LOG_CHANNEL=stderr
+ENV SESSION_DRIVER=file
+ENV CACHE_STORE=file
+ENV QUEUE_CONNECTION=sync
 ENV PORT=8080
 
 EXPOSE 8080

@@ -37,10 +37,26 @@ Also required for production:
 |----------|-------|
 | `APP_KEY` | `php artisan key:generate --show` locally |
 | `APP_ENV` | `production` (set in Dockerfile) |
-| `APP_DEBUG` | `false` |
-| `APP_URL` | Public xs2-api URL |
+| `APP_DEBUG` | `false` (set in Dockerfile) |
+| `APP_URL` | Public xs2-api URL, e.g. `https://<service>.up.railway.app` |
+| `SESSION_DRIVER` | `file` (default in Dockerfile; no Redis required) |
+| `CACHE_STORE` | `file` (default in Dockerfile) |
+| `QUEUE_CONNECTION` | `sync` for web-only deploy; use `database` + a worker service for queues |
 
 Do **not** commit `.env` or real passwords to git.
+
+### xs2-web service (Vercel dashboard)
+
+| Variable | Example |
+|----------|---------|
+| `NEXT_PUBLIC_APP_URL` | `https://xs2-web.vercel.app` |
+| `BACKEND_API_BASE_URL` | `https://<your-railway-service>.up.railway.app` |
+
+The Next.js app proxies browser requests through same-origin `/api/*` routes, so Laravel CORS is not required for normal frontend traffic.
+
+## Monorepo root directory
+
+If the git repository root contains both `xs2-api/` and `xs2-web/`, set the Railway service **Root Directory** to `xs2-api` (or `xs2-vercel/xs2-api` if nested). Vercel should use **Root Directory** `xs2-web`.
 
 ### Local development
 
@@ -73,8 +89,9 @@ DB_PASSWORD=<MYSQLPASSWORD from Railway>
 1. Push to the branch Railway builds from (`railway.toml` uses `Dockerfile`).
 2. On container start, `docker-entrypoint.sh`:
    - validates `APP_KEY`
+   - runs `package:discover`
    - runs `config:cache`
-   - runs `migrate --force`
+   - runs `migrate --force` (logs a warning and continues if migration fails)
    - runs `route:cache`
    - starts `php artisan serve` on `$PORT`
 

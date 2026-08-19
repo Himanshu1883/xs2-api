@@ -15,7 +15,11 @@ class CronExecutionLogService
 
     public function isAvailable(): bool
     {
-        return Schema::hasTable('cron_execution_logs');
+        try {
+            return Schema::hasTable('cron_execution_logs');
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     public function attachScheduleHooks(): void
