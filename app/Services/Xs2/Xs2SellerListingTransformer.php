@@ -63,7 +63,7 @@ class Xs2SellerListingTransformer
                 $this->resolveSellerTicketType($ticketForTransform)
             ),
             'quantity' => $active ? $remaining : 0,
-            'ticket_category' => $this->required($ticket->category_name, 'XS2 ticket category'),
+            'category_name' => $this->required($ticket->category_name, 'XS2 ticket category'),
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
             'ticket_row' => (string) data_get($ticket->options, 'ticket_row', ''),
             'home_town' => 0,

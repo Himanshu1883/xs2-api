@@ -340,7 +340,7 @@ class SellerApiContractTest extends TestCase
             'match_id' => 45,
             'ticket_type' => 2,
             'quantity' => 4,
-            'ticket_category' => 'Longside Upper Tier',
+            'category_name' => 'Longside Upper Tier',
             'ticket_block' => '',
             'ticket_row' => '',
             'home_town' => 0,
@@ -388,10 +388,10 @@ class SellerApiContractTest extends TestCase
         $mappedPayload = $transformer->transform($ticket, $mapping, $this->mappedCategoryState());
         $fallbackPayload = $transformer->transform($ticket, $mapping, $this->fallbackCategoryState());
 
-        $this->assertSame('Longside Upper Tier', $mappedPayload['ticket_category']);
-        $this->assertSame('Longside Upper Tier', $fallbackPayload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $mappedPayload);
-        $this->assertArrayNotHasKey('category_name', $fallbackPayload);
+        $this->assertSame('Longside Upper Tier', $mappedPayload['category_name']);
+        $this->assertSame('Longside Upper Tier', $fallbackPayload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $mappedPayload);
+        $this->assertArrayNotHasKey('ticket_category', $fallbackPayload);
         $this->assertSame($mappedPayload, $fallbackPayload);
     }
 

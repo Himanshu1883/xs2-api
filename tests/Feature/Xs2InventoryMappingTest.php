@@ -1891,8 +1891,8 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping.details')
         );
 
-        $this->assertSame('Category 1', $payload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $payload);
+        $this->assertSame('Category 1', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_falls_back_to_a_mapped_candidate_category_name_when_the_raw_name_is_unmatched(): void
@@ -1942,8 +1942,8 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping.details')
         );
 
-        $this->assertSame('Matchday Premium', $payload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $payload);
+        $this->assertSame('Matchday Premium', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_sends_category_name_when_category_mapping_is_not_confirmed(): void
@@ -1986,8 +1986,8 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping')
         );
 
-        $this->assertSame('Longside Upper', $payload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $payload);
+        $this->assertSame('Longside Upper', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_sends_raw_category_name_when_category_mapping_is_pending_even_if_catalog_matches(): void
@@ -2030,8 +2030,8 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping')
         );
 
-        $this->assertSame('Longside Upper', $payload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $payload);
+        $this->assertSame('Longside Upper', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_sends_raw_category_name_for_unmatched_mapping_and_skips_candidate_scores(): void
@@ -2085,8 +2085,8 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping')
         );
 
-        $this->assertSame('Lateral', $payload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $payload);
+        $this->assertSame('Lateral', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_can_auto_publish_with_pending_category_mapping_when_category_name_exists(): void
@@ -2183,10 +2183,10 @@ class Xs2InventoryMappingTest extends TestCase
             $fallbackState->fresh('categoryMapping'),
         );
 
-        $this->assertSame('Longside Upper', $mappedPayload['ticket_category']);
-        $this->assertSame('Longside Upper', $fallbackPayload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $mappedPayload);
-        $this->assertArrayNotHasKey('category_name', $fallbackPayload);
+        $this->assertSame('Longside Upper', $mappedPayload['category_name']);
+        $this->assertSame('Longside Upper', $fallbackPayload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $mappedPayload);
+        $this->assertArrayNotHasKey('ticket_category', $fallbackPayload);
         $this->assertSame($mappedPayload, $fallbackPayload);
     }
 
@@ -2235,8 +2235,8 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping.details')
         );
 
-        $this->assertSame('Matchday Premium', $payload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $payload);
+        $this->assertSame('Matchday Premium', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_sends_category_name_even_when_catalog_has_no_matching_category(): void
@@ -2284,8 +2284,8 @@ class Xs2InventoryMappingTest extends TestCase
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping.details')
         );
 
-        $this->assertSame('Matchday Premium', $payload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $payload);
+        $this->assertSame('Matchday Premium', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_still_throws_for_an_unmatched_category_when_no_mapping_state_exists(): void
