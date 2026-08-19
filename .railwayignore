@@ -1,0 +1,16 @@
+.git
+.env
+.env.local
+.env.backup
+.env.production
+vendor
+node_modules
+.phpunit.result.cache
+staging_db_z2.sql
+*.sql
+storage/logs
+storage/framework/cache
+storage/framework/sessions
+storage/framework/views
+storage/backups
+.DS_Store
