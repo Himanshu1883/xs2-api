@@ -1,0 +1,106 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\SbOrderIndexRequest;
+use App\Http\Resources\SbOrderResource;
+use App\Models\EventMapping;
+use App\Models\SbOrder;
+use App\Services\SellerApi\SellerBookingSyncService;
+use Illuminate\Http\JsonResponse;
+
+class SbOrderController extends Controller
+{
+    public function index(SbOrderIndexRequest $request)
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $filters = $request->validated();
+        $search = trim((string) ($filters['search'] ?? ''));
+
+        $query = SbOrder::query()->with(['attendees', 'xs2Order'])->withCount('attendees');
+
+        if ($search !== '') {
+            $like = '%'.$search.'%';
+            $query->where(function ($q) use ($like): void {
+                $q->where('booking_no', 'like', $like)
+                    ->orWhere('match_name', 'like', $like)
+                    ->orWhere('tournament_name', 'like', $like)
+                    ->orWhere('stadium_name', 'like', $like)
+                    ->orWhere('buyer_first_name', 'like', $like)
+                    ->orWhere('buyer_last_name', 'like', $like)
+                    ->orWhere('listing_id', 'like', $like)
+                    ->orWhereRaw("CONCAT(COALESCE(buyer_first_name, ''), ' ', COALESCE(buyer_last_name, '')) like ?", [$like]);
+            });
+        }
+
+        if (array_key_exists('status', $filters) && $filters['status'] !== null && $filters['status'] !== '') {
+            $query->where('booking_status', (int) $filters['status']);
+        }
+
+        if (! empty($filters['date_from'])) {
+            $query->whereDate('match_date', '>=', $filters['date_from']);
+        }
+        if (! empty($filters['date_to'])) {
+            $query->whereDate('match_date', '<=', $filters['date_to']);
+        }
+
+        return SbOrderResource::collection(
+            $query->orderByDesc('synced_at')->orderByDesc('id')->paginate($filters['per_page'] ?? 20)
+        );
+    }
+
+    public function show(SbOrder $sbOrder): SbOrderResource
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+
+        return new SbOrderResource($sbOrder);
+    }
+
+    public function sync(SellerBookingSyncService $sync): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $summary = $sync->sync();
+
+        return response()->json([
+            'message' => sprintf(
+                'Synced %d booking(s) from Seller API (%d created, %d updated, %d attendee row(s), %d listing stock update(s) queued).',
+                $summary['fetched'],
+                $summary['created'],
+                $summary['updated'],
+                $summary['attendees'],
+                $summary['stock_reconcile_queued'] ?? 0,
+            ),
+            'data' => $summary,
+        ]);
+    }
+
+    public function refresh(SbOrder $sbOrder, SellerBookingSyncService $sync): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        try {
+            $refreshed = $sync->syncOrder($sbOrder);
+        } catch (\RuntimeException $exception) {
+            return response()->json([
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+
+        $statusLabel = $refreshed->booking_status_text
+            ?? ($refreshed->booking_status !== null ? (string) $refreshed->booking_status : 'unknown');
+
+        return response()->json([
+            'message' => sprintf(
+                'Updated booking %s from Seller API (status: %s).',
+                $refreshed->booking_no,
+                $statusLabel,
+            ),
+            'data' => new SbOrderResource($refreshed),
+        ]);
+    }
+}
