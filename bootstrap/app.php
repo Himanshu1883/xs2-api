@@ -2,6 +2,18 @@
 
 use Dotenv\Dotenv;
 
+// Dev shells sometimes export empty DB_* vars; Dotenv safeLoad will not override them,
+// which leaves HTTP workers on the sqlite default instead of .env (mysql locally).
+foreach (['DB_CONNECTION', 'DB_HOST', 'DB_PORT', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD', 'DB_URL'] as $key) {
+    $value = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
+    if ($value !== false && $value !== null && $value !== '') {
+        continue;
+    }
+
+    unset($_ENV[$key], $_SERVER[$key]);
+    putenv($key);
+}
+
 use App\Exceptions\Integrations\SellerApiConfigurationException;
 use App\Exceptions\Integrations\SellerApiRequestException;
 use App\Exceptions\Integrations\Xs2ConfigurationException;
@@ -163,10 +175,14 @@ $application->afterLoadingEnvironment(function () use ($application): void {
         return;
     }
 
+    // When APP_ENV=local and .env.local exists, Laravel loads .env.local as the primary env
+    // file and skips .env entirely. Merge .env first so DB/core settings remain available.
+    Dotenv::createMutable($application->environmentPath(), '.env')->load();
+
     $localEnvFile = $application->basePath('.env.local');
 
     if (is_file($localEnvFile)) {
-        Dotenv::createMutable($application->basePath(), '.env.local')->safeLoad();
+        Dotenv::createMutable($application->basePath(), '.env.local')->load();
     }
 });
 
