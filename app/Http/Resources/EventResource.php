@@ -77,7 +77,9 @@ class EventResource extends JsonResource
                 // XS2 supplies whole-EUR integer values, not supplier net rates.
                 'minimum_price' => $xs2Event?->min_ticket_price_eur,
                 'maximum_price' => $xs2Event?->max_ticket_price_eur,
-                'currency' => $xs2Event ? 'EUR' : null,
+                // Public catalogue events are priced in EUR; unmapped legacy rows
+                // have no local currency column, so always expose the default.
+                'currency' => 'EUR',
             ],
         ];
     }

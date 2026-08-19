@@ -1050,7 +1050,8 @@ class Xs2EventFlowTest extends TestCase
             ->assertJsonPath('data.xs2_mapped', false)
             ->assertJsonPath('data.xs2_mapping_id', null)
             ->assertJsonPath('data.xs2_event_id', null)
-            ->assertJsonPath('data.xs2_event_name', null);
+            ->assertJsonPath('data.xs2_event_name', null)
+            ->assertJsonPath('data.inventory.currency', 'EUR');
     }
 
     public function test_public_event_list_enriches_canonical_events_without_exposing_xs2_records(): void
