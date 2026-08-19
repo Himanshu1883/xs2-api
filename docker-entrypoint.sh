@@ -7,6 +7,7 @@ if [ -z "$APP_KEY" ]; then
 fi
 
 php artisan config:cache --no-ansi
+php artisan migrate --force --no-ansi
 php artisan route:cache --no-ansi
 
 exec php artisan serve --host=0.0.0.0 --port="${PORT:-8080}"
