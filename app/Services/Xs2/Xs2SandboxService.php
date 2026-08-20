@@ -5,6 +5,7 @@ namespace App\Services\Xs2;
 use App\Exceptions\Integrations\Xs2ConfigurationException;
 use App\Exceptions\Integrations\Xs2RequestException;
 use App\Exceptions\Integrations\Xs2ResponseException;
+use App\Services\Admin\ApiEnvironmentService;
 use App\Support\EndpointTemplateResolver;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
@@ -13,8 +14,9 @@ use Illuminate\Support\Facades\Http;
 /**
  * Isolated XS2 HTTP client for the admin sandbox test flow.
  *
- * Reads only config('xs2.sandbox.*') and shared endpoint templates from config('xs2.*').
- * Never uses IntegrationSettingService or production XS2 credentials.
+ * Reads config('xs2.sandbox.*') with integration_settings overrides for api_url/api_key,
+ * plus shared endpoint templates from config('xs2.*').
+ * Never uses production XS2 credentials.
  */
 class Xs2SandboxService
 {
@@ -1029,6 +1031,20 @@ class Xs2SandboxService
 
     private function setting(string $key, mixed $default = null): mixed
     {
+        if ($key === 'api_url') {
+            $resolved = app(ApiEnvironmentService::class)->effectiveSandboxXs2BaseUrl();
+            if (filled($resolved)) {
+                return $resolved;
+            }
+        }
+
+        if ($key === 'api_key') {
+            $resolved = app(ApiEnvironmentService::class)->effectiveSandboxXs2ApiKey();
+            if (filled($resolved)) {
+                return $resolved;
+            }
+        }
+
         return config("xs2.sandbox.{$key}", $default);
     }
 

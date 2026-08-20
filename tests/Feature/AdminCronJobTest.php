@@ -196,8 +196,12 @@ class AdminCronJobTest extends TestCase
         $this->assertSame('seller-api:sync-bookings', $task['command']);
         $this->assertSame('xs2', $task['category']);
         $this->assertTrue($task['enabled']);
+        $this->assertSame('*/2 * * * *', $task['expression']);
+        $this->assertSame('Every 2 minutes', $task['schedule']);
+        $this->assertSame(2, $task['extra']['sync_interval_minutes']);
         $this->assertArrayHasKey('what_it_does', $task['extra']);
         $this->assertSame('sb_order_xs2_order_sync', $task['extra']['cron_role']);
+        $this->assertArrayHasKey('create_order_api', $task['extra']);
     }
 
     public function test_admin_can_run_sb_order_to_xs2_order_sync(): void

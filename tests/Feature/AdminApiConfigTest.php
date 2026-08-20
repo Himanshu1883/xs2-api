@@ -467,6 +467,82 @@ class AdminApiConfigTest extends TestCase
         });
     }
 
+    public function test_admin_can_view_xs2_sandbox_config_in_api_config(): void
+    {
+        config()->set('xs2.sandbox.api_url', 'https://testapi.xs2event.com');
+        config()->set('xs2.sandbox.api_key', 'sandbox-xs2-key');
+        config()->set('xs2.base_url', 'https://api.xs2event.com');
+        config()->set('xs2.api_key', 'prod-xs2-key');
+
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('api-config-xs2-sandbox')->plainTextToken;
+
+        $this->withToken($token)
+            ->getJson('/api/admin/api-config')
+            ->assertOk()
+            ->assertJsonPath('data.integrations.1.id', 'xs2')
+            ->assertJsonPath('data.integrations.1.environments.sandbox.base_url', 'https://testapi.xs2event.com')
+            ->assertJsonPath('data.integrations.1.environments.production.base_url', 'https://api.xs2event.com')
+            ->assertJsonPath('data.integrations.1.environments.sandbox.api_key_configured', true)
+            ->assertJsonPath('data.integrations.1.environments.production.api_key_configured', true);
+    }
+
+    public function test_admin_can_persist_xs2_sandbox_overrides(): void
+    {
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('api-config-xs2-sandbox-save')->plainTextToken;
+
+        $this->withToken($token)
+            ->patchJson('/api/admin/api-config/xs2/sandbox', [
+                'base_url' => 'https://testapi.xs2event.com',
+                'api_key' => 'sandbox-secret-key',
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.integration.environments.sandbox.base_url', 'https://testapi.xs2event.com')
+            ->assertJsonPath('data.integration.environments.sandbox.api_key_configured', true)
+            ->assertJsonMissing(['data' => ['integration' => ['environments' => ['sandbox' => ['api_key' => 'sandbox-secret-key']]]]]);
+
+        $settings = app(IntegrationSettingService::class);
+        $this->assertSame('https://testapi.xs2event.com', $settings->value(IntegrationSettingService::XS2_SANDBOX_API_URL));
+        $this->assertSame('sandbox-secret-key', $settings->value(IntegrationSettingService::XS2_SANDBOX_API_KEY));
+    }
+
+    public function test_xs2_client_uses_persisted_sandbox_credentials_when_environment_is_sandbox(): void
+    {
+        app(IntegrationSettingService::class)->set(ApiEnvironmentService::XS2_ACTIVE_ENVIRONMENT, 'sandbox');
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_SANDBOX_API_URL,
+            'https://testapi.custom.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_SANDBOX_API_KEY,
+            'db-sandbox-key',
+            secret: true,
+        );
+
+        config()->set('xs2.base_url', 'https://api.xs2event.com');
+        config()->set('xs2.api_key', 'prod-key');
+        config()->set('xs2.sandbox.api_url', 'https://testapi.xs2event.com');
+        config()->set('xs2.sandbox.api_key', 'env-sandbox-key');
+        config()->set('xs2.enabled', true);
+        config()->set('services.xs2.enabled', true);
+        config()->set('xs2.api_key_header', 'X-Api-Key');
+        config()->set('xs2.events_endpoint', '/v1/events');
+        config()->set('xs2.rate_limit_pacing', false);
+        config()->set('xs2.rate_limit_per_minute', 60);
+
+        Http::fake([
+            'https://testapi.custom.test/*' => Http::response(['results' => [], 'pagination' => ['page' => 1, 'pages' => 1]]),
+        ]);
+
+        app(\App\Services\Xs2\Xs2Client::class)->getEvents(['page' => 1]);
+
+        Http::assertSent(function ($request): bool {
+            return str_starts_with($request->url(), 'https://testapi.custom.test/')
+                && $request->hasHeader('X-Api-Key', 'db-sandbox-key');
+        });
+    }
+
     public function test_cron_config_reports_xs2_configured_from_integration_settings(): void
     {
         config()->set('xs2.base_url', null);

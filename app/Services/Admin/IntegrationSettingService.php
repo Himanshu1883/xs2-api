@@ -24,6 +24,10 @@ class IntegrationSettingService
 
     public const XS2_API_KEY = 'XS2_API_KEY';
 
+    public const XS2_SANDBOX_API_URL = 'XS2_SANDBOX_API_URL';
+
+    public const XS2_SANDBOX_API_KEY = 'XS2_SANDBOX_API_KEY';
+
     public const SB_WEBHOOK_BEARER_TOKEN = 'SB_WEBHOOK_BEARER_TOKEN';
 
     public const LISTING_PUBLISH_RULES = 'LISTING_PUBLISH_RULES';
@@ -60,6 +64,8 @@ class IntegrationSettingService
     public const XS2_KEYS = [
         self::XS2_BASE_URL,
         self::XS2_API_KEY,
+        self::XS2_SANDBOX_API_URL,
+        self::XS2_SANDBOX_API_KEY,
     ];
 
     public function value(string $key): ?string

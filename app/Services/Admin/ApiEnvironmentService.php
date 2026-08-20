@@ -129,7 +129,7 @@ class ApiEnvironmentService
     public function xs2BaseUrl(): ?string
     {
         if ($this->xs2Environment() === self::ENV_SANDBOX) {
-            return rtrim((string) config('xs2.sandbox.api_url', 'https://testapi.xs2event.com'), '/');
+            return $this->effectiveSandboxXs2BaseUrl();
         }
 
         return $this->effectiveProductionXs2BaseUrl();
@@ -138,12 +138,36 @@ class ApiEnvironmentService
     public function xs2ApiKey(): ?string
     {
         if ($this->xs2Environment() === self::ENV_SANDBOX) {
-            $key = config('xs2.sandbox.api_key');
-
-            return is_string($key) && trim($key) !== '' ? trim($key) : null;
+            return $this->effectiveSandboxXs2ApiKey();
         }
 
         return $this->effectiveProductionXs2ApiKey();
+    }
+
+    public function effectiveSandboxXs2BaseUrl(): ?string
+    {
+        $override = $this->integrationSettings->value(IntegrationSettingService::XS2_SANDBOX_API_URL);
+        if (filled($override)) {
+            return rtrim(trim($override), '/');
+        }
+
+        $fromConfig = config('xs2.sandbox.api_url');
+
+        return is_string($fromConfig) && $fromConfig !== ''
+            ? rtrim($fromConfig, '/')
+            : 'https://testapi.xs2event.com';
+    }
+
+    public function effectiveSandboxXs2ApiKey(): ?string
+    {
+        $override = $this->integrationSettings->value(IntegrationSettingService::XS2_SANDBOX_API_KEY);
+        if (filled($override)) {
+            return trim($override);
+        }
+
+        $fromConfig = config('xs2.sandbox.api_key');
+
+        return is_string($fromConfig) && trim($fromConfig) !== '' ? trim($fromConfig) : null;
     }
 
     public function sellerCatalogBaseUrl(string $environment): ?string
@@ -326,9 +350,8 @@ class ApiEnvironmentService
     private function xs2ConnectionForEnvironment(string $environment): array
     {
         if ($environment === self::ENV_SANDBOX) {
-            $baseUrl = rtrim((string) config('xs2.sandbox.api_url', 'https://testapi.xs2event.com'), '/');
-            $apiKey = config('xs2.sandbox.api_key');
-            $apiKey = is_string($apiKey) && trim($apiKey) !== '' ? trim($apiKey) : null;
+            $baseUrl = $this->effectiveSandboxXs2BaseUrl();
+            $apiKey = $this->effectiveSandboxXs2ApiKey();
         } else {
             $baseUrl = $this->effectiveProductionXs2BaseUrl();
             $apiKey = $this->effectiveProductionXs2ApiKey();

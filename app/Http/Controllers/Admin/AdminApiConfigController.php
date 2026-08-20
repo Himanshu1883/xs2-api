@@ -191,6 +191,42 @@ class AdminApiConfigController extends Controller
         ]);
     }
 
+    public function updateXs2Sandbox(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $validated = $request->validate([
+            'base_url' => ['required', 'string', 'url', 'max:500'],
+            'api_key' => ['nullable', 'string', 'max:500'],
+        ]);
+
+        $this->integrationSettings->set(
+            IntegrationSettingService::XS2_SANDBOX_API_URL,
+            $validated['base_url'],
+            secret: false,
+        );
+
+        config(['xs2.sandbox.api_url' => $validated['base_url']]);
+
+        if (filled($validated['api_key'] ?? null)) {
+            $this->integrationSettings->set(
+                IntegrationSettingService::XS2_SANDBOX_API_KEY,
+                $validated['api_key'],
+                secret: true,
+            );
+            config(['xs2.sandbox.api_key' => $validated['api_key']]);
+        }
+
+        $this->cronConfig->clearResolvedXs2ConfigurationErrors();
+
+        return response()->json([
+            'message' => 'XS2 sandbox API settings saved.',
+            'data' => [
+                'integration' => $this->xs2Integration(),
+            ],
+        ]);
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -239,6 +275,10 @@ class AdminApiConfigController extends Controller
             'api_key_configured' => $this->xs2ApiKeyConfigured(),
             'api_key_header' => $config['api_key_header'] ?? 'X-Api-Key',
             'api_key_header_env' => 'XS2_API_KEY_HEADER',
+            'environments' => [
+                'sandbox' => $this->xs2EnvironmentConfig('sandbox'),
+                'production' => $this->xs2EnvironmentConfig('production'),
+            ],
             'endpoints' => [
                 ['method' => 'GET', 'path' => $config['events_endpoint'] ?? '/v1/events', 'env' => 'XS2_EVENTS_ENDPOINT'],
                 ['method' => 'GET', 'path' => $config['event_detail_endpoint'] ?? '/v1/events/{event_id}', 'env' => 'XS2_EVENT_DETAIL_ENDPOINT'],
@@ -300,6 +340,35 @@ class AdminApiConfigController extends Controller
                 ['method' => 'GET', 'path' => $config['find_listing_endpoint'] ?? null, 'env' => 'SELLER_API_FIND_LISTING_ENDPOINT'],
                 ['method' => 'POST', 'path' => $config['ticket_dropdown_endpoint'] ?? null, 'env' => 'SELLER_API_TICKET_DROPDOWN_ENDPOINT'],
             ],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function xs2EnvironmentConfig(string $environment): array
+    {
+        $envBaseUrlKey = $environment === 'sandbox'
+            ? 'XS2_SANDBOX_API_URL'
+            : 'XS2_BASE_URL';
+        $envApiKeyKey = $environment === 'sandbox'
+            ? 'XS2_SANDBOX_API_KEY'
+            : 'XS2_API_KEY';
+
+        return [
+            'base_url' => $environment === 'sandbox'
+                ? $this->effectiveXs2SandboxBaseUrl()
+                : $this->effectiveXs2BaseUrl(),
+            'base_url_env' => $envBaseUrlKey,
+            'base_url_editable' => true,
+            'api_key' => $environment === 'sandbox'
+                ? $this->effectiveXs2SandboxApiKeyMasked()
+                : $this->effectiveXs2ApiKeyMasked(),
+            'api_key_env' => $envApiKeyKey,
+            'api_key_editable' => true,
+            'api_key_configured' => $environment === 'sandbox'
+                ? $this->xs2SandboxApiKeyConfigured()
+                : $this->xs2ApiKeyConfigured(),
         ];
     }
 
@@ -441,5 +510,33 @@ class AdminApiConfigController extends Controller
         }
 
         return filled(config('services.xs2.api_key')) || filled(config('xs2.api_key'));
+    }
+
+    private function effectiveXs2SandboxBaseUrl(): ?string
+    {
+        return app(ApiEnvironmentService::class)->effectiveSandboxXs2BaseUrl();
+    }
+
+    private function effectiveXs2SandboxApiKeyMasked(): ?string
+    {
+        if ($this->integrationSettings->hasOverride(IntegrationSettingService::XS2_SANDBOX_API_KEY)) {
+            return $this->integrationSettings->masked(IntegrationSettingService::XS2_SANDBOX_API_KEY);
+        }
+
+        $fallback = config('xs2.sandbox.api_key');
+        if (! is_string($fallback) || trim($fallback) === '') {
+            return null;
+        }
+
+        return $this->integrationSettings->maskPlain(trim($fallback));
+    }
+
+    private function xs2SandboxApiKeyConfigured(): bool
+    {
+        if ($this->integrationSettings->hasOverride(IntegrationSettingService::XS2_SANDBOX_API_KEY)) {
+            return true;
+        }
+
+        return filled(config('xs2.sandbox.api_key'));
     }
 }

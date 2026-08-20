@@ -159,9 +159,9 @@ return [
     | XS2 sandbox test flow (admin-only, isolated from production sync)
     |--------------------------------------------------------------------------
     |
-    | Uses dedicated sandbox credentials. Never read by Xs2Client, cron jobs,
-    | inventory sync, or live order flows. Configure XS2_SANDBOX_API_KEY in .env
-    | only — never expose to the frontend or commit real keys.
+    | Uses dedicated sandbox credentials. Configure via Admin → API Config
+    | (integration_settings) or XS2_SANDBOX_API_URL / XS2_SANDBOX_API_KEY in .env.
+    | Used when XS2_ACTIVE_ENVIRONMENT=sandbox and by the admin sandbox test flow.
     |
     */
     'sandbox' => [
@@ -190,7 +190,7 @@ return [
         'enabled' => (bool) env('SB_BOOKINGS_SYNC_ENABLED', true),
         'sync_interval_minutes' => max(1, min(59, (int) env(
             'SB_BOOKINGS_SYNC_INTERVAL_MINUTES',
-            $lowLoadMode ? 30 : 30,
+            $lowLoadMode ? 30 : 2,
         ))),
     ],
 

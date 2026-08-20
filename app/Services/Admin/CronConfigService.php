@@ -592,7 +592,7 @@ class CronConfigService
             && (bool) config('services.seller_api.enabled', true)
             && $this->sellerApiListingConfigured();
         $telemetry = $this->xs2SbOrderSyncTelemetry($states);
-        $interval = max(1, min(59, (int) config('xs2.sb_bookings_sync.sync_interval_minutes', 30)));
+        $interval = max(1, min(59, (int) config('xs2.sb_bookings_sync.sync_interval_minutes', 2)));
         $orderQueue = (string) config('xs2.sandbox.order_queue', config('xs2.queue', 'xs2-sync'));
         $state = $states[SellerBookingSyncService::SYNC_RESOURCE] ?? null;
         $webhookUrl = rtrim((string) config('app.url'), '/').'/api/webhooks/sb/orders';
@@ -604,7 +604,11 @@ class CronConfigService
                     name: 'SB order → XS2 sandbox order sync',
                     type: 'command',
                     command: 'seller-api:sync-bookings',
-                    schedule: 'Every '.$interval.' minutes',
+                    schedule: match (true) {
+                        $interval <= 1 => 'Every minute',
+                        $interval === 2 => 'Every 2 minutes',
+                        default => 'Every '.$interval.' minutes',
+                    },
                     scheduleDetail: 'When a Seats Broker order is received, creates a matching reservation and booking on the XS2 sandbox API (when Create Order API is set to sandbox). Runs on SB webhook in real time; this cron polls GET /api/booking as a backup so missed webhooks still sync.',
                     queue: $orderQueue,
                     syncResource: SellerBookingSyncService::SYNC_RESOURCE,
@@ -623,7 +627,7 @@ class CronConfigService
                         ],
                         'examples' => [
                             'Customer buys Tribuna split listing 912503 on SB → webhook fires → XS2 sandbox booking created for the mapped sandbox ticket.',
-                            'Webhook missed → cron fetches booking 1BX67140 from SB → queues same XS2 order job within 5 minutes.',
+                            'Webhook missed → cron fetches booking 1BX67140 from SB → queues same XS2 order job within 2 minutes.',
                             'Create Order API = production → cron still imports SB orders locally but skips XS2 booking creation.',
                         ],
                         'manual_command' => 'php artisan seller-api:sync-bookings',
@@ -1255,6 +1259,7 @@ class CronConfigService
             '* * * * *' => 'Every minute',
             '*/1 * * * *' => 'Every minute',
             '*/10 * * * *' => 'Every 10 minutes',
+            '*/2 * * * *' => 'Every 2 minutes',
             '*/5 * * * *' => 'Every 5 minutes',
             '0 * * * *' => 'Hourly',
             '0 0 * * *' => 'Daily',

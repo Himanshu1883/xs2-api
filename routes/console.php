@@ -91,9 +91,16 @@ if ($schedulerEnabled) {
     }
 
     if ($xs2Enabled && $sellerApiEnabled && (bool) config('xs2.sb_bookings_sync.enabled', true)) {
-        $sbBookingsInterval = max(1, min(59, (int) config('xs2.sb_bookings_sync.sync_interval_minutes', 30)));
-        Schedule::command('seller-api:sync-bookings')
-            ->cron($staggeredCron($sbBookingsInterval, 17))
+        $sbBookingsInterval = max(1, min(59, (int) config('xs2.sb_bookings_sync.sync_interval_minutes', 2)));
+        $sbBookingsSchedule = Schedule::command('seller-api:sync-bookings');
+        if ($sbBookingsInterval <= 1) {
+            $sbBookingsSchedule->everyMinute();
+        } elseif ($sbBookingsInterval === 2) {
+            $sbBookingsSchedule->everyTwoMinutes();
+        } else {
+            $sbBookingsSchedule->cron($staggeredCron($sbBookingsInterval, 17));
+        }
+        $sbBookingsSchedule
             ->withoutOverlapping($overlapMinutes)
             ->onOneServer();
     }

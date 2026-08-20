@@ -81,6 +81,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::patch('api-config/seller-api', [AdminApiConfigController::class, 'updateSellerApi']);
     Route::patch('api-config/seller-api/catalog', [AdminApiConfigController::class, 'updateSellerCatalogApi']);
     Route::patch('api-config/xs2', [AdminApiConfigController::class, 'updateXs2']);
+    Route::patch('api-config/xs2/sandbox', [AdminApiConfigController::class, 'updateXs2Sandbox']);
     Route::get('cron-config', [AdminCronConfigController::class, 'index']);
     Route::get('cron-config/logs', [AdminCronConfigController::class, 'logs']);
     Route::post('cron-config/stop-all', [AdminCronConfigController::class, 'stopAll']);

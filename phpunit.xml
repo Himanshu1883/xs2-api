@@ -30,6 +30,7 @@
         <env name="XS2_RATE_LIMIT_PACING" value="false"/>
         <env name="XS2_INCREMENTAL_SYNC_INTERVAL_MINUTES" value="30"/>
         <env name="XS2_SB_NEW_LISTING_PUBLISH_INTERVAL_MINUTES" value="1"/>
+        <env name="SB_BOOKINGS_SYNC_INTERVAL_MINUTES" value="2"/>
         <env name="XS2_SB_LISTING_INVENTORY_SYNC_INTERVAL_MINUTES" value="30"/>
         <env name="XS2_EVENTS_SYNC_SCHEDULED" value="false"/>
         <env name="DB_CONNECTION" value="sqlite"/>
