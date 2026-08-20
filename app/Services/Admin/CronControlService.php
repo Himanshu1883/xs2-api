@@ -170,9 +170,25 @@ class CronControlService
             $this->applyConfigOverrides();
         }
 
+        // stopAll() always disables the scheduler; Start All must turn it back on even when
+        // .env has APP_SCHEDULER_ENABLED=false or the pre-stop snapshot had it disabled.
+        $this->integrationSettings->set(IntegrationSettingService::APP_SCHEDULER_ENABLED, 'true');
+        config(['app.scheduler_enabled' => true]);
+
+        $restoredLowLoadMode = $previousState !== null
+            ? (bool) ($previousState['app.low_load_mode'] ?? false)
+            : false;
+
         $this->integrationSettings->set(IntegrationSettingService::CRON_CONTROL_SNAPSHOT, null);
 
         $profileResult = $this->queueProfiles->applyProfile(QueueProfileService::PROFILE_BALANCED);
+
+        // Queue profiles persist their own low_load_mode flag; restore the intended value afterward.
+        $this->integrationSettings->set(
+            IntegrationSettingService::APP_LOW_LOAD_MODE,
+            $restoredLowLoadMode ? 'true' : 'false',
+        );
+        config(['app.low_load_mode' => $restoredLowLoadMode]);
 
         return [
             'action' => 'start',

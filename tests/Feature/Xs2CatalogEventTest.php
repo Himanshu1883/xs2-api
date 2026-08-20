@@ -83,6 +83,64 @@ class Xs2CatalogEventTest extends TestCase
         $this->assertSame(1, Xs2Event::count());
     }
 
+    public function test_admin_can_fetch_second_page_of_xs2_catalog_events(): void
+    {
+        $pageOneEvents = array_map(
+            fn (int $index): array => [
+                'event_id' => "xs2-catalog-{$index}",
+                'event_name' => "Alpha FC vs Beta FC {$index}",
+                'date_start' => '2026-09-01T18:00:00',
+                'date_stop' => '2026-09-01T20:00:00',
+                'event_status' => 'notstarted',
+                'tournament_name' => 'Serie A',
+                'venue_name' => 'Stadium',
+                'city' => 'Milan',
+                'sport_type' => 'soccer',
+            ],
+            range(1, 20),
+        );
+
+        Http::fake([
+            'https://xs2.test/v1/events*page=1*' => Http::response([
+                'events' => $pageOneEvents,
+                'pagination' => ['page' => 1, 'next_page' => 2, 'total_size' => 25],
+            ]),
+            'https://xs2.test/v1/events*page=2*' => Http::response([
+                'events' => [[
+                    'event_id' => 'xs2-catalog-21',
+                    'event_name' => 'Alpha FC vs Beta FC 21',
+                    'date_start' => '2026-09-02T18:00:00',
+                    'date_stop' => '2026-09-02T20:00:00',
+                    'event_status' => 'notstarted',
+                    'tournament_name' => 'Serie A',
+                    'venue_name' => 'Stadium',
+                    'city' => 'Milan',
+                    'sport_type' => 'soccer',
+                ]],
+                'pagination' => ['page' => 2, 'total_pages' => 2, 'total_size' => 25],
+            ]),
+        ]);
+
+        $token = $this->adminToken();
+
+        $this->withToken($token)
+            ->getJson('/api/admin/xs2/catalog/events/search?sport=soccer&tournament_name=Serie+A&page=1&per_page=20')
+            ->assertOk()
+            ->assertJsonCount(20, 'data')
+            ->assertJsonPath('meta.pagination.current_page', 1)
+            ->assertJsonPath('meta.pagination.last_page', 2)
+            ->assertJsonPath('meta.pagination.total', 25);
+
+        $this->withToken($token)
+            ->getJson('/api/admin/xs2/catalog/events/search?sport=soccer&tournament_name=Serie+A&page=2&per_page=20')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.external_event_id', 'xs2-catalog-21')
+            ->assertJsonPath('meta.pagination.current_page', 2)
+            ->assertJsonPath('meta.pagination.last_page', 2)
+            ->assertJsonPath('meta.pagination.total', 25);
+    }
+
     private function adminToken(): string
     {
         $admin = User::factory()->create(['user_type' => 6]);

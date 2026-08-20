@@ -450,7 +450,7 @@ class CronConfigService
             && (bool) config('services.seller_api.enabled', true)
             && $this->sellerApiListingConfigured();
         $telemetry = app(SbNewListingPublishService::class)->telemetry();
-        $interval = max(1, min(59, (int) config('xs2.sb_new_listing_publish.sync_interval_minutes', 30)));
+        $interval = max(1, min(59, (int) config('xs2.sb_new_listing_publish.sync_interval_minutes', 1)));
         $state = $this->syncStatesByResource()[SbNewListingPublishService::SYNC_RESOURCE] ?? null;
 
         return [
@@ -460,7 +460,7 @@ class CronConfigService
                     name: 'Seats Broker new listing publish',
                     type: 'command',
                     command: 'xs2:publish-new-sb-listings',
-                    schedule: 'Every '.$interval.' minutes',
+                    schedule: $interval <= 1 ? 'Every minute' : 'Every '.$interval.' minutes',
                     scheduleDetail: 'Publishes new XS2 inventory on mapped events to Seats Broker. Runs when an event is mapped or when fresh XS2 tickets appear on an already-mapped event. Skips tickets that already have an active SB master or split listing — quantity updates are handled by the SB listing inventory sync cron.',
                     queue: (string) config('services.seller_api.queue', 'seller-api'),
                     syncResource: SbNewListingPublishService::SYNC_RESOURCE,
@@ -1252,6 +1252,8 @@ class CronConfigService
     private function humanScheduleLabel(string $expression): string
     {
         return match (trim($expression)) {
+            '* * * * *' => 'Every minute',
+            '*/1 * * * *' => 'Every minute',
             '*/10 * * * *' => 'Every 10 minutes',
             '*/5 * * * *' => 'Every 5 minutes',
             '0 * * * *' => 'Hourly',

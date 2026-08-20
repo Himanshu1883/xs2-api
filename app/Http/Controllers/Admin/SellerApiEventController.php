@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Exceptions\Integrations\SellerApiConfigurationException;
 use App\Exceptions\Integrations\SellerApiRequestException;
 use App\Http\Controllers\Controller;
+use App\Http\Requests\SellerApi\SellerApiEventBulkImportRequest;
 use App\Http\Requests\SellerApi\SellerApiEventBulkSyncRequest;
 use App\Http\Requests\SellerApi\SellerApiEventImportRequest;
 use App\Http\Requests\SellerApi\SellerApiEventSearchRequest;
@@ -201,6 +202,76 @@ class SellerApiEventController extends Controller
             'data' => $result,
             'meta' => $this->sellerApiMeta($environment, $preview['request_url'], $debug),
         ], $result['status'] === 'already_exists' ? 200 : 201);
+    }
+
+    public function bulkImport(
+        SellerApiEventBulkImportRequest $request,
+        SellerEventImportService $import,
+        SellerApiDebugRecorder $recorder,
+    ): JsonResponse {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $environment = (string) ($request->validated('environment') ?? 'sandbox');
+        /** @var list<array{event_id:string,payload?:array<string, mixed>|null}> $events */
+        $events = array_values(array_map(
+            static fn (array $item): array => [
+                'event_id' => (string) $item['event_id'],
+                'payload' => is_array($item['payload'] ?? null) ? $item['payload'] : null,
+            ],
+            $request->validated('events'),
+        ));
+        $recorder->enable();
+
+        try {
+            $result = $import->importBulk($events, $environment);
+        } catch (\Throwable $exception) {
+            return $this->sellerApiFailureResponse(
+                $import,
+                $environment,
+                $recorder->flush(),
+                $exception,
+                eventId: null,
+            );
+        }
+
+        $debug = $recorder->flush();
+        $created = (int) ($result['created'] ?? 0);
+        $skipped = (int) ($result['skipped'] ?? 0);
+        $failed = (int) ($result['failed'] ?? 0);
+        $total = count($events);
+
+        $message = match (true) {
+            $failed > 0 && ($created > 0 || $skipped > 0) => sprintf(
+                'Imported %d of %d event(s): %d added, %d already existed, %d failed.',
+                $created + $skipped,
+                $total,
+                $created,
+                $skipped,
+                $failed,
+            ),
+            $failed > 0 => sprintf('Bulk import failed for all %d selected event(s).', $total),
+            $created > 0 && $skipped > 0 => sprintf(
+                'Imported %d event(s): %d added, %d already existed.',
+                $created + $skipped,
+                $created,
+                $skipped,
+            ),
+            $created > 0 => sprintf('Added %d event(s) to the local catalogue.', $created),
+            $skipped > 0 => sprintf('All %d selected event(s) already exist locally.', $skipped),
+            default => 'No events were imported.',
+        };
+
+        $status = match (true) {
+            $failed === $total => 422,
+            $created > 0 => 201,
+            default => 200,
+        };
+
+        return response()->json([
+            'message' => $message,
+            'data' => $result,
+            'meta' => $this->sellerApiMeta($environment, '', $debug),
+        ], $status);
     }
 
     public function bulkSyncPreview(SellerApiEventBulkSyncRequest $request, SellerEventImportService $import): JsonResponse

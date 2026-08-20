@@ -357,6 +357,83 @@ class SellerApiEventImportTest extends TestCase
             ->assertJsonPath('data.status', 'already_exists');
     }
 
+    public function test_bulk_import_creates_new_events_and_skips_existing(): void
+    {
+        $existingEventId = SeatsbrokerCatalogId::hash(11411);
+        $newEventId = SeatsbrokerCatalogId::hash(11413);
+        $stadiumId = 1582;
+        $teamA = 9003;
+        $tournamentId = 78;
+
+        DB::table('match_info')->insert([
+            'm_id' => 11411,
+            'match_name' => 'Already Imported',
+            'team_1' => '0',
+            'team_2' => '0',
+            'match_date' => '2026-08-08 01:00:00',
+            'match_time' => '01:00',
+            'tournament' => (string) $tournamentId,
+            'venue' => $stadiumId,
+            'upcoming_events' => 0,
+            'status' => '1',
+            'create_date' => (string) time(),
+            'slug' => 'already-imported',
+            'event_type' => 'match',
+        ]);
+
+        Http::fake([
+            'https://externalapi.test/api/events*event_id*' => Http::response([
+                'data' => [[
+                    'event_id' => $newEventId,
+                    'tournament_id' => SeatsbrokerCatalogId::hash($tournamentId),
+                    'stadium_id' => SeatsbrokerCatalogId::hash($stadiumId),
+                    'team_image_a' => null,
+                    'team_image_b' => null,
+                    'match_name' => 'Bulk Import Event',
+                    'team_name_a' => 'Bulk Team',
+                    'team_name_b' => null,
+                    'team_id_a' => SeatsbrokerCatalogId::hash($teamA),
+                    'team_id_b' => null,
+                    'match_date' => '2026-08-09 01:00:00',
+                    'match_time' => '01:00',
+                    'event_type' => 'match',
+                    'category_name' => 'Football',
+                    'tournament_name' => 'Bulk League',
+                    'stadium_name' => 'Bulk Stadium',
+                    'stadium_image' => null,
+                    'country_name' => 'Spain',
+                    'city_name' => 'Madrid',
+                ]],
+                'meta' => ['current_page' => 1, 'last_page' => 1],
+            ]),
+            'https://externalapi.test/api/venues*' => Http::response([
+                'data' => [],
+                'meta' => ['current_page' => 1, 'last_page' => 1],
+            ]),
+        ]);
+
+        $token = $this->adminToken();
+
+        $this->withToken($token)
+            ->postJson('/api/admin/seller-api/events/bulk-import', [
+                'environment' => 'production',
+                'events' => [
+                    ['event_id' => $existingEventId],
+                    ['event_id' => $newEventId],
+                ],
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.created', 1)
+            ->assertJsonPath('data.skipped', 1)
+            ->assertJsonPath('data.failed', 0)
+            ->assertJsonCount(2, 'data.results');
+
+        $this->assertDatabaseHas('match_info', [
+            'm_id' => 11413,
+            'match_name' => 'Bulk Import Event',
+        ]);
+    }
+
     public function test_import_normalizes_doubled_team_image_urls(): void
     {
         $eventId = SeatsbrokerCatalogId::hash(11412);

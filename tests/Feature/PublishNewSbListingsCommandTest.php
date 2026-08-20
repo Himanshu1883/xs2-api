@@ -86,7 +86,8 @@ class PublishNewSbListingsCommandTest extends TestCase
         $this->assertNotNull($task);
         $this->assertSame('xs2:publish-new-sb-listings', $task['command']);
         $this->assertSame('sb', $task['category']);
-        $this->assertSame('7,37 * * * *', $task['expression']);
+        $this->assertSame('* * * * *', $task['expression']);
+        $this->assertSame('Every minute', $task['schedule']);
         $this->assertArrayHasKey('what_it_does', $task['extra']);
         $this->assertArrayHasKey('does_not_do', $task['extra']);
         $this->assertArrayHasKey('algorithm', $task['extra']);

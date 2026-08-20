@@ -21,6 +21,7 @@ class Xs2CatalogController extends Controller
             'sport' => ['nullable', 'string', 'max:50'],
             'tournament_name' => ['nullable', 'string', 'max:255'],
             'search' => ['nullable', 'string', 'max:255'],
+            'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
         ]);
 
@@ -30,6 +31,7 @@ class Xs2CatalogController extends Controller
                 (string) ($validated['sport'] ?? ''),
                 $validated['tournament_name'] ?? null,
                 $validated['search'] ?? null,
+                (int) ($validated['page'] ?? 1),
                 (int) ($validated['per_page'] ?? 20),
             ),
         ]);

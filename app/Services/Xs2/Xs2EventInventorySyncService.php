@@ -58,7 +58,11 @@ class Xs2EventInventorySyncService
 
         try {
             if (! $event->isSellable()) {
-                $summary['tickets_disabled'] = $this->disableEventTickets($event);
+                if (! $this->pipelineStrict()) {
+                    $summary['tickets_disabled'] = $this->disableEventTickets($event);
+                } else {
+                    $summary['tickets_disabled'] = $event->tickets()->count();
+                }
                 $state->update([
                     'tickets_next_sync_at' => null,
                     'tickets_sync_status' => 'completed',
@@ -130,7 +134,19 @@ class Xs2EventInventorySyncService
                 $summary[$result['action']]++;
 
                 $mappingState = $this->mappingStates->resolve($result['ticket']);
-                if ($this->canPublishListing($mappingState->mapping_status, $result['ticket'])) {
+                if ($this->pipelineStrict()) {
+                    if ($this->canPublishListing($mappingState->mapping_status, $result['ticket'])) {
+                        if ($mappingState->mapping_status === 'ready_to_publish') {
+                            $summary['tickets_ready']++;
+                        }
+                        if (! $this->isAvailable($result['ticket'], $event)) {
+                            $summary['tickets_disabled']++;
+                        }
+                    } else {
+                        $summary['tickets_pending']++;
+                        $summary['tickets_disabled']++;
+                    }
+                } elseif ($this->canPublishListing($mappingState->mapping_status, $result['ticket'])) {
                     if ($mappingState->mapping_status === 'ready_to_publish') {
                         $summary['tickets_ready']++;
                     }
@@ -144,13 +160,17 @@ class Xs2EventInventorySyncService
                     }
                 } else {
                     $summary['tickets_pending']++;
-                    $this->dispatchDisableJob($result['ticket'], $event, $mode, $summary);
+                    if (! $this->pipelineStrict()) {
+                        $this->dispatchDisableJob($result['ticket'], $event, $mode, $summary);
+                    }
                     $summary['tickets_disabled']++;
                 }
             }
 
-            if ($full) {
+            if ($full && ! $this->pipelineStrict()) {
                 $summary['tickets_disabled'] += $this->disableMissingTickets($event, $startedAt, $seen);
+            } elseif ($full) {
+                $summary['tickets_disabled'] += $this->markMissingTicketsUnavailable($event, $startedAt, $seen);
             }
 
             $state->update([
@@ -237,6 +257,39 @@ class Xs2EventInventorySyncService
         }
 
         return $count;
+    }
+
+    /** @param list<string> $seen */
+    private function markMissingTicketsUnavailable(Xs2Event $event, $startedAt, array $seen): int
+    {
+        $query = Xs2Ticket::query()
+            ->where('xs2_event_id', $event->id)
+            ->where(function ($query) use ($startedAt): void {
+                $query->whereNull('last_seen_at')->orWhere('last_seen_at', '<', $startedAt);
+            });
+        if ($seen !== []) {
+            $query->whereNotIn('external_ticket_id', $seen);
+        }
+
+        $count = 0;
+        foreach ($query->get() as $ticket) {
+            if ($ticket->ticket_status !== 'unavailable' || (int) $ticket->stock !== 0) {
+                $ticket->update([
+                    'ticket_status' => 'unavailable',
+                    'stock' => 0,
+                    'sync_status' => 'pending',
+                    'sync_error' => null,
+                ]);
+            }
+            $count++;
+        }
+
+        return $count;
+    }
+
+    private function pipelineStrict(): bool
+    {
+        return (bool) config('pipeline.strict', true);
     }
 
     private function disableEventTickets(Xs2Event $event): int

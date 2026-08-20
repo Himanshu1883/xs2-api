@@ -149,7 +149,7 @@ return [
         'enabled' => (bool) env('XS2_SB_NEW_LISTING_PUBLISH_ENABLED', true),
         'sync_interval_minutes' => max(1, min(59, (int) env(
             'XS2_SB_NEW_LISTING_PUBLISH_INTERVAL_MINUTES',
-            $lowLoadMode ? 30 : 30,
+            1,
         ))),
         'dispatch_interval_seconds' => max(1, (int) env('XS2_SB_NEW_LISTING_PUBLISH_DISPATCH_INTERVAL_SECONDS', 2)),
     ],

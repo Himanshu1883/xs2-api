@@ -17,7 +17,7 @@ class Xs2CatalogEventService
      *     sport:string,
      *     request_url:string,
      *     events:list<array<string, mixed>>,
-     *     pagination:array{current_page:int,last_page:int,per_page:int,total:int|null}
+     *     pagination:array{current_page:int,last_page:int,per_page:int,total:int}
      * }
      */
     public function search(
@@ -51,35 +51,29 @@ class Xs2CatalogEventService
             throw new \RuntimeException('XS2 events response has an unexpected collection structure.');
         }
 
-        $currentPage = max(1, (int) data_get($response, 'pagination.page', $page));
-        $lastPage = max(1, (int) data_get($response, 'pagination.total_pages', $currentPage));
-        $total = data_get($response, 'pagination.total_size');
+        $mappedEvents = array_map(
+            fn (array $event): array => $this->mapCatalogEvent($event),
+            array_values(array_filter($events, is_array(...))),
+        );
 
         return [
             'sport' => $sport,
             'request_url' => $this->client->previewEventsRequestUrl($query),
-            'events' => array_map(
-                fn (array $event): array => $this->mapCatalogEvent($event),
-                array_values(array_filter($events, is_array(...))),
-            ),
-            'pagination' => [
-                'current_page' => $currentPage,
-                'last_page' => $lastPage,
-                'per_page' => $perPage,
-                'total' => is_numeric($total) ? (int) $total : null,
-            ],
+            'events' => $mappedEvents,
+            'pagination' => $this->resolvePagination($response, $page, $perPage, count($mappedEvents)),
         ];
     }
 
     /**
      * @return array{sport:string,request_url:string,default_sport:string}
      */
-    public function preview(string $sport, ?string $tournamentName = null, ?string $search = null, int $perPage = 20): array
+    public function preview(string $sport, ?string $tournamentName = null, ?string $search = null, int $page = 1, int $perPage = 20): array
     {
         $sport = trim($sport) !== '' ? trim($sport) : $this->defaultSport();
+        $page = max(1, $page);
         $query = [
             'sport_type' => $sport,
-            'page' => 1,
+            'page' => $page,
             'page_size' => max(1, min(100, $perPage)),
         ];
 
@@ -154,5 +148,41 @@ class Xs2CatalogEventService
         )));
 
         return $sports[0] ?? 'soccer';
+    }
+
+    /**
+     * @return array{current_page:int,last_page:int,per_page:int,total:int}
+     *
+     * @param  array<string, mixed>|list<mixed>  $response
+     */
+    private function resolvePagination(array $response, int $page, int $perPage, int $eventCount): array
+    {
+        $currentPage = max(1, (int) data_get($response, 'pagination.page', data_get($response, 'page', $page)));
+        $totalPages = data_get($response, 'pagination.total_pages', data_get($response, 'total_pages'));
+        $nextPage = data_get($response, 'pagination.next_page', data_get($response, 'next_page'));
+        $totalSize = data_get($response, 'pagination.total_size', data_get($response, 'total_size'));
+
+        if (is_numeric($totalPages)) {
+            $lastPage = max(1, (int) $totalPages);
+        } elseif (is_numeric($nextPage) && (int) $nextPage > $currentPage) {
+            $lastPage = max($currentPage + 1, (int) $nextPage);
+        } elseif ($eventCount >= $perPage) {
+            $lastPage = $currentPage + 1;
+        } else {
+            $lastPage = $currentPage;
+        }
+
+        if (is_numeric($totalSize)) {
+            $total = (int) $totalSize;
+        } else {
+            $total = max(0, ($lastPage - 1) * $perPage + $eventCount);
+        }
+
+        return [
+            'current_page' => $currentPage,
+            'last_page' => $lastPage,
+            'per_page' => $perPage,
+            'total' => $total,
+        ];
     }
 }

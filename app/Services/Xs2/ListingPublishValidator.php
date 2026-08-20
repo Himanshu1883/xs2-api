@@ -80,13 +80,14 @@ class ListingPublishValidator
         $this->required(trim((string) ($payload['seller_reference'] ?? '')), 'seller_reference');
 
         $ticketCategory = $payload['ticket_category'] ?? null;
-        if (! is_int($ticketCategory) && ! (is_string($ticketCategory) && ctype_digit($ticketCategory))) {
+        $categoryName = trim((string) ($payload['category_name'] ?? ''));
+        $hasTicketCategory = (is_int($ticketCategory) || (is_string($ticketCategory) && ctype_digit($ticketCategory)))
+            && (int) $ticketCategory >= 1;
+
+        if (! $hasTicketCategory && $categoryName === '') {
             throw new ListingTransformationException(
-                'Seller API payload is missing ticket_category. Resolve the XS2 category to a Seats Broker dropdown ID before publishing.'
+                'Seller API payload is missing ticket_category or category_name.'
             );
-        }
-        if ((int) $ticketCategory < 1) {
-            throw new ListingTransformationException('Seller API ticket_category must be a positive integer.');
         }
 
         foreach (['ticket_type', 'split_type', 'seller_id'] as $field) {

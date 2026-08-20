@@ -16,6 +16,7 @@ use App\Models\Xs2Event;
 use App\Models\Xs2Ticket;
 use App\Models\Xs2TicketMappingState;
 use App\Services\Mapping\StadiumCategoryMappingService;
+use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2EventInventorySyncService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use App\Services\Xs2\Xs2TicketSyncService;
@@ -33,6 +34,7 @@ class Xs2InventorySellabilityTest extends TestCase
 
         Artisan::call('migrate:fresh', ['--force' => true]);
         $this->createSharedUsersTable();
+        config(['pipeline.strict' => false]);
     }
 
     public function test_inventory_command_syncs_future_events_and_reconciles_cancelled_or_past_events(): void
@@ -123,8 +125,11 @@ class Xs2InventorySellabilityTest extends TestCase
         $pastTicket = $this->ticket($past, 'past-ticket');
         Queue::fake();
 
-        (new ReconcileSellerListingsForMapping($cancelled->id))->handle();
-        (new ReconcileSellerListingsForMapping($past->id))->handle();
+        $mappingStates = app(Xs2TicketMappingStatusService::class);
+        $publisher = app(MappedListingPublishService::class);
+
+        (new ReconcileSellerListingsForMapping($cancelled->id))->handle($mappingStates, $publisher);
+        (new ReconcileSellerListingsForMapping($past->id))->handle($mappingStates, $publisher);
 
         Queue::assertPushed(
             DisableSellerListing::class,
@@ -161,7 +166,11 @@ class Xs2InventorySellabilityTest extends TestCase
         $categories = Mockery::mock(StadiumCategoryMappingService::class);
         Queue::fake();
 
-        (new ResolvePendingXs2Listings('category', $categoryMapping->id))->handle($states, $categories);
+        (new ResolvePendingXs2Listings('category', $categoryMapping->id))->handle(
+            $states,
+            $categories,
+            app(MappedListingPublishService::class),
+        );
 
         Queue::assertPushed(
             DisableSellerListing::class,

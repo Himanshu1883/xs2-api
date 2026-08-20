@@ -15,6 +15,7 @@ class Xs2EventInventorySyncState extends Model
             'tickets_last_incremental_sync_at' => 'datetime',
             'tickets_last_full_sync_at' => 'datetime',
             'tickets_next_sync_at' => 'datetime',
+            'last_pipeline_stage_at' => 'datetime',
         ];
     }
 

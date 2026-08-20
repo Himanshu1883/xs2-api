@@ -54,6 +54,8 @@ class Xs2SellerListingTransformer
         $listingPrice = (int) ($ticket->package_price ?? $ticket->net_rate ?? $ticket->face_value ?? 0);
         $faceValue = (int) ($ticket->face_value ?? $ticket->net_rate ?? 0);
 
+        $categoryName = $this->required($ticket->category_name, 'XS2 ticket category');
+
         return [
             // This stable supplier-facing reference is also used as the
             // idempotency key for listing creation retries.
@@ -64,9 +66,9 @@ class Xs2SellerListingTransformer
                 $this->resolveSellerTicketType($ticketForTransform)
             ),
             'quantity' => $active ? $remaining : 0,
-            'ticket_category' => $this->lookupCategoryId(
+            ...$this->resolveCategoryFields(
                 data_get($catalog, 'category', []),
-                $this->required($ticket->category_name, 'XS2 ticket category'),
+                $categoryName,
                 $mappingState,
             ),
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
@@ -121,8 +123,23 @@ class Xs2SellerListingTransformer
         return $result;
     }
 
+    /**
+     * @param  list<array<string, mixed>>  $items
+     * @return array{ticket_category: int}|array{category_name: string}
+     */
+    private function resolveCategoryFields(array $items, string $rawName, ?Xs2TicketMappingState $mappingState): array
+    {
+        $ticketCategoryId = $this->tryResolveCategoryId($items, $rawName, $mappingState);
+
+        if ($ticketCategoryId !== null) {
+            return ['ticket_category' => $ticketCategoryId];
+        }
+
+        return ['category_name' => $rawName];
+    }
+
     /** @param list<array<string, mixed>> $items */
-    private function lookupCategoryId(array $items, string $rawName, ?Xs2TicketMappingState $mappingState): int
+    private function tryResolveCategoryId(array $items, string $rawName, ?Xs2TicketMappingState $mappingState): ?int
     {
         $categoryMapping = $mappingState?->categoryMapping;
         if ($categoryMapping !== null) {
@@ -134,28 +151,14 @@ class Xs2SellerListingTransformer
             }
         }
 
-        $tried = [];
         foreach ($this->categoryCandidates($rawName, $mappingState) as $candidate) {
-            $tried[] = $candidate;
             $id = $this->findId($items, 'category_name', $candidate);
             if ($id !== null) {
                 return $id;
             }
         }
 
-        $available = collect($items)
-            ->filter(fn ($item): bool => is_array($item))
-            ->map(fn (array $item): string => trim((string) data_get($item, 'category_name', '')))
-            ->filter()
-            ->unique()
-            ->values()
-            ->implode(', ');
-
-        throw new ListingTransformationException(
-            'Could not resolve XS2 category "'.$rawName.'" to a Seats Broker ticket_category ID.'
-            .($available !== '' ? ' Available SB categories: '.$available.'.' : '')
-            .($tried !== [] ? ' Tried: '.implode(', ', $tried).'.' : '')
-        );
+        return null;
     }
 
     /** @return list<int> */

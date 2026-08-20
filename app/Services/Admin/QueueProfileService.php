@@ -30,6 +30,8 @@ class QueueProfileService
                 'recommended_use' => 'Default for fresh deploys with low_load_mode, small AWS instances, or emergency CPU relief.',
                 'workers' => [
                     'xs2_sync' => 1,
+                    'xs2_listing_gen' => 0,
+                    'xs2_reconcile' => 0,
                     'xs2_guest' => 0,
                     'xs2_mapping' => 0,
                     'seller_api' => 0,
@@ -48,6 +50,8 @@ class QueueProfileService
                 'recommended_use' => 'Steady-state production when queues stay drained and CPU headroom is available.',
                 'workers' => [
                     'xs2_sync' => 1,
+                    'xs2_listing_gen' => 1,
+                    'xs2_reconcile' => 1,
                     'xs2_guest' => 1,
                     'xs2_mapping' => 1,
                     'seller_api' => 1,
@@ -66,6 +70,8 @@ class QueueProfileService
                 'recommended_use' => 'Short catch-up windows only — disable when backpressure is active or CPU exceeds ~70%.',
                 'workers' => [
                     'xs2_sync' => 2,
+                    'xs2_listing_gen' => 1,
+                    'xs2_reconcile' => 1,
                     'xs2_guest' => 1,
                     'xs2_mapping' => 1,
                     'seller_api' => 1,
@@ -131,6 +137,8 @@ class QueueProfileService
 
         config([
             'xs2.queue_workers.xs2_sync' => max(0, (int) ($workers['xs2_sync'] ?? 1)),
+            'xs2.queue_workers.xs2_listing_gen' => max(0, (int) ($workers['xs2_listing_gen'] ?? 1)),
+            'xs2.queue_workers.xs2_reconcile' => max(0, (int) ($workers['xs2_reconcile'] ?? 1)),
             'xs2.queue_workers.xs2_guest' => max(0, (int) ($workers['xs2_guest'] ?? 1)),
             'xs2.queue_workers.xs2_mapping' => max(0, (int) ($workers['xs2_mapping'] ?? 1)),
             'xs2.queue_workers.seller_api' => max(0, (int) ($workers['seller_api'] ?? 1)),
@@ -194,6 +202,9 @@ class QueueProfileService
         $user = env('SUPERVISOR_RUN_AS', 'www-data');
 
         $programs = [
+            ['key' => 'xs2_mapping', 'queue' => (string) config('xs2.mapping_queue', 'xs2-mapping'), 'name' => 'xs2-mapping'],
+            ['key' => 'xs2_reconcile', 'queue' => (string) config('pipeline.reconcile_queue', 'xs2-reconcile'), 'name' => 'xs2-reconcile'],
+            ['key' => 'xs2_listing_gen', 'queue' => (string) config('pipeline.listing_gen_queue', 'xs2-listing-gen'), 'name' => 'xs2-listing-gen'],
             ['key' => 'xs2_sync', 'queue' => (string) config('xs2.queue', 'xs2-sync'), 'name' => 'xs2-sync'],
             ['key' => 'xs2_guest', 'queue' => (string) config('xs2.guest_queue', 'xs2-guest'), 'name' => 'xs2-guest'],
             ['key' => 'xs2_mapping', 'queue' => (string) config('xs2.mapping_queue', 'xs2-mapping'), 'name' => 'xs2-mapping'],

@@ -38,6 +38,20 @@ class QueueManagementService
                 'worker_hint' => 'php artisan queue:work --queue='.(string) config('xs2.mapping_queue', 'xs2-mapping').$options,
             ],
             [
+                'name' => 'XS2 listing generation queue',
+                'env' => 'XS2_LISTING_GEN_QUEUE',
+                'value' => (string) config('pipeline.listing_gen_queue', 'xs2-listing-gen'),
+                'workers' => max(0, (int) config('pipeline.queue_workers.xs2_listing_gen', 1)),
+                'worker_hint' => 'php artisan queue:work --queue='.(string) config('pipeline.listing_gen_queue', 'xs2-listing-gen').$options,
+            ],
+            [
+                'name' => 'XS2 reconcile queue',
+                'env' => 'XS2_RECONCILE_QUEUE',
+                'value' => (string) config('pipeline.reconcile_queue', 'xs2-reconcile'),
+                'workers' => max(0, (int) config('pipeline.queue_workers.xs2_reconcile', 1)),
+                'worker_hint' => 'php artisan queue:work --queue='.(string) config('pipeline.reconcile_queue', 'xs2-reconcile').$options,
+            ],
+            [
                 'name' => 'XS2 sync queue',
                 'env' => 'XS2_QUEUE',
                 'value' => (string) config('xs2.queue', 'xs2-sync'),

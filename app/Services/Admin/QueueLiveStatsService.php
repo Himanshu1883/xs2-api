@@ -7,6 +7,7 @@ use App\Models\ExternalListingMapping;
 use App\Models\ListingSplit;
 use App\Models\Xs2EventInventorySyncState;
 use App\Models\Xs2Ticket;
+use App\Services\Pipeline\PipelineWorkloadService;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 
@@ -18,6 +19,7 @@ class QueueLiveStatsService
         private readonly QueueManagementService $queues,
         private readonly CronExecutionLogService $executionLogs,
         private readonly CronConfigService $cronConfig,
+        private readonly PipelineWorkloadService $pipelineWorkload,
     ) {}
 
     /** @return array<string, mixed> */
@@ -45,6 +47,7 @@ class QueueLiveStatsService
                 'failed' => (int) ($queueSnapshot['totals']['failed'] ?? 0),
             ],
             'recent_execution_logs' => $this->recentExecutionLogs(10, $taskNames),
+            'pipeline' => $this->pipelineWorkload->snapshot(),
         ];
     }
 

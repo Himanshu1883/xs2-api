@@ -7,6 +7,7 @@ use App\Http\Controllers\Admin\AdminUserController;
 use App\Http\Controllers\Admin\AdminListingPublishRulesController;
 use App\Http\Controllers\Admin\AdminCronConfigController;
 use App\Http\Controllers\Admin\AdminCronJobController;
+use App\Http\Controllers\Admin\AdminPipelineController;
 use App\Http\Controllers\Admin\AdminQueueController;
 use App\Http\Controllers\Admin\AdminEventCatalogController;
 use App\Http\Controllers\Admin\AdminEventSearchController;
@@ -95,6 +96,10 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::post('settings/listing-publish-rules/preview', [AdminListingPublishRulesController::class, 'preview']);
     Route::post('xs2/cron/sync-inventory-by-league', [AdminCronConfigController::class, 'syncInventoryByLeague']);
     Route::get('queue/live-stats', [AdminQueueController::class, 'liveStats']);
+    Route::get('pipeline/workload', [AdminPipelineController::class, 'workload']);
+    Route::get('pipeline/runs', [AdminPipelineController::class, 'runs']);
+    Route::get('pipeline/runs/{correlationId}', [AdminPipelineController::class, 'showRun']);
+    Route::get('pipeline/events/{xs2EventId}/status', [AdminPipelineController::class, 'eventStatus'])->whereNumber('xs2EventId');
     Route::get('queues', [AdminQueueController::class, 'index']);
     Route::get('queues/failed-jobs', [AdminQueueController::class, 'failedJobs']);
     Route::post('queues/failed-jobs/retry-all', [AdminQueueController::class, 'retryAllFailedJobs']);
@@ -110,6 +115,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('seller-api/events/search-by-tournament', [SellerApiEventController::class, 'searchByTournament']);
     Route::get('seller-api/events/import/preview', [SellerApiEventController::class, 'importPreview']);
     Route::post('seller-api/events/import', [SellerApiEventController::class, 'import']);
+    Route::post('seller-api/events/bulk-import', [SellerApiEventController::class, 'bulkImport']);
     Route::get('seller-api/events/bulk-sync/preview', [SellerApiEventController::class, 'bulkSyncPreview']);
     Route::post('seller-api/events/bulk-sync', [SellerApiEventController::class, 'bulkSync']);
     Route::get('seller-api/events/bulk-sync/{syncId}', [SellerApiEventController::class, 'bulkSyncStatus']);

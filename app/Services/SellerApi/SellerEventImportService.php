@@ -335,6 +335,63 @@ class SellerEventImportService
         });
     }
 
+    /**
+     * @param  list<array{event_id:string,payload?:array<string, mixed>|null}>  $events
+     * @return array{
+     *     created:int,
+     *     skipped:int,
+     *     failed:int,
+     *     results:list<array<string, mixed>>,
+     *     errors:list<array{event_id:string,message:string}>
+     * }
+     */
+    public function importBulk(array $events, string $environment = 'sandbox'): array
+    {
+        $environment = $this->normalizeCatalogEnvironment($environment);
+        $created = 0;
+        $skipped = 0;
+        $failed = 0;
+        /** @var list<array<string, mixed>> $results */
+        $results = [];
+        /** @var list<array{event_id:string,message:string}> $errors */
+        $errors = [];
+
+        foreach ($events as $item) {
+            $eventId = trim((string) ($item['event_id'] ?? ''));
+            if ($eventId === '') {
+                continue;
+            }
+
+            $payload = is_array($item['payload'] ?? null) ? $item['payload'] : null;
+
+            try {
+                $result = $this->import($eventId, $payload, $environment);
+                $results[] = $result;
+
+                if (($result['status'] ?? null) === 'already_exists') {
+                    $skipped++;
+                } else {
+                    $created++;
+                }
+            } catch (\Throwable $exception) {
+                $failed++;
+                $message = trim($exception->getMessage());
+                $errors[] = [
+                    'event_id' => $eventId,
+                    'message' => $message !== '' ? $message : 'Import failed.',
+                ];
+            }
+        }
+
+        return [
+            'created' => $created,
+            'skipped' => $skipped,
+            'failed' => $failed,
+            'results' => $results,
+            'errors' => $errors,
+        ];
+    }
+
     public function forgetCatalogCache(): void
     {
         Cache::forget(self::CATALOG_CACHE_KEY);

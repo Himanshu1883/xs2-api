@@ -78,9 +78,14 @@ if ($schedulerEnabled) {
     }
 
     if ($xs2Enabled && $sellerApiEnabled && (bool) config('xs2.sb_new_listing_publish.enabled', true)) {
-        $sbPublishInterval = max(1, min(59, (int) config('xs2.sb_new_listing_publish.sync_interval_minutes', 30)));
-        Schedule::command('xs2:publish-new-sb-listings')
-            ->cron($staggeredCron($sbPublishInterval, 7))
+        $sbPublishInterval = max(1, min(59, (int) config('xs2.sb_new_listing_publish.sync_interval_minutes', 1)));
+        $sbPublishSchedule = Schedule::command('xs2:publish-new-sb-listings');
+        if ($sbPublishInterval <= 1) {
+            $sbPublishSchedule->everyMinute();
+        } else {
+            $sbPublishSchedule->cron($staggeredCron($sbPublishInterval, 7));
+        }
+        $sbPublishSchedule
             ->withoutOverlapping($overlapMinutes)
             ->onOneServer();
     }

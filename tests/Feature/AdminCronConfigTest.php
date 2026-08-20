@@ -147,6 +147,36 @@ class AdminCronConfigTest extends TestCase
             ->assertJsonPath('data.snapshot.scheduler.scheduler_enabled', true);
     }
 
+    public function test_start_all_enables_scheduler_even_when_env_default_is_false(): void
+    {
+        config()->set('app.scheduler_enabled', false);
+        config()->set('app.low_load_mode', false);
+        config()->set('xs2.enabled', true);
+
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('cron-start-all-env-false-test')->plainTextToken;
+
+        $this->withToken($token)
+            ->postJson('/api/admin/cron-config/stop-all', ['stop_queues' => false])
+            ->assertOk()
+            ->assertJsonPath('data.scheduler_enabled', false);
+
+        $this->withToken($token)
+            ->postJson('/api/admin/cron-config/start-all')
+            ->assertOk()
+            ->assertJsonPath('message', 'Scheduled crons re-enabled. Queue workers must be restarted manually if they were stopped.')
+            ->assertJsonPath('data.scheduler_enabled', true)
+            ->assertJsonPath('data.low_load_mode', false)
+            ->assertJsonPath('data.snapshot.scheduler.scheduler_enabled', true);
+
+        $this->assertSame(
+            'true',
+            app(\App\Services\Admin\IntegrationSettingService::class)->value(
+                \App\Services\Admin\IntegrationSettingService::APP_SCHEDULER_ENABLED,
+            ),
+        );
+    }
+
     public function test_stop_all_crons_also_stops_queue_workers(): void
     {
         Schema::dropIfExists('jobs');

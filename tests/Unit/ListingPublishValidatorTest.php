@@ -21,10 +21,10 @@ class ListingPublishValidatorTest extends TestCase
         $this->validator = app(ListingPublishValidator::class);
     }
 
-    public function test_validate_payload_rejects_missing_ticket_category(): void
+    public function test_validate_payload_rejects_missing_category_fields(): void
     {
         $this->expectException(ListingTransformationException::class);
-        $this->expectExceptionMessage('ticket_category');
+        $this->expectExceptionMessage('ticket_category or category_name');
 
         $this->validator->validatePayload([
             'match_id' => 45,
@@ -35,6 +35,22 @@ class ListingPublishValidatorTest extends TestCase
             'quantity' => 2,
             'price' => '100.00',
         ]);
+    }
+
+    public function test_validate_payload_accepts_category_name_without_ticket_category(): void
+    {
+        $this->validator->validatePayload([
+            'match_id' => 45,
+            'seller_reference' => 'XS2-ref-1',
+            'category_name' => 'Corner',
+            'ticket_type' => 2,
+            'split_type' => 3,
+            'seller_id' => 77,
+            'quantity' => 2,
+            'price' => '100.00',
+        ]);
+
+        $this->addToAssertionCount(1);
     }
 
     public function test_validate_payload_accepts_integer_ticket_category(): void
