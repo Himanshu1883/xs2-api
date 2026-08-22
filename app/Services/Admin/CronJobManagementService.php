@@ -94,11 +94,8 @@ class CronJobManagementService
             ]);
         }
 
-        if (! (bool) ($task['enabled'] ?? true)) {
-            throw ValidationException::withMessages([
-                'cron_job_id' => ['This cron job is disabled by configuration.'],
-            ]);
-        }
+        // Manual "Run now" is always allowed regardless of enabled/disabled state.
+        // This lets users test individual crons while the scheduler is stopped.
 
         if (! $this->supportsRunNow($cronJobId)) {
             throw ValidationException::withMessages([
