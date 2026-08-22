@@ -12,6 +12,11 @@ return [
     'dispatch_window_minutes' => max(1, (int) env('PIPELINE_DISPATCH_WINDOW_MINUTES', 30)),
     'reconcile_delay_seconds' => max(0, (int) env('PIPELINE_RECONCILE_DELAY_SECONDS', 120)),
 
+    'staggered_dispatch' => [
+        'chunk_size' => max(1, (int) env('PIPELINE_STAGGER_CHUNK_SIZE', 10)),
+        'delay_per_wave_seconds' => max(0, (int) env('PIPELINE_STAGGER_DELAY_SECONDS', 90)),
+    ],
+
     'sla_hours_before_event' => max(1, (int) env('PIPELINE_SLA_HOURS_BEFORE_EVENT', 48)),
     'stall_minutes' => max(1, (int) env('PIPELINE_STALL_MINUTES', 15)),
     'retention_days' => max(1, (int) env('PIPELINE_RETENTION_DAYS', 90)),

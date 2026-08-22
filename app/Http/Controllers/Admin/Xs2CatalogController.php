@@ -129,19 +129,32 @@ class Xs2CatalogController extends Controller
 
         $events = $request->validated('events');
         $dispatched = 0;
+        $chunkSize = (int) config('pipeline.staggered_dispatch.chunk_size', 10);
+        $delayPerWave = (int) config('pipeline.staggered_dispatch.delay_per_wave_seconds', 90);
 
         foreach ($events as $event) {
             $externalEventId = (string) $event['external_event_id'];
             $payload = $event['payload'] ?? null;
 
-            SyncXs2CatalogEventJob::dispatch($externalEventId, $payload);
+            $wave = intdiv($dispatched, $chunkSize);
+            $delaySeconds = $wave * $delayPerWave;
+
+            SyncXs2CatalogEventJob::dispatch($externalEventId, $payload)
+                ->delay(now()->addSeconds($delaySeconds));
             $dispatched++;
         }
 
+        $totalWaves = $dispatched > 0 ? intdiv($dispatched - 1, $chunkSize) + 1 : 0;
+        $estimatedSeconds = $totalWaves > 1 ? ($totalWaves - 1) * $delayPerWave : 0;
+
         return response()->json([
-            'message' => sprintf('%d event sync job(s) have been queued.', $dispatched),
+            'message' => sprintf('%d event sync job(s) have been queued in %d wave(s).', $dispatched, $totalWaves),
             'data' => [
                 'queued' => $dispatched,
+                'waves' => $totalWaves,
+                'chunk_size' => $chunkSize,
+                'delay_per_wave_seconds' => $delayPerWave,
+                'estimated_completion_seconds' => $estimatedSeconds,
             ],
         ], 202);
     }

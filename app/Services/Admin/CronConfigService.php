@@ -167,7 +167,8 @@ class CronConfigService
         $queued = 0;
         $skippedUnsellable = 0;
         $queuedMappingIds = [];
-        $firstDispatchAt = now();
+        $chunkSize = (int) config('pipeline.staggered_dispatch.chunk_size', 10);
+        $delayPerWave = (int) config('pipeline.staggered_dispatch.delay_per_wave_seconds', 90);
 
         foreach ($mappings as $mapping) {
             $event = $mapping->xs2Event;
@@ -181,13 +182,18 @@ class CronConfigService
                 continue;
             }
 
+            $wave = intdiv($queued, $chunkSize);
+            $delaySeconds = $wave * $delayPerWave;
+
             SyncXs2EventInventory::dispatch($mapping->id, $mode, true)
-                ->delay($firstDispatchAt->copy()->addSeconds($queued * $dispatchSpacingSeconds));
+                ->delay(now()->addSeconds($delaySeconds));
             $queuedMappingIds[] = $mapping->id;
             $queued++;
         }
 
         $progress = $this->leagueInventoryProgress($tournament, $queuedMappingIds);
+        $totalWaves = $queued > 0 ? intdiv($queued - 1, $chunkSize) + 1 : 0;
+        $estimatedSeconds = $totalWaves > 1 ? ($totalWaves - 1) * $delayPerWave : 0;
 
         return [
             'tournament' => $tournament,
@@ -201,6 +207,10 @@ class CronConfigService
             'worker_hint' => 'php artisan queue:work --queue='.(string) config('xs2.queue', 'xs2-sync'),
             'mapping_ids' => $queuedMappingIds,
             'progress' => $progress,
+            'waves' => $totalWaves,
+            'chunk_size' => $chunkSize,
+            'delay_per_wave_seconds' => $delayPerWave,
+            'estimated_completion_seconds' => $estimatedSeconds,
         ];
     }
 

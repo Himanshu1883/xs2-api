@@ -102,7 +102,13 @@ class SyncXs2InventoryCommand extends Command
 
         $scopeLabel = $scope === 'tickets' ? ' (tickets-only)' : '';
         $correlation = $run?->correlation_id;
-        $this->info("Queued {$count} XS2 inventory synchronization job(s){$scopeLabel}.");
+        $waves = (int) ($result['waves'] ?? 0);
+        $chunkSize = (int) ($result['chunk_size'] ?? 10);
+        $delayPerWave = (int) ($result['delay_per_wave_seconds'] ?? 90);
+        $estimatedSeconds = (int) ($result['estimated_completion_seconds'] ?? 0);
+
+        $this->info("Queued {$count} XS2 inventory synchronization job(s){$scopeLabel} in {$waves} wave(s).");
+        $this->info("Chunk size: {$chunkSize}, delay per wave: {$delayPerWave}s, estimated completion: {$estimatedSeconds}s.");
         if ($correlation) {
             $this->info("Pipeline correlation: {$correlation}");
         }

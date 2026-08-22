@@ -30,7 +30,6 @@ class SyncXs2TicketsCommand extends Command
 
         $dispatchBudget = $this->queueDispatchBudget();
         $mode = $this->option('mode') === 'full' ? 'full' : 'incremental';
-        $dispatchSpacingSeconds = $this->dispatchSpacingSeconds();
         $count = 0;
         $reconciliationCount = 0;
 
@@ -72,6 +71,9 @@ class SyncXs2TicketsCommand extends Command
             });
         }
 
+        $chunkSize = (int) config('pipeline.staggered_dispatch.chunk_size', 10);
+        $delayPerWave = (int) config('pipeline.staggered_dispatch.delay_per_wave_seconds', 90);
+
         foreach ($syncQuery->get() as $event) {
             if ($count >= $dispatchBudget) {
                 $this->warn("Dispatch budget reached ({$dispatchBudget} jobs). Remaining events will sync on the next run.");
@@ -86,12 +88,19 @@ class SyncXs2TicketsCommand extends Command
                 continue;
             }
 
+            $wave = intdiv($count, $chunkSize);
+            $delaySeconds = $wave * $delayPerWave;
+
             SyncXs2EventInventory::dispatch($event->id, $mode, false, 'tickets')
-                ->delay(now()->addSeconds($count * $dispatchSpacingSeconds));
+                ->delay(now()->addSeconds($delaySeconds));
             $count++;
         }
 
-        $this->info("Queued {$count} XS2 ticket synchronization job(s) (tickets-only).");
+        $totalWaves = $count > 0 ? intdiv($count - 1, $chunkSize) + 1 : 0;
+        $estimatedSeconds = $totalWaves > 1 ? ($totalWaves - 1) * $delayPerWave : 0;
+
+        $this->info("Queued {$count} XS2 ticket synchronization job(s) (tickets-only) in {$totalWaves} wave(s).");
+        $this->info("Chunk size: {$chunkSize}, delay per wave: {$delayPerWave}s, estimated completion: {$estimatedSeconds}s.");
         if ($reconciliationCount > 0) {
             $this->info("Queued {$reconciliationCount} Seller listing reconciliation job(s) for unavailable XS2 events.");
         }
@@ -99,12 +108,4 @@ class SyncXs2TicketsCommand extends Command
         return self::SUCCESS;
     }
 
-    private function dispatchSpacingSeconds(): int
-    {
-        if ($this->option('bulk')) {
-            return max(0, (int) config('xs2.bulk_import_dispatch_interval_seconds', 0));
-        }
-
-        return 1;
-    }
 }

@@ -9,6 +9,7 @@ use App\Models\PipelineRun;
 use App\Models\Xs2Event;
 use App\Services\Admin\QueueBackpressureService;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 
 class InventorySchedulerService
 {
@@ -24,7 +25,11 @@ class InventorySchedulerService
      *     pipeline_run: PipelineRun|null,
      *     dispatched: int,
      *     skipped_backpressure: bool,
-     *     reconciliation_count: int
+     *     reconciliation_count: int,
+     *     waves: int,
+     *     chunk_size: int,
+     *     delay_per_wave_seconds: int,
+     *     estimated_completion_seconds: int
      * }
      */
     public function dispatchDueEvents(
@@ -44,6 +49,10 @@ class InventorySchedulerService
                 'dispatched' => 0,
                 'skipped_backpressure' => true,
                 'reconciliation_count' => 0,
+                'waves' => 0,
+                'chunk_size' => 0,
+                'delay_per_wave_seconds' => 0,
+                'estimated_completion_seconds' => 0,
             ];
         }
 
@@ -54,15 +63,12 @@ class InventorySchedulerService
         $run = $this->pipelineRuns->start($trigger, $mode, $events->count());
 
         $dispatched = 0;
-        $total = $toDispatch->count();
-        $firstDispatchAt = now();
+        $chunkSize = (int) config('pipeline.staggered_dispatch.chunk_size', 10);
+        $delayPerWave = (int) config('pipeline.staggered_dispatch.delay_per_wave_seconds', 90);
 
         foreach ($toDispatch as $index => $event) {
-            $delaySeconds = $force
-                ? 0
-                : ($bulk
-                    ? max(0, (int) config('xs2.bulk_import_dispatch_interval_seconds', 0)) * $index
-                    : $this->priorityDelaySeconds($event, $index, $total));
+            $wave = intdiv($index, $chunkSize);
+            $delaySeconds = $wave * $delayPerWave;
 
             SyncXs2EventInventory::dispatch(
                 $event->id,
@@ -71,7 +77,7 @@ class InventorySchedulerService
                 $scope,
                 $run->id,
                 $run->correlation_id,
-            )->delay($firstDispatchAt->copy()->addSeconds($delaySeconds));
+            )->delay(now()->addSeconds($delaySeconds));
 
             $this->pipelineSteps->queue(
                 $run,
@@ -85,11 +91,29 @@ class InventorySchedulerService
 
         $this->pipelineRuns->recordDispatch($run, $dispatched);
 
+        $totalWaves = $dispatched > 0 ? intdiv($dispatched - 1, $chunkSize) + 1 : 0;
+        $estimatedSeconds = $totalWaves > 1 ? ($totalWaves - 1) * $delayPerWave : 0;
+
+        Log::info('[InventoryScheduler] Staggered dispatch complete', [
+            'mode' => $mode,
+            'trigger' => $trigger,
+            'dispatched' => $dispatched,
+            'waves' => $totalWaves,
+            'chunk_size' => $chunkSize,
+            'delay_per_wave_seconds' => $delayPerWave,
+            'estimated_completion_seconds' => $estimatedSeconds,
+            'correlation_id' => $run->correlation_id,
+        ]);
+
         return [
             'pipeline_run' => $run,
             'dispatched' => $dispatched,
             'skipped_backpressure' => false,
             'reconciliation_count' => 0,
+            'waves' => $totalWaves,
+            'chunk_size' => $chunkSize,
+            'delay_per_wave_seconds' => $delayPerWave,
+            'estimated_completion_seconds' => $estimatedSeconds,
         ];
     }
 
