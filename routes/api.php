@@ -143,6 +143,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
         Route::get('catalog/events/preview', [Xs2CatalogController::class, 'previewEvents']);
         Route::get('catalog/events/search', [Xs2CatalogController::class, 'searchEvents']);
         Route::post('catalog/events/sync', [Xs2CatalogController::class, 'syncEvent']);
+        Route::post('catalog/events/bulk-sync', [Xs2CatalogController::class, 'bulkSyncEvents']);
         Route::post('sync-venues', [Xs2SyncController::class, 'queueVenues']);
         Route::post('sync-categories', [Xs2SyncController::class, 'queueCategories']);
         Route::get('event-mappings/summary', [Xs2EventMappingController::class, 'summary']);

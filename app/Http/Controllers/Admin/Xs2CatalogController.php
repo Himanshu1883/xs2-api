@@ -3,8 +3,10 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Xs2\Xs2CatalogBulkSyncRequest;
 use App\Http\Requests\Xs2\Xs2CatalogEventSearchRequest;
 use App\Http\Requests\Xs2\Xs2CatalogEventSyncRequest;
+use App\Jobs\SyncXs2CatalogEventJob;
 use App\Models\EventMapping;
 use App\Services\Xs2\Xs2ApiDebugRecorder;
 use App\Services\Xs2\Xs2CatalogEventService;
@@ -119,5 +121,28 @@ class Xs2CatalogController extends Controller
                 'xs2_api_debug' => $debug,
             ],
         ], 201);
+    }
+
+    public function bulkSyncEvents(Xs2CatalogBulkSyncRequest $request): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $events = $request->validated('events');
+        $dispatched = 0;
+
+        foreach ($events as $event) {
+            $externalEventId = (string) $event['external_event_id'];
+            $payload = $event['payload'] ?? null;
+
+            SyncXs2CatalogEventJob::dispatch($externalEventId, $payload);
+            $dispatched++;
+        }
+
+        return response()->json([
+            'message' => sprintf('%d event sync job(s) have been queued.', $dispatched),
+            'data' => [
+                'queued' => $dispatched,
+            ],
+        ], 202);
     }
 }
