@@ -20,6 +20,8 @@ RUN apt-get update \
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
+ENV COMPOSER_ALLOW_SUPERUSER=1
+
 WORKDIR /app
 
 COPY composer.json composer.lock ./
@@ -31,7 +33,8 @@ RUN composer install \
     --no-interaction
 
 COPY . .
-RUN rm -f bootstrap/cache/packages.php bootstrap/cache/services.php bootstrap/cache/config.php bootstrap/cache/routes-v7.php \
+RUN touch .env \
+    && rm -f bootstrap/cache/packages.php bootstrap/cache/services.php bootstrap/cache/config.php bootstrap/cache/routes-v7.php \
     && composer dump-autoload --optimize --no-dev \
     && php artisan package:discover --ansi \
     && mkdir -p \
