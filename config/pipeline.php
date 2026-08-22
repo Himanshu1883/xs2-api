@@ -14,7 +14,7 @@ return [
 
     'staggered_dispatch' => [
         'chunk_size' => max(1, (int) env('PIPELINE_STAGGER_CHUNK_SIZE', 10)),
-        'delay_per_wave_seconds' => max(0, (int) env('PIPELINE_STAGGER_DELAY_SECONDS', 90)),
+        'delay_per_wave_seconds' => max(0, (int) env('PIPELINE_STAGGER_DELAY_SECONDS', 10)),
     ],
 
     'sla_hours_before_event' => max(1, (int) env('PIPELINE_SLA_HOURS_BEFORE_EVENT', 48)),
