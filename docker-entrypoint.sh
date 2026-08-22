@@ -15,6 +15,9 @@ fi
 
 php artisan route:cache --no-ansi
 
+# Clear stale queue restart signals (left by admin "Stop" button clicks)
+php artisan cache:forget illuminate:queue:restart 2>/dev/null || true
+
 # Start queue worker in background — restart loop so it survives max-jobs/max-time exits
 (while true; do
   php artisan queue:work --queue=xs2-mapping,xs2-reconcile,xs2-listing-gen,xs2-sync,seller-api,xs2-guest,default --tries=3 --timeout=300 --sleep=3 --max-jobs=500 --max-time=3600
