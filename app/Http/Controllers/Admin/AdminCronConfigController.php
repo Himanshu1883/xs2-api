@@ -98,6 +98,27 @@ class AdminCronConfigController extends Controller
         ]);
     }
 
+    public function toggleSbOrderSync(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $validated = $request->validate([
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        $enabled = (bool) $validated['enabled'];
+        $settings = app(\App\Services\Admin\IntegrationSettingService::class);
+        $settings->set(\App\Services\Admin\IntegrationSettingService::SB_BOOKINGS_SYNC_ENABLED, $enabled ? 'true' : 'false');
+        config(['xs2.sb_bookings_sync.enabled' => $enabled]);
+
+        return response()->json([
+            'message' => $enabled
+                ? 'SB order sync enabled.'
+                : 'SB order sync disabled.',
+            'data' => ['enabled' => $enabled],
+        ]);
+    }
+
     public function startAll(): JsonResponse
     {
         $this->authorize('viewAny', EventMapping::class);
