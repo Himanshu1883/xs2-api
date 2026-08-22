@@ -1892,7 +1892,7 @@ class Xs2InventoryMappingTest extends TestCase
         );
 
         $this->assertSame('Category 1', $payload['category_name']);
-        $this->assertSame('Category 1', $payload['ticket_category']);
+        $this->assertSame(16, $payload['ticket_category']);
     }
 
     public function test_transformer_sends_xs2_category_name_instead_of_mapped_candidate_id(): void
@@ -1943,7 +1943,7 @@ class Xs2InventoryMappingTest extends TestCase
         );
 
         $this->assertSame('Matchday Premium', $payload['category_name']);
-        $this->assertSame('Matchday Premium', $payload['ticket_category']);
+        $this->assertSame(22, $payload['ticket_category']);
     }
 
     public function test_transformer_sends_xs2_category_name_when_dropdown_does_not_match_pending_mapping(): void
@@ -1988,7 +1988,7 @@ class Xs2InventoryMappingTest extends TestCase
         );
 
         $this->assertSame('Longside Upper', $payload['category_name']);
-        $this->assertSame('Longside Upper', $payload['ticket_category']);
+        $this->assertSame(4, $payload['ticket_category']);
     }
 
     public function test_transformer_sends_xs2_category_name_when_category_mapping_is_pending_and_dropdown_matches(): void
@@ -2032,7 +2032,7 @@ class Xs2InventoryMappingTest extends TestCase
         );
 
         $this->assertSame('Longside Upper', $payload['category_name']);
-        $this->assertSame('Longside Upper', $payload['ticket_category']);
+        $this->assertSame(4, $payload['ticket_category']);
     }
 
     public function test_transformer_sends_xs2_category_name_not_mapped_seat_id_when_raw_name_differs(): void
@@ -2087,7 +2087,7 @@ class Xs2InventoryMappingTest extends TestCase
         );
 
         $this->assertSame('Lateral', $payload['category_name']);
-        $this->assertSame('Lateral', $payload['ticket_category']);
+        $this->assertSame(4, $payload['ticket_category']);
     }
 
     public function test_can_auto_publish_with_pending_category_mapping_when_category_name_exists(): void
@@ -2186,8 +2186,8 @@ class Xs2InventoryMappingTest extends TestCase
 
         $this->assertSame('Longside Upper', $mappedPayload['category_name']);
         $this->assertSame('Longside Upper', $fallbackPayload['category_name']);
-        $this->assertSame('Longside Upper', $mappedPayload['ticket_category']);
-        $this->assertSame('Longside Upper', $fallbackPayload['ticket_category']);
+        $this->assertSame(4, $mappedPayload['ticket_category']);
+        $this->assertSame(4, $fallbackPayload['ticket_category']);
         $this->assertSame($mappedPayload, $fallbackPayload);
     }
 
@@ -2237,7 +2237,7 @@ class Xs2InventoryMappingTest extends TestCase
         );
 
         $this->assertSame('Matchday Premium', $payload['category_name']);
-        $this->assertSame('Matchday Premium', $payload['ticket_category']);
+        $this->assertSame(22, $payload['ticket_category']);
     }
 
     public function test_transformer_sends_xs2_category_name_when_catalog_has_no_matching_category(): void
@@ -2287,7 +2287,7 @@ class Xs2InventoryMappingTest extends TestCase
         );
 
         $this->assertSame('Matchday Premium', $payload['category_name']);
-        $this->assertSame('Matchday Premium', $payload['ticket_category']);
+        $this->assertSame(1, $payload['ticket_category']);
     }
 
     public function test_transformer_sends_xs2_category_name_when_no_mapping_state_exists(): void
@@ -2318,7 +2318,7 @@ class Xs2InventoryMappingTest extends TestCase
         $payload = (new Xs2SellerListingTransformer($client))->transform($ticket, $eventMapping);
 
         $this->assertSame('Matchday Premium', $payload['category_name']);
-        $this->assertSame('Matchday Premium', $payload['ticket_category']);
+        $this->assertSame(1, $payload['ticket_category']);
     }
 
     private function masterLocation(): void

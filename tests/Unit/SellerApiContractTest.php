@@ -74,7 +74,7 @@ class SellerApiContractTest extends TestCase
             'ticket_type' => 2,
             'quantity' => 4,
             'category_name' => 'Longside Upper Tier',
-            'ticket_category' => 'Longside Upper Tier',
+            'ticket_category' => 4,
             'seller_reference' => 'XS2-xs2-ticket-1-event-45',
         ], 'XS2-xs2-ticket-1-event-45');
 
@@ -88,7 +88,7 @@ class SellerApiContractTest extends TestCase
             && collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'category_name'
                 && $part['contents'] === 'Longside Upper Tier')
             && collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'ticket_category'
-                && $part['contents'] === 'Longside Upper Tier'));
+                && (string) $part['contents'] === '4'));
     }
 
     public function test_client_does_not_retry_client_validation_failures(): void
@@ -373,7 +373,7 @@ class SellerApiContractTest extends TestCase
             'match_id' => 45,
             'ticket_type' => 2,
             'quantity' => 4,
-            'ticket_category' => 'Longside Upper Tier',
+            'ticket_category' => 4,
             'category_name' => 'Longside Upper Tier',
             'ticket_block' => '',
             'ticket_row' => '',
@@ -388,7 +388,7 @@ class SellerApiContractTest extends TestCase
         ], $payload);
     }
 
-    public function test_transformer_always_sends_xs2_category_name_not_mapped_ticket_category_id(): void
+    public function test_transformer_sends_integer_ticket_category_id_from_dropdown(): void
     {
         Cache::forget('seller-api:ticket-dropdown:45');
         $client = Mockery::mock(SellerApiClient::class);
@@ -424,8 +424,8 @@ class SellerApiContractTest extends TestCase
 
         $this->assertSame('Longside Upper Tier', $mappedPayload['category_name']);
         $this->assertSame('Longside Upper Tier', $fallbackPayload['category_name']);
-        $this->assertSame('Longside Upper Tier', $mappedPayload['ticket_category']);
-        $this->assertSame('Longside Upper Tier', $fallbackPayload['ticket_category']);
+        $this->assertSame(4, $mappedPayload['ticket_category']);
+        $this->assertSame(4, $fallbackPayload['ticket_category']);
         $this->assertSame($mappedPayload, $fallbackPayload);
     }
 
@@ -466,7 +466,7 @@ class SellerApiContractTest extends TestCase
         );
     }
 
-    public function test_transformer_sends_xs2_category_name_when_dropdown_has_no_match(): void
+    public function test_transformer_defaults_to_first_category_id_when_no_fuzzy_match(): void
     {
         Cache::forget('seller-api:ticket-dropdown:45');
         $client = Mockery::mock(SellerApiClient::class);
@@ -501,7 +501,7 @@ class SellerApiContractTest extends TestCase
         );
 
         $this->assertSame('Corner', $payload['category_name']);
-        $this->assertSame('Corner', $payload['ticket_category']);
+        $this->assertSame(1, $payload['ticket_category']);
     }
 
     #[DataProvider('unsellableEvents')]
