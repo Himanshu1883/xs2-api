@@ -15,10 +15,15 @@ fi
 
 php artisan route:cache --no-ansi
 
-# Start queue workers in background (all pipeline queues)
-php artisan queue:work --queue=xs2-mapping,xs2-reconcile,xs2-listing-gen,xs2-sync,seller-api,xs2-guest,default --tries=3 --timeout=300 --sleep=3 --max-jobs=500 --max-time=3600 &
+# Start queue worker in background — restart loop so it survives max-jobs/max-time exits
+(while true; do
+  php artisan queue:work --queue=xs2-mapping,xs2-reconcile,xs2-listing-gen,xs2-sync,seller-api,xs2-guest,default --tries=3 --timeout=300 --sleep=3 --max-jobs=500 --max-time=3600
+  echo "Queue worker exited, restarting in 2s..."
+  sleep 2
+done) &
 
 # Start scheduler in background
 php artisan schedule:work &
 
-exec php artisan serve --host=0.0.0.0 --port="${PORT:-8080}"
+# Run web server in foreground (no exec — keeps background processes alive)
+php artisan serve --host=0.0.0.0 --port="${PORT:-8080}"
