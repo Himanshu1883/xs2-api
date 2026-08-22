@@ -42,7 +42,7 @@ class Xs2SellerListingTransformer
         $ticketForTransform = $this->ticketWithOverrides($ticket, $overrides);
 
         $matchId = (int) $mapping->m_id;
-        $catalog = $this->catalog($matchId);
+        $catalog = $this->catalogOrNull($matchId);
         $remaining = array_key_exists('quantity', $overrides ?? [])
             ? max(0, (int) $overrides['quantity'])
             : $this->listingSales()->remainingQuantityForTicket($ticket);
@@ -54,19 +54,13 @@ class Xs2SellerListingTransformer
         $faceValue = (int) ($ticket->face_value ?? $ticket->net_rate ?? 0);
 
         $categoryName = $this->required($ticket->category_name, 'XS2 inventory category name');
+        $ticketTypeMapping = $this->resolveSellerTicketType($ticketForTransform);
 
         return [
-            // This stable supplier-facing reference is also used as the
-            // idempotency key for listing creation retries.
             'seller_reference' => $this->reference($ticket, $matchId, $mappingState),
             'match_id' => $matchId,
-            'ticket_type' => $this->lookupTicketTypeId(
-                data_get($catalog, 'ticket_type', []),
-                $this->resolveSellerTicketType($ticketForTransform)
-            ),
+            'ticket_type' => $this->resolveTicketTypeId($catalog, $ticketTypeMapping),
             'quantity' => $active ? $remaining : 0,
-            // SB create/update requires the ticket_category field. Always send
-            // the XS2 inventory category name — never a mapped catalog id.
             'ticket_category' => $categoryName,
             'category_name' => $categoryName,
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
@@ -75,41 +69,94 @@ class Xs2SellerListingTransformer
             'price_type' => $this->required($ticket->currency_code, 'XS2 ticket currency'),
             'price' => $this->sellerAmount($listingPrice),
             'ticket_details' => $this->ticketDetails($ticket),
-            'split_type' => $this->lookupId(
-                data_get($catalog, 'split_type', []),
-                'split_name',
-                $this->sellerSplitType($ticketForTransform)
-            ),
+            'split_type' => $this->resolveSplitTypeId($catalog, $this->sellerSplitType($ticketForTransform)),
             'facevalue' => $this->sellerAmount($faceValue),
             'seller_id' => $this->sellerApi->sellerId(),
             'status' => $active ? '1' : '0',
         ];
     }
 
-    /** @return array<string, mixed> */
-    private function catalog(int $matchId): array
+    /**
+     * Fetch the SB ticket dropdown catalog for this match. Returns null when
+     * the dropdown is unavailable (no categories on SB yet) so the transformer
+     * can fall back to config defaults and push the XS2 category name directly.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function catalogOrNull(int $matchId): ?array
     {
-        $catalog = Cache::remember(
-            "seller-api:ticket-dropdown:{$matchId}",
-            now()->addHour(),
-            fn (): array => $this->sellerApi->ticketDropdown($matchId)
-        );
+        try {
+            $catalog = Cache::remember(
+                "seller-api:ticket-dropdown:{$matchId}",
+                now()->addHour(),
+                fn (): array => $this->sellerApi->ticketDropdown($matchId)
+            );
+        } catch (\Throwable $e) {
+            \Log::channel(config('services.seller_api.log_channel', 'stack'))->info(
+                'Seller API ticket dropdown unavailable; using direct category push.',
+                ['match_id' => $matchId, 'error' => mb_substr($e->getMessage(), 0, 500)]
+            );
+
+            return null;
+        }
 
         $result = data_get($catalog, 'result');
         if (! is_array($result)) {
-            throw new ListingTransformationException('Seller API ticket dropdown response is missing result data.');
+            return null;
         }
 
         $ticketTypes = data_get($result, 'ticket_type');
         if (! is_array($ticketTypes) || $ticketTypes === []) {
             Cache::forget("seller-api:ticket-dropdown:{$matchId}");
 
-            throw new ListingTransformationException(
-                'Seller API ticket dropdown returned no ticket_type options for match '.$matchId.'.'
-            );
+            return null;
         }
 
         return $result;
+    }
+
+    /**
+     * Resolve ticket_type ID from catalog when available, otherwise use the
+     * config-mapped ID directly so publish is not blocked by missing dropdown.
+     *
+     * @param  array<string, mixed>|null  $catalog
+     * @param  array{id: int, name: string}  $mapping
+     */
+    private function resolveTicketTypeId(?array $catalog, array $mapping): int
+    {
+        if ($catalog !== null) {
+            return $this->lookupTicketTypeId(
+                data_get($catalog, 'ticket_type', []),
+                $mapping
+            );
+        }
+
+        return (int) $mapping['id'];
+    }
+
+    /**
+     * Resolve split_type ID from catalog when available, otherwise use a
+     * config default so publish is not blocked by missing dropdown.
+     */
+    private function resolveSplitTypeId(?array $catalog, string $splitName): int
+    {
+        if ($catalog !== null) {
+            return $this->lookupId(
+                data_get($catalog, 'split_type', []),
+                'split_name',
+                $splitName
+            );
+        }
+
+        $defaults = config('seller-api.split_types', []);
+        $key = $this->normalise($splitName);
+        foreach ($defaults as $entry) {
+            if (is_array($entry) && $this->normalise((string) data_get($entry, 'name', '')) === $key) {
+                return (int) data_get($entry, 'id', 1);
+            }
+        }
+
+        return (int) data_get($defaults, 'default.id', config('seller-api.split_types_default_id', 1));
     }
 
     /** @param list<array<string, mixed>> $items */

@@ -69,4 +69,17 @@ return [
             'externaltransfer' => ['id' => 6, 'name' => 'External Transfer'],
         ],
     ],
+
+    /*
+    | Fallback split_type IDs used when the SB ticket dropdown is unavailable
+    | (no categories set up for the match yet). These match the stable SB
+    | split_type enum so listings can push with the XS2 category name directly.
+    */
+    'split_types' => [
+        'default' => ['id' => 1, 'name' => 'No Preferences'],
+        'no preferences' => ['id' => 1, 'name' => 'No Preferences'],
+        'in pairs' => ['id' => 2, 'name' => 'In Pairs'],
+        'avoid leaving odd' => ['id' => 3, 'name' => 'Avoid Leaving Odd'],
+    ],
+    'split_types_default_id' => (int) env('SELLER_API_DEFAULT_SPLIT_TYPE_ID', 1),
 ];

@@ -16,8 +16,11 @@ class Xs2TicketMappingStatusService
     /** @var list<string> */
     public const AUTO_PUBLISH_STATUSES = ['ready_to_publish', 'published'];
 
+    /** @var list<string> Statuses that can be bypassed when the ticket carries an XS2 category name. */
+    public const DIRECT_CATEGORY_BYPASS_STATUSES = ['pending_category_mapping', 'pending_stadium_mapping'];
+
     /** @var list<string> */
-    public const MANUAL_PUBLISH_STATUSES = ['ready_to_publish', 'published', 'pending_category_mapping'];
+    public const MANUAL_PUBLISH_STATUSES = ['ready_to_publish', 'published', 'pending_category_mapping', 'pending_stadium_mapping'];
 
     public function autoPublishStatuses(): array
     {
@@ -41,7 +44,7 @@ class Xs2TicketMappingStatusService
 
     public function usesCategoryNameFallback(?string $status): bool
     {
-        return $status === 'pending_category_mapping';
+        return in_array($status, self::DIRECT_CATEGORY_BYPASS_STATUSES, true);
     }
 
     public function hasCategoryNameForPublish(Xs2Ticket $ticket): bool
@@ -52,9 +55,8 @@ class Xs2TicketMappingStatusService
     /**
      * Auto-publish paths (inventory sync, publish-mapped-listings) normally
      * require confirmed category mapping. When mapping is still pending but
-     * the ticket carries an XS2 category name, still attempt publish so the
-     * transformer can send that inventory category_name to Seller API. Tickets
-     * with no XS2 category name fail locally instead of calling create.
+     * the ticket carries an XS2 category name, push directly using that name
+     * as ticket_category — no dropdown or stadium-detail mapping required.
      */
     public function canAutoPublish(Xs2Ticket $ticket, ?string $status = null): bool
     {
@@ -64,7 +66,7 @@ class Xs2TicketMappingStatusService
             return true;
         }
 
-        return $status === 'pending_category_mapping'
+        return in_array($status, self::DIRECT_CATEGORY_BYPASS_STATUSES, true)
             && $this->hasCategoryNameForPublish($ticket);
     }
 
