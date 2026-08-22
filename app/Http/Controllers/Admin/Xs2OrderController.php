@@ -10,8 +10,11 @@ use App\Http\Resources\Xs2OrderResource;
 use App\Models\EventMapping;
 use App\Models\Xs2Order;
 use App\Services\Admin\ApiEnvironmentService;
+use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
+use App\Services\Xs2\Xs2OrderEticketService;
 use App\Services\Xs2\Xs2OrderSyncService;
 use Illuminate\Http\JsonResponse;
+use Symfony\Component\HttpFoundation\Response;
 
 class Xs2OrderController extends Controller
 {
@@ -26,7 +29,7 @@ class Xs2OrderController extends Controller
         $filters = $request->validated();
         $search = trim((string) ($filters['search'] ?? ''));
 
-        $query = Xs2Order::query()->with(['attendees', 'sbOrder'])->withCount('attendees');
+        $query = Xs2Order::query()->with(['attendees', 'sbOrder', 'latestGuestDataLog'])->withCount('attendees');
 
         if ($search !== '') {
             $like = '%'.$search.'%';
@@ -71,7 +74,7 @@ class Xs2OrderController extends Controller
     {
         $this->authorize('viewAny', EventMapping::class);
 
-        $xs2Order->load(['attendees', 'sbOrder'])->loadCount('attendees');
+        $xs2Order->load(['attendees', 'sbOrder', 'latestGuestDataLog', 'guestDataLogs'])->loadCount('attendees');
 
         return new Xs2OrderResource($xs2Order);
     }
@@ -107,6 +110,51 @@ class Xs2OrderController extends Controller
                 $summary['attendees'],
             ),
             'data' => $summary,
+        ]);
+    }
+
+    public function pushGuestData(Xs2Order $xs2Order, SbOrderXs2GuestDataSyncService $guestData): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $result = $guestData->pushGuestDataForXs2Order($xs2Order);
+
+        $xs2Order->load(['attendees', 'sbOrder', 'latestGuestDataLog', 'guestDataLogs'])->loadCount('attendees');
+
+        if (! ($result['synced'] ?? false)) {
+            return response()->json([
+                'message' => $result['error'] ?? $result['reason'] ?? 'Could not push guest data to the XS2 API.',
+                'data' => new Xs2OrderResource($xs2Order),
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => 'Pushed attendee details to the XS2 guest-data API.',
+            'data' => new Xs2OrderResource($xs2Order),
+        ]);
+    }
+
+    public function getTicket(Xs2Order $xs2Order, Xs2OrderEticketService $etickets): Response
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        try {
+            $result = $etickets->fetchTicket($xs2Order);
+        } catch (\RuntimeException $exception) {
+            $xs2Order->load(['attendees', 'sbOrder', 'latestGuestDataLog'])->loadCount('attendees');
+
+            return response()->json([
+                'message' => $exception->getMessage(),
+                'data' => new Xs2OrderResource($xs2Order),
+            ], 422);
+        }
+
+        $filename = str_replace(['"', "\r", "\n"], '', (string) ($result['filename'] ?? 'eticket.pdf'));
+
+        return response($result['body'], 200, [
+            'Content-Type' => $result['content_type'] ?? 'application/pdf',
+            'Content-Disposition' => 'attachment; filename="'.$filename.'"',
+            'X-Content-Type-Options' => 'nosniff',
         ]);
     }
 }

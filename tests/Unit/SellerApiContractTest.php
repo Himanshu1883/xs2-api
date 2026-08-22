@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Exceptions\Integrations\ListingTransformationException;
 use App\Exceptions\Integrations\SellerApiRequestException;
 use App\Models\EventMapping;
 use App\Models\Xs2CategoryMapping;
@@ -72,6 +73,8 @@ class SellerApiContractTest extends TestCase
             'match_id' => 45,
             'ticket_type' => 2,
             'quantity' => 4,
+            'category_name' => 'Longside Upper Tier',
+            'ticket_category' => 'Longside Upper Tier',
             'seller_reference' => 'XS2-xs2-ticket-1-event-45',
         ], 'XS2-xs2-ticket-1-event-45');
 
@@ -81,7 +84,37 @@ class SellerApiContractTest extends TestCase
             && ($request->header('apiKey')[0] ?? null) === 'seller-test-key'
             && ($request->header('Idempotency-Key')[0] ?? null) === 'XS2-xs2-ticket-1-event-45'
             && collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'seller_reference'
-                && $part['contents'] === 'XS2-xs2-ticket-1-event-45'));
+                && $part['contents'] === 'XS2-xs2-ticket-1-event-45')
+            && collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'category_name'
+                && $part['contents'] === 'Longside Upper Tier')
+            && collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'ticket_category'
+                && $part['contents'] === 'Longside Upper Tier'));
+    }
+
+    public function test_client_does_not_retry_client_validation_failures(): void
+    {
+        config()->set('services.seller_api.retry_times', 3);
+        config()->set('services.seller_api.retry_delay_ms', 1);
+
+        Http::fake([
+            'https://seller.test/api/ticket/create' => Http::response([
+                'status' => 0,
+                'message' => ['The ticket category field is required.'],
+                'result' => [],
+            ], 404),
+        ]);
+
+        try {
+            app(SellerApiClient::class)->createListing([
+                'match_id' => 45,
+                'seller_reference' => 'XS2-xs2-ticket-1-event-45',
+            ], 'XS2-xs2-ticket-1-event-45');
+            $this->fail('Expected SellerApiRequestException');
+        } catch (SellerApiRequestException $exception) {
+            $this->assertSame(404, $exception->status);
+        }
+
+        Http::assertSentCount(1);
     }
 
     public function test_client_rejects_a_create_response_without_a_listing_id(): void
@@ -340,7 +373,8 @@ class SellerApiContractTest extends TestCase
             'match_id' => 45,
             'ticket_type' => 2,
             'quantity' => 4,
-            'ticket_category' => 4,
+            'ticket_category' => 'Longside Upper Tier',
+            'category_name' => 'Longside Upper Tier',
             'ticket_block' => '',
             'ticket_row' => '',
             'home_town' => 0,
@@ -354,7 +388,7 @@ class SellerApiContractTest extends TestCase
         ], $payload);
     }
 
-    public function test_transformer_fallback_payload_matches_mapped_payload_except_category_field(): void
+    public function test_transformer_always_sends_xs2_category_name_not_mapped_ticket_category_id(): void
     {
         Cache::forget('seller-api:ticket-dropdown:45');
         $client = Mockery::mock(SellerApiClient::class);
@@ -388,11 +422,86 @@ class SellerApiContractTest extends TestCase
         $mappedPayload = $transformer->transform($ticket, $mapping, $this->mappedCategoryState());
         $fallbackPayload = $transformer->transform($ticket, $mapping, $this->fallbackCategoryState());
 
-        $this->assertSame(4, $mappedPayload['ticket_category']);
-        $this->assertSame(4, $fallbackPayload['ticket_category']);
-        $this->assertArrayNotHasKey('category_name', $mappedPayload);
-        $this->assertArrayNotHasKey('category_name', $fallbackPayload);
+        $this->assertSame('Longside Upper Tier', $mappedPayload['category_name']);
+        $this->assertSame('Longside Upper Tier', $fallbackPayload['category_name']);
+        $this->assertSame('Longside Upper Tier', $mappedPayload['ticket_category']);
+        $this->assertSame('Longside Upper Tier', $fallbackPayload['ticket_category']);
         $this->assertSame($mappedPayload, $fallbackPayload);
+    }
+
+    public function test_transformer_fails_when_xs2_inventory_category_name_is_missing(): void
+    {
+        Cache::forget('seller-api:ticket-dropdown:45');
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('ticketDropdown')->once()->with(45)->andReturn([
+            'result' => [
+                'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                'category' => [['id' => 4, 'category_name' => 'Away']],
+            ],
+        ]);
+
+        $mapping = new EventMapping(['m_id' => 45]);
+        $mapping->setRelation('xs2Event', new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => '2999-01-01 12:00:00',
+        ]));
+
+        $this->expectException(ListingTransformationException::class);
+        $this->expectExceptionMessage('XS2 inventory category name is missing.');
+
+        $this->transformer($client)->transform(
+            new Xs2Ticket([
+                'external_ticket_id' => 'xs2-missing-category',
+                'ticket_type' => 'eticket',
+                'ticket_status' => 'available',
+                'stock' => 2,
+                'category_name' => '',
+                'currency_code' => 'EUR',
+                'net_rate' => 10000,
+                'flags' => [],
+                'options' => [],
+            ]),
+            $mapping,
+        );
+    }
+
+    public function test_transformer_sends_xs2_category_name_when_dropdown_has_no_match(): void
+    {
+        Cache::forget('seller-api:ticket-dropdown:45');
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('ticketDropdown')->once()->with(45)->andReturn([
+            'result' => [
+                'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                'category' => [['id' => 1, 'category_name' => 'Away']],
+            ],
+        ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
+
+        $mapping = new EventMapping(['m_id' => 45]);
+        $mapping->setRelation('xs2Event', new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => '2999-01-01 12:00:00',
+        ]));
+
+        $payload = $this->transformer($client)->transform(
+            new Xs2Ticket([
+                'external_ticket_id' => 'xs2-unmatched-category',
+                'ticket_type' => 'eticket',
+                'ticket_status' => 'available',
+                'stock' => 2,
+                'category_name' => 'Corner',
+                'currency_code' => 'EUR',
+                'net_rate' => 10000,
+                'flags' => [],
+                'options' => [],
+            ]),
+            $mapping,
+        );
+
+        $this->assertSame('Corner', $payload['category_name']);
+        $this->assertSame('Corner', $payload['ticket_category']);
     }
 
     #[DataProvider('unsellableEvents')]

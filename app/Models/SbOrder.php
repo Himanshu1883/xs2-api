@@ -32,6 +32,7 @@ class SbOrder extends Model
             'split' => 'integer',
             'raw_payload' => 'array',
             'synced_at' => 'datetime',
+            'attendee_fetched_at' => 'datetime',
         ];
     }
 

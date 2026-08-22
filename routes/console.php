@@ -1,5 +1,6 @@
 <?php
 
+use App\Services\Admin\CronIntervalService;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -8,33 +9,18 @@ $schedulerEnabled = (bool) config('app.scheduler_enabled', true);
 $xs2Enabled = (bool) config('xs2.enabled', true);
 $sellerApiEnabled = (bool) config('services.seller_api.enabled', true);
 $overlapMinutes = max(5, (int) config('xs2.sync.event_lock_minutes', 10));
-$incrementalInterval = max(10, (int) config('xs2.sync.incremental_interval_minutes', 30));
-$fullIntervalMinutes = max(60, (int) config('xs2.sync.full_interval_minutes', 180));
-$eventsIntervalMinutes = max(60, (int) config('xs2.sync.events_interval_minutes', 60));
 $eventsSyncScheduled = (bool) config('xs2.events_sync.schedule_enabled', false);
-$fullInventoryCron = '0 */'.max(1, (int) ceil($fullIntervalMinutes / 60)).' * * *';
+
+$intervals = app(CronIntervalService::class);
+$incrementalInterval = $intervals->minutesFor('xs2-inventory-incremental');
+$fullInventoryCron = $intervals->hourlyExpression($intervals->minutesFor('xs2-inventory-full'));
+$eventsIntervalMinutes = max(60, (int) config('xs2.sync.events_interval_minutes', 60));
 $eventsCron = '0 */'.max(1, (int) ceil($eventsIntervalMinutes / 60)).' * * *';
-
-/**
- * Spread recurring tasks across the hour so they do not all fire at once.
- *
- * @return non-empty-string
- */
-$staggeredCron = static function (int $intervalMinutes, int $offsetMinute): string {
-    $interval = max(10, min(59, $intervalMinutes));
-    $start = $offsetMinute % $interval;
-    $minutes = [];
-    for ($minute = $start; $minute < 60; $minute += $interval) {
-        $minutes[] = (string) $minute;
-    }
-
-    return implode(',', $minutes).' * * * *';
-};
 
 if ($schedulerEnabled) {
     if ($xs2Enabled) {
         Schedule::command('xs2:sync-inventory --mode=incremental')
-            ->cron($staggeredCron($incrementalInterval, 2))
+            ->cron($intervals->staggeredExpression($incrementalInterval, 2))
             // At the top of the hour the full run has priority; it already covers
             // the same inventory changes as an incremental run.
             ->when(fn (): bool => now()->minute !== 0)
@@ -62,28 +48,28 @@ if ($schedulerEnabled) {
     }
 
     if ($xs2Enabled && (bool) config('xs2.sb_order_guest_data_sync.enabled', true)) {
-        $guestDataInterval = max(1, min(59, (int) config('xs2.sb_order_guest_data_sync.sync_interval_minutes', 30)));
+        $guestDataInterval = $intervals->minutesFor('xs2-sb-order-guest-data-sync');
         Schedule::command('xs2:sync-order-guest-data')
-            ->cron($staggeredCron($guestDataInterval, 22))
+            ->cron($intervals->staggeredExpression($guestDataInterval, 22))
             ->withoutOverlapping($overlapMinutes)
             ->onOneServer();
     }
 
     if ($xs2Enabled && $sellerApiEnabled && (bool) config('xs2.sb_listing_inventory.enabled', true)) {
-        $sbListingInterval = max(1, min(59, (int) config('xs2.sb_listing_inventory.sync_interval_minutes', 30)));
+        $sbListingInterval = $intervals->minutesFor('xs2-sb-listing-inventory');
         Schedule::command('xs2:sync-sb-listing-inventory')
-            ->cron($staggeredCron($sbListingInterval, 12))
+            ->cron($intervals->staggeredExpression($sbListingInterval, 12))
             ->withoutOverlapping($overlapMinutes)
             ->onOneServer();
     }
 
     if ($xs2Enabled && $sellerApiEnabled && (bool) config('xs2.sb_new_listing_publish.enabled', true)) {
-        $sbPublishInterval = max(1, min(59, (int) config('xs2.sb_new_listing_publish.sync_interval_minutes', 1)));
+        $sbPublishInterval = $intervals->minutesFor('xs2-sb-new-listing-publish');
         $sbPublishSchedule = Schedule::command('xs2:publish-new-sb-listings');
         if ($sbPublishInterval <= 1) {
             $sbPublishSchedule->everyMinute();
         } else {
-            $sbPublishSchedule->cron($staggeredCron($sbPublishInterval, 7));
+            $sbPublishSchedule->cron($intervals->staggeredExpression($sbPublishInterval, 7));
         }
         $sbPublishSchedule
             ->withoutOverlapping($overlapMinutes)
@@ -91,14 +77,14 @@ if ($schedulerEnabled) {
     }
 
     if ($xs2Enabled && $sellerApiEnabled && (bool) config('xs2.sb_bookings_sync.enabled', true)) {
-        $sbBookingsInterval = max(1, min(59, (int) config('xs2.sb_bookings_sync.sync_interval_minutes', 2)));
+        $sbBookingsInterval = $intervals->minutesFor('xs2-sb-order-sync');
         $sbBookingsSchedule = Schedule::command('seller-api:sync-bookings');
         if ($sbBookingsInterval <= 1) {
             $sbBookingsSchedule->everyMinute();
         } elseif ($sbBookingsInterval === 2) {
             $sbBookingsSchedule->everyTwoMinutes();
         } else {
-            $sbBookingsSchedule->cron($staggeredCron($sbBookingsInterval, 17));
+            $sbBookingsSchedule->cron($intervals->staggeredExpression($sbBookingsInterval, 17));
         }
         $sbBookingsSchedule
             ->withoutOverlapping($overlapMinutes)

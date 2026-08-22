@@ -38,6 +38,8 @@ class SbOrderResource extends JsonResource
             'buyer_first_name' => $this->buyer_first_name,
             'buyer_last_name' => $this->buyer_last_name,
             'synced_at' => $this->synced_at?->toIso8601String(),
+            'attendee_fetched_at' => $this->attendee_fetched_at?->toIso8601String(),
+            'attendee_fetch_error' => $this->attendee_fetch_error,
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
             'attendees_count' => $this->whenCounted('attendees'),

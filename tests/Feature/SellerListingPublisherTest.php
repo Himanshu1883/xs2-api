@@ -40,7 +40,7 @@ class SellerListingPublisherTest extends TestCase
         config()->set('services.seller_api.seller_id', 77);
     }
 
-    public function test_create_without_a_listing_id_remains_failed_and_retryable(): void
+    public function test_create_without_a_listing_id_fails_permanently(): void
     {
         $ticket = $this->ticket();
         $reference = 'XS2-xs2-ticket-1-event-45';
@@ -54,7 +54,7 @@ class SellerListingPublisherTest extends TestCase
             );
             $this->fail('A Seller API create response without an ID must fail the job.');
         } catch (SellerApiRequestException) {
-            // The retry uses the same supplier reference and idempotency key.
+            // Job fails permanently — admin must manually retry from the UI.
         }
 
         $listing = ExternalListingMapping::query()->sole();
@@ -239,7 +239,8 @@ class SellerListingPublisherTest extends TestCase
         $transformer->shouldReceive('transform')->once()->andReturn([
             'seller_reference' => $reference,
             'match_id' => $matchId,
-            'ticket_category' => 4,
+            'ticket_category' => 'Longside Upper Tier',
+            'category_name' => 'Longside Upper Tier',
             'ticket_type' => 2,
             'split_type' => 3,
             'quantity' => 2,

@@ -40,6 +40,7 @@ class Xs2ResetService
         'sb_order_attendees',
         'xs2_orders',
         'xs2_order_attendees',
+        'xs2_order_guest_data_logs',
         'users',
     ];
 
@@ -56,6 +57,7 @@ class Xs2ResetService
         'xs2_ticket_mapping_states',
         'external_listing_mappings',
         'xs2_sandbox_test_orders',
+        'xs2_order_guest_data_logs',
         'xs2_order_attendees',
         'xs2_orders',
         'sb_order_attendees',
@@ -103,6 +105,7 @@ class Xs2ResetService
      */
     public const CATALOG_PRESERVED_TABLES = [
         'xs2_sandbox_test_orders',
+        'xs2_order_guest_data_logs',
         'xs2_order_attendees',
         'xs2_orders',
         'sb_order_attendees',

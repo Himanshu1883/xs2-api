@@ -199,6 +199,8 @@ class AdminCronJobTest extends TestCase
         $this->assertSame('*/2 * * * *', $task['expression']);
         $this->assertSame('Every 2 minutes', $task['schedule']);
         $this->assertSame(2, $task['extra']['sync_interval_minutes']);
+        $this->assertTrue($task['interval_configurable']);
+        $this->assertSame(2, $task['interval_minutes']);
         $this->assertArrayHasKey('what_it_does', $task['extra']);
         $this->assertSame('sb_order_xs2_order_sync', $task['extra']['cron_role']);
         $this->assertArrayHasKey('create_order_api', $task['extra']);

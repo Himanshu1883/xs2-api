@@ -8,6 +8,7 @@ use App\Http\Resources\SbOrderResource;
 use App\Models\EventMapping;
 use App\Models\SbOrder;
 use App\Services\SellerApi\SellerBookingSyncService;
+use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
 use Illuminate\Http\JsonResponse;
 
 class SbOrderController extends Controller
@@ -101,6 +102,62 @@ class SbOrderController extends Controller
                 $statusLabel,
             ),
             'data' => new SbOrderResource($refreshed),
+        ]);
+    }
+
+    public function fetchAttendees(SbOrder $sbOrder, SellerBookingSyncService $sync): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        try {
+            $refreshed = $sync->fetchAttendees($sbOrder, true);
+        } catch (\RuntimeException $exception) {
+            return response()->json([
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+
+        $refreshed->load(['attendees', 'xs2Order'])->loadCount('attendees');
+
+        if ($refreshed->attendees->isEmpty()) {
+            return response()->json([
+                'message' => 'No attendee details returned from Seats Broker for this order.',
+                'data' => new SbOrderResource($refreshed),
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => sprintf(
+                'Fetched %d attendee(s) from Seats Broker for booking %s.',
+                $refreshed->attendees->count(),
+                $refreshed->booking_no,
+            ),
+            'data' => new SbOrderResource($refreshed),
+        ]);
+    }
+
+    public function moveToXs2Order(SbOrder $sbOrder, SbOrderXs2GuestDataSyncService $guestData): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $result = $guestData->copyAttendeesFromSbOrder($sbOrder);
+
+        if (! ($result['copied'] ?? false)) {
+            return response()->json([
+                'message' => $result['error'] ?? $result['reason'] ?? 'Could not move attendees to the XS2 order.',
+            ], 422);
+        }
+
+        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+
+        return response()->json([
+            'message' => sprintf(
+                'Moved %d attendee(s) from booking %s onto XS2 order %s.',
+                $sbOrder->attendees->count(),
+                $sbOrder->booking_no,
+                $sbOrder->xs2Order?->external_order_id ?? $result['xs2_order_id'],
+            ),
+            'data' => new SbOrderResource($sbOrder),
         ]);
     }
 }

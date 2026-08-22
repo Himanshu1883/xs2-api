@@ -89,6 +89,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('queue/cron-jobs', [AdminCronJobController::class, 'index']);
     Route::get('queue/cron-jobs/{cronJobId}/logs', [AdminCronJobController::class, 'logs']);
     Route::post('queue/cron-jobs/{cronJobId}/run', [AdminCronJobController::class, 'run']);
+    Route::patch('queue/cron-jobs/{cronJobId}/interval', [AdminCronJobController::class, 'updateInterval']);
     Route::get('webhooks/settings', [AdminWebhookController::class, 'showSettings']);
     Route::patch('webhooks/settings', [AdminWebhookController::class, 'updateSettings']);
     Route::get('webhooks/logs', [AdminWebhookController::class, 'logs']);
@@ -124,10 +125,14 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('sb-orders', [SbOrderController::class, 'index']);
     Route::post('sb-orders/sync', [SbOrderController::class, 'sync']);
     Route::post('sb-orders/{sbOrder}/refresh', [SbOrderController::class, 'refresh'])->whereNumber('sbOrder');
+    Route::post('sb-orders/{sbOrder}/fetch-attendees', [SbOrderController::class, 'fetchAttendees'])->whereNumber('sbOrder');
+    Route::post('sb-orders/{sbOrder}/move-to-xs2', [SbOrderController::class, 'moveToXs2Order'])->whereNumber('sbOrder');
     Route::get('sb-orders/{sbOrder}', [SbOrderController::class, 'show'])->whereNumber('sbOrder');
 
     Route::get('xs2-orders', [Xs2OrderController::class, 'index']);
     Route::post('xs2-orders/sync', [Xs2OrderController::class, 'sync']);
+    Route::post('xs2-orders/{xs2Order}/push-guest-data', [Xs2OrderController::class, 'pushGuestData'])->whereNumber('xs2Order');
+    Route::post('xs2-orders/{xs2Order}/get-ticket', [Xs2OrderController::class, 'getTicket'])->whereNumber('xs2Order');
     Route::get('xs2-orders/{xs2Order}', [Xs2OrderController::class, 'show'])->whereNumber('xs2Order');
 
     Route::prefix('xs2')->group(function (): void {

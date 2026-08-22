@@ -5,6 +5,7 @@ namespace App\Providers;
 use App\Contracts\MarketplaceListingPublisher;
 use App\Contracts\Xs2ReservationService;
 use App\Services\Admin\CronControlService;
+use App\Services\Admin\CronIntervalService;
 use App\Services\Admin\QueueProfileService;
 use App\Services\Admin\CronExecutionLogService;
 use App\Services\SellerApi\SellerApiDebugRecorder;
@@ -40,6 +41,7 @@ class AppServiceProvider extends ServiceProvider
 
         try {
             app(CronControlService::class)->applyConfigOverrides();
+            app(CronIntervalService::class)->applyConfigOverrides();
             app(QueueProfileService::class)->applyActiveProfileToRuntime();
         } catch (\Throwable) {
             // Ignore during migrations or before integration_settings exists.

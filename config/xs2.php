@@ -24,6 +24,7 @@ return [
     'ticket_guestdata_endpoint' => env('XS2_TICKET_GUESTDATA_ENDPOINT', '/v1/tickets/{ticket_id}/guestdata'),
     'bookingorder_guestdata_endpoint' => env('XS2_BOOKINGORDER_GUESTDATA_ENDPOINT', '/v1/bookingorders/{bookingorder_id}/guestdata'),
     'bookingorder_detail_endpoint' => env('XS2_BOOKINGORDER_DETAIL_ENDPOINT', '/v1/bookingorders/{bookingorder_id}'),
+    'booking_detail_endpoint' => env('XS2_BOOKING_DETAIL_ENDPOINT', '/v1/bookings/{booking_id}'),
     'eticket_download_endpoint' => env('XS2_ETICKET_DOWNLOAD_ENDPOINT', '/v1/etickets/download/{bookingorder_id}/{orderitem_id}/url/{url}'),
     'team_detail_endpoint' => env('XS2_TEAM_DETAIL_ENDPOINT', '/v1/teams/{team_id}'),
     'reservations_endpoint' => env('XS2_RESERVATIONS_ENDPOINT', '/v1/reservations'),
@@ -137,7 +138,7 @@ return [
     'sb_listing_inventory' => [
         // Scheduled xs2:sync-sb-listing-inventory (Seats Broker master + split qty reconcile).
         'enabled' => (bool) env('XS2_SB_LISTING_INVENTORY_SYNC_ENABLED', true),
-        'sync_interval_minutes' => max(1, min(59, (int) env(
+        'sync_interval_minutes' => max(1, min(60, (int) env(
             'XS2_SB_LISTING_INVENTORY_SYNC_INTERVAL_MINUTES',
             $lowLoadMode ? 30 : 30,
         ))),
@@ -147,7 +148,7 @@ return [
     'sb_new_listing_publish' => [
         // Scheduled xs2:publish-new-sb-listings (first-time publish for mapped events).
         'enabled' => (bool) env('XS2_SB_NEW_LISTING_PUBLISH_ENABLED', true),
-        'sync_interval_minutes' => max(1, min(59, (int) env(
+        'sync_interval_minutes' => max(1, min(60, (int) env(
             'XS2_SB_NEW_LISTING_PUBLISH_INTERVAL_MINUTES',
             1,
         ))),
@@ -188,16 +189,16 @@ return [
     'sb_bookings_sync' => [
         // Scheduled seller-api:sync-bookings — pulls SB orders and queues XS2 sandbox bookings.
         'enabled' => (bool) env('SB_BOOKINGS_SYNC_ENABLED', true),
-        'sync_interval_minutes' => max(1, min(59, (int) env(
+        'sync_interval_minutes' => max(1, min(60, (int) env(
             'SB_BOOKINGS_SYNC_INTERVAL_MINUTES',
             $lowLoadMode ? 30 : 2,
         ))),
     ],
 
     'sb_order_guest_data_sync' => [
-        // Scheduled xs2:sync-order-guest-data — pushes SB attendee_details to linked XS2 bookings.
+        // Scheduled xs2:sync-order-guest-data — fetches SB attendee_details once per order.
         'enabled' => (bool) env('XS2_SB_ORDER_GUEST_DATA_SYNC_ENABLED', true),
-        'sync_interval_minutes' => max(1, min(59, (int) env(
+        'sync_interval_minutes' => max(1, min(60, (int) env(
             'XS2_SB_ORDER_GUEST_DATA_SYNC_INTERVAL_MINUTES',
             $lowLoadMode ? 30 : 30,
         ))),

@@ -41,7 +41,11 @@ class SellerApiClient
             ])
             ->connectTimeout((int) $this->setting('connect_timeout', 10))
             ->timeout((int) $this->setting('timeout', 30))
-            ->retry((int) $this->setting('retry_times', 3), (int) $this->setting('retry_delay_ms', 1000));
+            ->retry(
+                (int) $this->setting('retry_times', 3),
+                (int) $this->setting('retry_delay_ms', 1000),
+                $this->shouldRetryHttpException(...),
+            );
     }
 
     /** @param array<string, scalar> $params */
@@ -618,7 +622,11 @@ class SellerApiClient
             ->withToken($apiKey)
             ->connectTimeout((int) $this->setting('connect_timeout', 10))
             ->timeout((int) $this->setting('timeout', 30))
-            ->retry((int) $this->setting('retry_times', 3), (int) $this->setting('retry_delay_ms', 1000));
+            ->retry(
+                (int) $this->setting('retry_times', 3),
+                (int) $this->setting('retry_delay_ms', 1000),
+                $this->shouldRetryHttpException(...),
+            );
     }
 
     private function resolvedCatalogEnvironment(?string $environment): string
@@ -854,5 +862,27 @@ class SellerApiClient
         }
 
         return "{$label} could not be completed: {$cause}";
+    }
+
+    /**
+     * Retry timeouts, rate limits, and server errors. Client validation
+     * failures (missing ticket_category, 404, 422, …) must not be retried.
+     */
+    private function shouldRetryHttpException(\Throwable $exception): bool
+    {
+        if ($exception instanceof ConnectionException) {
+            return true;
+        }
+
+        if (! $exception instanceof RequestException) {
+            return false;
+        }
+
+        $status = $exception->response?->status();
+        if ($status === null) {
+            return true;
+        }
+
+        return $status === 408 || $status === 429 || $status >= 500;
     }
 }

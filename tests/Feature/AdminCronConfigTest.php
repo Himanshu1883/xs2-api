@@ -70,6 +70,9 @@ class AdminCronConfigTest extends TestCase
 
         $this->assertNotNull($inventoryIncremental);
         $this->assertSame('2,32 * * * *', $inventoryIncremental['expression']);
+        $this->assertSame('Every 30 minutes', $inventoryIncremental['schedule']);
+        $this->assertTrue($inventoryIncremental['interval_configurable']);
+        $this->assertSame(30, $inventoryIncremental['interval_minutes']);
         $this->assertNotNull($inventoryIncremental['next_run_at']);
         $this->assertContains($inventoryIncremental['status'], ['running', 'idle', 'failed', 'disabled']);
         $this->assertIsBool($inventoryIncremental['is_running']);
@@ -295,5 +298,67 @@ class AdminCronConfigTest extends TestCase
         );
 
         $this->assertCount(0, $xs2EventCommands);
+    }
+
+    public function test_admin_can_update_cron_duration_for_a_scheduled_job(): void
+    {
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('cron-duration-test')->plainTextToken;
+
+        $this->withToken($token)
+            ->patchJson('/api/admin/queue/cron-jobs/xs2-sb-order-sync/interval', [
+                'interval_minutes' => 5,
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.cron_job_id', 'xs2-sb-order-sync')
+            ->assertJsonPath('data.interval_minutes', 5)
+            ->assertJsonPath('data.interval_is_overridden', true)
+            ->assertJsonPath('data.requires_schedule_work_restart', true)
+            ->assertJsonPath('data.job.interval_minutes', 5)
+            ->assertJsonPath('data.job.extra.sync_interval_minutes', 5);
+
+        $this->assertSame(
+            '5',
+            app(\App\Services\Admin\IntegrationSettingService::class)->value(
+                \App\Services\Admin\IntegrationSettingService::SB_BOOKINGS_SYNC_INTERVAL_MINUTES,
+            ),
+        );
+
+        $intervals = app(\App\Services\Admin\CronIntervalService::class);
+        config(['xs2.sb_bookings_sync.sync_interval_minutes' => 2]);
+        $intervals->applyConfigOverrides();
+
+        $this->assertSame(5, $intervals->minutesFor('xs2-sb-order-sync'));
+        $this->assertSame(
+            '2,7,12,17,22,27,32,37,42,47,52,57 * * * *',
+            $intervals->staggeredExpression(5, 17),
+        );
+    }
+
+    public function test_cron_duration_rejects_out_of_range_and_manual_jobs(): void
+    {
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('cron-duration-validation-test')->plainTextToken;
+
+        $this->withToken($token)
+            ->patchJson('/api/admin/queue/cron-jobs/xs2-sb-order-sync/interval', [
+                'interval_minutes' => 0,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['interval_minutes']);
+
+        $this->withToken($token)
+            ->patchJson('/api/admin/queue/cron-jobs/xs2-inventory-incremental/interval', [
+                'interval_minutes' => 1,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['interval_minutes']);
+
+        $this->withToken($token)
+            ->patchJson('/api/admin/queue/cron-jobs/sb-events-sync/interval', [
+                'interval_minutes' => 5,
+            ])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['cron_job_id']);
     }
 }

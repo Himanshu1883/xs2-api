@@ -40,10 +40,23 @@ class Xs2OrderResource extends JsonResource
             'buyer_last_name' => $this->buyer_last_name,
             'buyer_email' => $this->buyer_email,
             'synced_at' => $this->synced_at?->toIso8601String(),
+            'guest_data_synced_at' => $this->guest_data_synced_at?->toIso8601String(),
+            'guest_data_sync_error' => $this->guest_data_sync_error,
+            'attendees_copied_from_sb_at' => $this->attendees_copied_from_sb_at?->toIso8601String(),
+            'eticket_fetched_at' => $this->eticket_fetched_at?->toIso8601String(),
+            'eticket_error' => $this->eticket_error,
+            'xs2_eticket_response' => $this->xs2_eticket_response,
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
             'attendees_count' => $this->whenCounted('attendees'),
             'attendees' => Xs2OrderAttendeeResource::collection($this->whenLoaded('attendees')),
+            'latest_guest_data_log' => $this->whenLoaded(
+                'latestGuestDataLog',
+                fn () => $this->latestGuestDataLog === null
+                    ? null
+                    : new Xs2OrderGuestDataLogResource($this->latestGuestDataLog),
+            ),
+            'guest_data_logs' => Xs2OrderGuestDataLogResource::collection($this->whenLoaded('guestDataLogs')),
             'sb_order' => $this->whenLoaded('sbOrder', fn () => $this->sbOrder === null ? null : [
                 'id' => $this->sbOrder->id,
                 'booking_no' => $this->sbOrder->booking_no,

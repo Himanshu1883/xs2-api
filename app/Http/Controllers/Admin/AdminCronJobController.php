@@ -45,4 +45,20 @@ class AdminCronJobController extends Controller
             'data' => $result,
         ], 202);
     }
+
+    public function updateInterval(Request $request, string $cronJobId): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $validated = $request->validate([
+            'interval_minutes' => ['required', 'integer'],
+        ]);
+
+        $result = $this->cronJobs->updateInterval($cronJobId, (int) $validated['interval_minutes']);
+
+        return response()->json([
+            'message' => (string) ($result['message'] ?? 'Cron duration saved.'),
+            'data' => $result,
+        ]);
+    }
 }

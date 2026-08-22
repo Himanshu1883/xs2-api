@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Exceptions\Integrations\ListingTransformationException;
+use App\Exceptions\Integrations\SellerApiRequestException;
 use App\Models\EventMapping;
 use App\Models\ExternalListingMapping;
 use App\Models\Xs2Ticket;
@@ -21,7 +22,7 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
 {
     use Queueable;
 
-    public int $tries = 3;
+    public int $tries = 1;
 
     public int $timeout = 120;
 
@@ -143,7 +144,7 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
             ]);
             $ticket->update(['sync_status' => 'failed', 'sync_error' => mb_substr($e->getMessage(), 0, 5000)]);
 
-            throw $e;
+            $this->failWithoutRetry($e);
         }
 
         $hash = hash('sha256', json_encode($this->stable($payload), JSON_THROW_ON_ERROR));
@@ -206,7 +207,7 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
             $listing->update(['status' => 'failed', 'last_error' => mb_substr($e->getMessage(), 0, 5000), 'last_request' => $payload]);
             $ticket->update(['sync_status' => 'failed', 'sync_error' => mb_substr($e->getMessage(), 0, 5000)]);
 
-            throw $e;
+            $this->failWithoutRetry($e);
         }
     }
 
@@ -215,8 +216,12 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
     {
         // Lookup is only a safe recovery path for a timeout/temporary upstream
         // failure. Validation failures must never be converted into a lookup.
+        $status = $exception instanceof SellerApiRequestException
+            ? $exception->status
+            : ($exception->getCode() ?: null);
+
         if (! $client->canFindListingByExternalReference()
-            || ($exception->getCode() > 0 && $exception->getCode() < 500)) {
+            || ($status !== null && $status > 0 && $status < 500 && $status !== 408 && $status !== 429)) {
             return null;
         }
 
@@ -226,6 +231,19 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
         }
 
         return $existing;
+    }
+
+    /**
+     * All errors are permanent — the admin must manually retry from the UI.
+     * Direct handle() calls in tests still throw so assertions keep working.
+     */
+    private function failWithoutRetry(\Throwable $exception): never
+    {
+        if ($this->job !== null) {
+            $this->fail($exception);
+        }
+
+        throw $exception;
     }
 
     private function abortPublish(Xs2Ticket $ticket, string $message): void

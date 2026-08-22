@@ -52,7 +52,9 @@ class Xs2TicketMappingStatusService
     /**
      * Auto-publish paths (inventory sync, publish-mapped-listings) normally
      * require confirmed category mapping. When mapping is still pending but
-     * the ticket carries an XS2 category name, publish using that name.
+     * the ticket carries an XS2 category name, still attempt publish so the
+     * transformer can send that inventory category_name to Seller API. Tickets
+     * with no XS2 category name fail locally instead of calling create.
      */
     public function canAutoPublish(Xs2Ticket $ticket, ?string $status = null): bool
     {

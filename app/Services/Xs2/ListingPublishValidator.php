@@ -54,7 +54,7 @@ class ListingPublishValidator
             }
         }
 
-        $this->required(trim((string) ($ticket->category_name ?? '')), 'XS2 ticket category');
+        $this->required(trim((string) ($ticket->category_name ?? '')), 'XS2 inventory category name');
         $this->required(trim((string) ($ticket->currency_code ?? '')), 'XS2 ticket currency');
 
         $price = (int) ($ticket->package_price ?? $ticket->net_rate ?? $ticket->face_value ?? 0);
@@ -78,15 +78,12 @@ class ListingPublishValidator
         }
 
         $this->required(trim((string) ($payload['seller_reference'] ?? '')), 'seller_reference');
+        $this->required(trim((string) ($payload['category_name'] ?? '')), 'XS2 inventory category name');
 
         $ticketCategory = $payload['ticket_category'] ?? null;
-        $categoryName = trim((string) ($payload['category_name'] ?? ''));
-        $hasTicketCategory = (is_int($ticketCategory) || (is_string($ticketCategory) && ctype_digit($ticketCategory)))
-            && (int) $ticketCategory >= 1;
-
-        if (! $hasTicketCategory && $categoryName === '') {
+        if (! is_string($ticketCategory) || trim($ticketCategory) === '') {
             throw new ListingTransformationException(
-                'Seller API payload is missing ticket_category or category_name.'
+                'Seller API payload is missing ticket_category (XS2 inventory category name).'
             );
         }
 

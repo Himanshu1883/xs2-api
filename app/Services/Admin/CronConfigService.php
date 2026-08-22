@@ -25,7 +25,10 @@ use Throwable;
 
 class CronConfigService
 {
-    public function __construct(private readonly QueueManagementService $queues) {}
+    public function __construct(
+        private readonly QueueManagementService $queues,
+        private readonly CronIntervalService $intervals,
+    ) {}
 
     /** @return array{scheduler: array<string, mixed>, tasks: list<array<string, mixed>>} */
     public function snapshot(): array
@@ -68,6 +71,11 @@ class CronConfigService
             $this->xs2EventTasks($states, $scheduleByTaskId, $xs2Enabled),
             $this->xs2SbOrderSyncTasks($scheduleByTaskId, $states, $xs2Enabled),
             $this->xs2SbOrderGuestDataSyncTasks($scheduleByTaskId, $states, $xs2Enabled),
+        );
+
+        $tasks = array_map(
+            fn (array $task): array => $this->intervals->decorateTask($task),
+            $tasks,
         );
 
         $health = $this->scheduleHealth($tasks);
@@ -698,30 +706,30 @@ class CronConfigService
             $this->finalizeTask(
                 $this->task(
                     id: 'xs2-sb-order-guest-data-sync',
-                    name: 'SB order guest data → XS2 booking',
+                    name: 'SB order attendee fetch (once)',
                     type: 'command',
                     command: 'xs2:sync-order-guest-data',
                     schedule: 'Every '.$interval.' minutes',
-                    scheduleDetail: 'When SB attendee_details are updated on a linked order, pushes guest names, passport, DOB, etc. to the XS2 booking order guest-data API (sandbox or production). Runs on SB webhook in real time; this cron polls pending linked orders as a backup.',
+                    scheduleDetail: 'Fetches attendee/guest details from Seats Broker once per SB order. After a successful fetch, attendee_fetched_at is set and this cron never checks that order again. Manual Fetch attendee on the SB orders page can still re-fetch.',
                     queue: $guestQueue,
                     syncResource: SbOrderXs2GuestDataSyncService::SYNC_RESOURCE,
                     state: $state,
                     extra: [
                         'cron_role' => 'sb_order_xs2_guest_data_sync',
-                        'cron_role_label' => 'SB guest data → XS2',
-                        'what_it_does' => 'Finds xs2_orders linked to sb_orders that have attendee_details but guest data not yet pushed (or SB attendees changed), maps SB fields to XS2 guest payload, and PUTs to /v1/bookingorders/{id}/guestdata. Uses sandbox credentials for is_sandbox orders, production Xs2Client otherwise.',
-                        'does_not_do' => 'Does not create XS2 bookings (use SB order → XS2 order sync). Does not fetch ticket guest requirements from XS2 (use xs2:sync-guest-requirements). Skips orders without attendee_details, cancelled SB orders, or orders missing xs2_bookingorder_id.',
+                        'cron_role_label' => 'SB attendee fetch (once)',
+                        'what_it_does' => 'Finds sb_orders that do not yet have attendee_fetched_at, GETs that booking from the Seller API, and persists attendee_details. Stops polling an order after the first successful attendee fetch. Does not push guest data to XS2 (use Move to XS order + Push to XS2 API).',
+                        'does_not_do' => 'Does not re-fetch attendees for orders already marked fetched. Does not copy attendees onto xs2_orders. Does not PUT XS2 guestdata. Does not create XS2 bookings.',
                         'algorithm' => [
-                            'Real-time path: SB POST '.$webhookUrl.' with attendee_details → upsert sb_order_attendees → queue SyncXs2OrderGuestDataFromSbOrder when linked xs2_order exists.',
-                            'Scheduled path (this cron): query pending xs2_orders (never synced, failed, or SB order updated since last sync) → push guest data per order.',
-                            'Fetch GET bookingorder guestdata for field requirements; fallback to ticket guestdata requirements.',
-                            'Map SB attendees to XS2 guest fields (first_name, passport_number, date_of_birth, …); preserve guest_id on updates.',
-                            'Store guest_data_synced_at and fingerprint on xs2_orders; mirror attendees to xs2_order_attendees.',
+                            'Query active sb_orders where attendee_fetched_at is null.',
+                            'GET Seller API /api/booking?booking_no=… for each pending order (batch_limit).',
+                            'If attendee_details is non-empty, upsert sb_order_attendees and set attendee_fetched_at.',
+                            'If empty, leave unmarked so a later run can retry until guests are filled on SB.',
+                            'Skip any order already marked fetched — including bulk seller-api:sync-bookings attendee overwrites.',
                         ],
                         'examples' => [
-                            'Customer fills guest names on SB after purchase → webhook updates attendee_details → XS2 guestdata_status moves from waitingfordistributor to completed.',
-                            'Webhook missed → cron picks up xs2_order within 10 minutes and pushes the same guest payload.',
-                            'Customer edits passport number on SB → fingerprint changes → re-sync updates XS2 booking guest data.',
+                            'New SB sale without guests yet → cron keeps checking until attendee_details arrive, then stops.',
+                            'Manual Fetch attendee on /admin/xs2/orders re-fetches even after cron marked the order.',
+                            'Move to XS order copies stored attendees onto the linked xs2_order; Push to XS2 API is a separate admin action.',
                         ],
                         'manual_command' => 'php artisan xs2:sync-order-guest-data',
                         'manual_command_single' => 'php artisan xs2:sync-order-guest-data --sb-order-id={id}',
@@ -729,7 +737,9 @@ class CronConfigService
                         'webhook_url' => $webhookUrl,
                         'batch_limit' => (int) config('xs2.sb_order_guest_data_sync.batch_limit', 50),
                         'pending_guest_sync' => $telemetry['pending_guest_sync'] ?? 0,
+                        'pending_attendee_fetch' => $telemetry['pending_attendee_fetch'] ?? 0,
                         'synced_guest_data' => $telemetry['synced_guest_data'] ?? 0,
+                        'fetched_attendees' => $telemetry['fetched_attendees'] ?? 0,
                         'sync_interval_minutes' => $interval,
                     ],
                     enabled: $enabled && $xs2Enabled,
@@ -756,28 +766,22 @@ class CronConfigService
 
         $pendingGuestSync = 0;
         $syncedGuestData = 0;
+        $pendingAttendeeFetch = 0;
+        $fetchedAttendees = 0;
+
+        if (Schema::hasTable('sb_orders') && Schema::hasColumn('sb_orders', 'attendee_fetched_at')) {
+            $fetchedAttendees = (int) SbOrder::query()->whereNotNull('attendee_fetched_at')->count();
+            $pendingAttendeeFetch = (int) SbOrder::query()
+                ->activeSold()
+                ->whereNull('attendee_fetched_at')
+                ->count();
+            $pendingGuestSync = $pendingAttendeeFetch;
+        }
 
         if (Schema::hasTable('xs2_orders') && Schema::hasColumn('xs2_orders', 'sb_order_id')) {
             $syncedGuestData = (int) Xs2Order::query()
                 ->whereNotNull('sb_order_id')
                 ->whereNotNull('guest_data_synced_at')
-                ->count();
-
-            $pendingGuestSync = (int) Xs2Order::query()
-                ->whereNotNull('sb_order_id')
-                ->where(function ($query): void {
-                    $query->whereNotNull('xs2_bookingorder_id')
-                        ->orWhereNotNull('external_order_id');
-                })
-                ->whereHas('sbOrder', fn ($sbOrder) => $sbOrder->activeSold()->has('attendees'))
-                ->where(function ($query): void {
-                    $query->whereNull('guest_data_synced_at')
-                        ->orWhereNotNull('guest_data_sync_error')
-                        ->orWhereNull('guest_data_source_fingerprint')
-                        ->orWhereHas('sbOrder', function ($sbOrder): void {
-                            $sbOrder->whereColumn('sb_orders.updated_at', '>', 'xs2_orders.guest_data_synced_at');
-                        });
-                })
                 ->count();
         }
 
@@ -788,7 +792,9 @@ class CronConfigService
             'last_error' => filled($state?->last_error) ? (string) $state->last_error : null,
             'is_running' => $rawStatus === 'running',
             'pending_guest_sync' => $pendingGuestSync,
+            'pending_attendee_fetch' => $pendingAttendeeFetch,
             'synced_guest_data' => $syncedGuestData,
+            'fetched_attendees' => $fetchedAttendees,
         ];
     }
 
@@ -1255,16 +1261,49 @@ class CronConfigService
 
     private function humanScheduleLabel(string $expression): string
     {
-        return match (trim($expression)) {
-            '* * * * *' => 'Every minute',
-            '*/1 * * * *' => 'Every minute',
+        $expression = trim($expression);
+
+        $known = match ($expression) {
+            '* * * * *', '*/1 * * * *' => 'Every minute',
             '*/10 * * * *' => 'Every 10 minutes',
             '*/2 * * * *' => 'Every 2 minutes',
             '*/5 * * * *' => 'Every 5 minutes',
             '0 * * * *' => 'Hourly',
             '0 0 * * *' => 'Daily',
-            default => $expression,
+            default => null,
         };
+
+        if ($known !== null) {
+            return $known;
+        }
+
+        if (preg_match('/^0 \*\/(\d+) \* \* \*$/', $expression, $matches) === 1) {
+            $hours = max(1, (int) $matches[1]);
+
+            return $hours === 1 ? 'Hourly' : 'Every '.$hours.' hour(s)';
+        }
+
+        if (preg_match('/^\*\/(\d+) \* \* \* \*$/', $expression, $matches) === 1) {
+            $minutes = max(1, (int) $matches[1]);
+
+            return $minutes === 1 ? 'Every minute' : 'Every '.$minutes.' minutes';
+        }
+
+        if (preg_match('/^([\d,]+) \* \* \* \*$/', $expression, $matches) === 1) {
+            $minuteList = array_map('intval', explode(',', $matches[1]));
+            if (count($minuteList) >= 2) {
+                $interval = $minuteList[1] - $minuteList[0];
+                if ($interval > 0) {
+                    return $interval === 1 ? 'Every minute' : 'Every '.$interval.' minutes';
+                }
+            }
+
+            if (count($minuteList) === 1) {
+                return 'Hourly';
+            }
+        }
+
+        return $expression;
     }
 
     /**

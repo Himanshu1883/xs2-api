@@ -9,6 +9,7 @@ use App\Models\SbOrder;
 use App\Models\SbOrderAttendee;
 use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
+use App\Models\Xs2OrderGuestDataLog;
 use App\Models\Xs2SyncState;
 use App\Models\Xs2Ticket;
 use Illuminate\Support\Collection;
@@ -25,6 +26,7 @@ class SbOrderXs2GuestDataSyncService
     public function __construct(
         private readonly Xs2SandboxService $sandbox,
         private readonly Xs2Client $client,
+        private readonly Xs2GuestDataPayloadBuilder $payloadBuilder,
     ) {}
 
     /**
@@ -111,6 +113,240 @@ class SbOrderXs2GuestDataSyncService
     }
 
     /**
+     * Copy SB attendee rows onto the linked XS2 order without calling the XS2 API.
+     *
+     * @return array{copied: bool, skipped: bool, sb_order_id: int|null, xs2_order_id: int|null, error: string|null, reason: string|null}
+     */
+    public function copyAttendeesFromSbOrder(SbOrder $order): array
+    {
+        $order->loadMissing(['attendees', 'xs2Order']);
+
+        if ($order->attendees->isEmpty()) {
+            return [
+                'copied' => false,
+                'skipped' => false,
+                'sb_order_id' => $order->id,
+                'xs2_order_id' => $order->xs2Order?->id,
+                'error' => 'Fetch attendee details from Seats Broker first.',
+                'reason' => null,
+            ];
+        }
+
+        $xs2Order = $order->xs2Order;
+        if ($xs2Order === null) {
+            return [
+                'copied' => false,
+                'skipped' => false,
+                'sb_order_id' => $order->id,
+                'xs2_order_id' => null,
+                'error' => 'No linked XS2 order. Create the XS2 order before moving attendees.',
+                'reason' => null,
+            ];
+        }
+
+        $this->syncAttendees($xs2Order, $order);
+
+        $updates = [];
+        if (Schema::hasColumn('xs2_orders', 'attendees_copied_from_sb_at')) {
+            $updates['attendees_copied_from_sb_at'] = now();
+        }
+        if ($updates !== []) {
+            $xs2Order->forceFill($updates)->save();
+        }
+
+        return [
+            'copied' => true,
+            'skipped' => false,
+            'sb_order_id' => $order->id,
+            'xs2_order_id' => $xs2Order->id,
+            'error' => null,
+            'reason' => null,
+        ];
+    }
+
+    /**
+     * Manual admin push: send attendees already stored on the XS2 order to the XS2 guest-data API
+     * and persist a request/response log row.
+     *
+     * @return array{synced: bool, skipped: bool, sb_order_id: int|null, xs2_order_id: int|null, error: string|null, reason: string|null, log_id: int|null}
+     */
+    public function pushGuestDataForXs2Order(Xs2Order $xs2Order): array
+    {
+        $xs2Order->loadMissing(['attendees', 'sbOrder.attendees']);
+
+        if ($xs2Order->attendees->isEmpty()) {
+            return [
+                'synced' => false,
+                'skipped' => false,
+                'sb_order_id' => $xs2Order->sb_order_id,
+                'xs2_order_id' => $xs2Order->id,
+                'error' => 'Move attendee details onto this XS2 order first.',
+                'reason' => null,
+                'log_id' => null,
+            ];
+        }
+
+        $bookingOrderId = $this->resolveBookingOrderId($xs2Order);
+        if ($bookingOrderId === null) {
+            $this->persistGuestDataLog($xs2Order, null, null, null, 'XS2 bookingorder_id is missing.');
+
+            return $this->failResult($xs2Order, $xs2Order->sb_order_id, 'XS2 bookingorder_id is missing.') + ['log_id' => $xs2Order->guestDataLogs()->latest('id')->value('id')];
+        }
+
+        $sbOrder = $xs2Order->sbOrder;
+        $ticketId = $sbOrder !== null
+            ? $this->resolveTicketId($xs2Order, $sbOrder)
+            : $this->nullableString($xs2Order->external_ticket_id);
+        if ($ticketId === null) {
+            $this->persistGuestDataLog($xs2Order, null, null, null, 'XS2 ticket_id could not be resolved.');
+
+            return $this->failResult($xs2Order, $xs2Order->sb_order_id, 'XS2 ticket_id could not be resolved.') + ['log_id' => $xs2Order->guestDataLogs()->latest('id')->value('id')];
+        }
+
+        if (! $this->guestApiConfigured($xs2Order)) {
+            $this->persistGuestDataLog($xs2Order, null, null, null, 'XS2 guest-data API credentials are not configured.');
+
+            return $this->failResult($xs2Order, $xs2Order->sb_order_id, 'XS2 guest-data API credentials are not configured.') + ['log_id' => $xs2Order->guestDataLogs()->latest('id')->value('id')];
+        }
+
+        $requestPayload = null;
+
+        try {
+            $guestPayload = $this->fetchBookingOrderGuestDataWithRetry($xs2Order, $bookingOrderId);
+            $requirements = $this->guestRequirements($guestPayload, $ticketId);
+            if ($requirements === []) {
+                $ticketPayload = $this->fetchTicketGuestRequirements($xs2Order, $ticketId);
+                $ticketRequirements = $ticketPayload['guest_data_requirements'] ?? [];
+                if (is_array($ticketRequirements)) {
+                    $requirements = array_values(array_filter($ticketRequirements, is_string(...)));
+                }
+            }
+
+            if ($requirements !== []) {
+                $missingFieldsReason = $this->missingRequiredXs2GuestFieldReason($xs2Order->attendees, $requirements);
+                if ($missingFieldsReason !== null) {
+                    $this->persistGuestDataLog($xs2Order, null, null, null, $missingFieldsReason);
+
+                    return $this->skipResult($xs2Order->id, $xs2Order->sb_order_id, $missingFieldsReason) + ['log_id' => $xs2Order->guestDataLogs()->latest('id')->value('id')];
+                }
+            }
+
+            if ($xs2Order->quantity !== null && $xs2Order->attendees->count() !== (int) $xs2Order->quantity) {
+                $message = 'Guest count on the XS2 order does not match booking quantity.';
+                $this->persistGuestDataLog($xs2Order, null, null, null, $message);
+
+                return $this->failResult($xs2Order, $xs2Order->sb_order_id, $message) + ['log_id' => $xs2Order->guestDataLogs()->latest('id')->value('id')];
+            }
+
+            $expectedCount = max(1, $xs2Order->attendees->count());
+            $existingGuests = $this->extractExistingGuests($guestPayload, $ticketId, $expectedCount);
+            $requestPayload = $this->payloadBuilder->build(
+                $ticketId,
+                $xs2Order->attendees,
+                $existingGuests,
+            );
+
+            $response = $this->updateBookingGuestData(
+                $xs2Order,
+                $bookingOrderId,
+                $ticketId,
+                $requestPayload['items'][0]['guests'] ?? [],
+            );
+
+            $fingerprint = $sbOrder !== null ? $this->attendeeFingerprint($sbOrder) : null;
+            $xs2Order->fill([
+                'guest_data_synced_at' => now(),
+                'guest_data_sync_error' => null,
+                'guest_data_source_fingerprint' => $fingerprint,
+                'order_status_text' => $this->nullableString(
+                    $response['guestdata_status']
+                        ?? data_get($response, 'items.0.guestdata_status')
+                        ?? $xs2Order->order_status_text,
+                ),
+            ])->save();
+
+            $log = $this->persistGuestDataLog($xs2Order, $requestPayload, 200, $response, null);
+
+            return [
+                'synced' => true,
+                'skipped' => false,
+                'sb_order_id' => $xs2Order->sb_order_id,
+                'xs2_order_id' => $xs2Order->id,
+                'error' => null,
+                'reason' => null,
+                'log_id' => $log?->id,
+            ];
+        } catch (Throwable $exception) {
+            $message = mb_substr($exception->getMessage(), 0, 2000);
+            $xs2Order->fill([
+                'guest_data_sync_error' => $message,
+            ])->save();
+
+            $status = $exception instanceof Xs2RequestException ? $exception->status : null;
+            $log = $this->persistGuestDataLog($xs2Order, $requestPayload, $status, null, $message);
+
+            return $this->failResult($xs2Order, $xs2Order->sb_order_id, $message) + ['log_id' => $log?->id];
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $requestPayload
+     * @param  array<string, mixed>|null  $responseBody
+     */
+    private function persistGuestDataLog(
+        Xs2Order $xs2Order,
+        ?array $requestPayload,
+        ?int $responseStatus,
+        ?array $responseBody,
+        ?string $error,
+    ): ?Xs2OrderGuestDataLog {
+        if (! Schema::hasTable('xs2_order_guest_data_logs')) {
+            return null;
+        }
+
+        return Xs2OrderGuestDataLog::query()->create([
+            'xs2_order_id' => $xs2Order->id,
+            'request_payload' => $requestPayload,
+            'response_status' => $responseStatus,
+            'response_body' => $responseBody,
+            'error' => $error,
+            'pushed_at' => now(),
+        ]);
+    }
+
+    /**
+     * @param  Collection<int, Xs2OrderAttendee>  $attendees
+     * @param  list<string>  $requirements
+     */
+    private function missingRequiredXs2GuestFieldReason(Collection $attendees, array $requirements): ?string
+    {
+        if ($requirements === []) {
+            return null;
+        }
+
+        $missingLabels = [];
+        foreach ($attendees->values() as $index => $attendee) {
+            foreach ($requirements as $requirement) {
+                if (! $this->xs2AttendeeHasGuestField($attendee, $requirement)) {
+                    $missingLabels[] = sprintf('guest %d %s', $index + 1, str_replace('_', ' ', $requirement));
+                }
+            }
+        }
+
+        if ($missingLabels === []) {
+            return null;
+        }
+
+        return 'XS2 order attendees missing required guest fields: '
+            .implode(', ', array_values(array_unique($missingLabels))).'.';
+    }
+
+    private function xs2AttendeeHasGuestField(Xs2OrderAttendee $attendee, string $requirement): bool
+    {
+        return $this->payloadBuilder->attendeeHasField($attendee, $requirement);
+    }
+
+    /**
      * @return array{
      *     synced: bool,
      *     skipped: bool,
@@ -181,9 +417,8 @@ class SbOrderXs2GuestDataSyncService
                 return $this->skipResult($xs2Order->id, $sbOrder->id, $missingFieldsReason);
             }
 
-            $guests = $this->guestsFromSbAttendees($sbOrder->attendees, $requirements);
             $expectedCount = max(1, (int) ($sbOrder->quantity ?? $xs2Order->quantity ?? 1));
-            if (count($guests) !== $expectedCount) {
+            if ($sbOrder->attendees->count() !== $expectedCount) {
                 return $this->failResult(
                     $xs2Order,
                     $sbOrder->id,
@@ -192,13 +427,17 @@ class SbOrderXs2GuestDataSyncService
             }
 
             $existingGuests = $this->extractExistingGuests($guestPayload, $ticketId, $expectedCount);
-            $normalizedGuests = $this->mergeGuestIds($guests, $existingGuests);
+            $requestPayload = $this->payloadBuilder->build(
+                $ticketId,
+                $sbOrder->attendees,
+                $existingGuests,
+            );
 
             $response = $this->updateBookingGuestData(
                 $xs2Order,
                 $bookingOrderId,
                 $ticketId,
-                $normalizedGuests,
+                $requestPayload['items'][0]['guests'] ?? [],
             );
 
             $this->syncAttendees($xs2Order, $sbOrder);
@@ -580,50 +819,6 @@ class SbOrderXs2GuestDataSyncService
     /**
      * @param  Collection<int, SbOrderAttendee>  $attendees
      * @param  list<string>  $requirements
-     * @return list<array<string, mixed>>
-     */
-    private function guestsFromSbAttendees(Collection $attendees, array $requirements): array
-    {
-        $guests = [];
-        foreach ($attendees->values() as $index => $attendee) {
-            $entry = [
-                'first_name' => $attendee->first_name,
-                'last_name' => $attendee->last_name,
-                'contact_email' => $attendee->email,
-                'contact_phone' => $attendee->phone,
-                'date_of_birth' => $attendee->dob,
-                'passport_number' => $attendee->passport,
-                'country_of_residence' => $attendee->nationality
-                    ? strtoupper((string) $attendee->nationality)
-                    : null,
-                'province' => $attendee->province,
-                'gender' => $attendee->gender,
-                'lead_guest' => $index === 0,
-            ];
-
-            $normalized = [];
-            foreach ($entry as $key => $value) {
-                $string = $this->nullableString($value);
-                if ($string !== null) {
-                    $normalized[$key] = $string;
-                }
-            }
-            if (isset($normalized['gender'])) {
-                $normalized['gender'] = match (strtolower($normalized['gender'])) {
-                    'other' => 'unknown',
-                    default => strtolower($normalized['gender']),
-                };
-            }
-
-            $guests[] = $normalized;
-        }
-
-        return $guests;
-    }
-
-    /**
-     * @param  Collection<int, SbOrderAttendee>  $attendees
-     * @param  list<string>  $requirements
      */
     private function missingRequiredGuestFieldReason(Collection $attendees, array $requirements): ?string
     {
@@ -650,20 +845,7 @@ class SbOrderXs2GuestDataSyncService
 
     private function attendeeHasGuestField(SbOrderAttendee $attendee, string $requirement): bool
     {
-        $value = match ($requirement) {
-            'first_name' => $attendee->first_name,
-            'last_name' => $attendee->last_name,
-            'date_of_birth', 'dob' => $attendee->dob,
-            'passport_number', 'passport' => $attendee->passport,
-            'country_of_residence', 'nationality' => $attendee->nationality,
-            'contact_email', 'email' => $attendee->email,
-            'contact_phone', 'phone', 'mobile' => $attendee->phone,
-            'province', 'state' => $attendee->province,
-            'gender' => $attendee->gender,
-            default => data_get($attendee->raw_payload, $requirement),
-        };
-
-        return filled($value);
+        return $this->payloadBuilder->attendeeHasField($attendee, $requirement);
     }
 
     /** @return list<array<string, mixed>> */
@@ -692,28 +874,6 @@ class SbOrderXs2GuestDataSyncService
         }
 
         return [];
-    }
-
-    /**
-     * @param  list<array<string, mixed>>  $normalizedGuests
-     * @param  list<array<string, mixed>>  $existingGuests
-     * @return list<array<string, mixed>>
-     */
-    private function mergeGuestIds(array $normalizedGuests, array $existingGuests): array
-    {
-        foreach ($normalizedGuests as $index => &$guest) {
-            if (isset($guest['guest_id'])) {
-                continue;
-            }
-
-            $existingGuestId = $this->nullableString($existingGuests[$index]['guest_id'] ?? null);
-            if ($existingGuestId !== null) {
-                $guest['guest_id'] = $existingGuestId;
-            }
-        }
-        unset($guest);
-
-        return $normalizedGuests;
     }
 
     private function isCancelled(SbOrder $order): bool

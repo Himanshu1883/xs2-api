@@ -864,11 +864,8 @@ class Xs2SandboxTestFlowService
             'gender',
             'country_of_residence',
             'street_name',
-            'additional_street_name',
             'city',
             'zip',
-            'province',
-            'supported_team',
         ];
 
         $normalized = [];
@@ -905,15 +902,9 @@ class Xs2SandboxTestFlowService
                 if ($nationality !== null) {
                     $entry['country_of_residence'] = strtoupper($nationality);
                 }
-            } elseif (strlen($entry['country_of_residence']) <= 3) {
-                $entry['country_of_residence'] = strtoupper($entry['country_of_residence']);
             }
-
-            if (! isset($entry['province'])) {
-                $province = $this->nullableString($guest['state'] ?? null);
-                if ($province !== null) {
-                    $entry['province'] = $province;
-                }
+            if (isset($entry['country_of_residence'])) {
+                $entry['country_of_residence'] = strtoupper($entry['country_of_residence']);
             }
 
             if (! isset($entry['date_of_birth'])) {

@@ -25,16 +25,12 @@ class SandboxGuestDataRequest extends FormRequest
             'guests.*.phone' => ['nullable', 'string', 'max:64'],
             'guests.*.date_of_birth' => ['nullable', 'string', 'max:32'],
             'guests.*.dob' => ['nullable', 'string', 'max:32'],
-            'guests.*.gender' => ['nullable', 'string', 'max:32'],
-            'guests.*.country_of_residence' => ['nullable', 'string', 'max:64'],
+            'guests.*.gender' => ['nullable', 'string', 'in:male,female,unknown', 'max:32'],
+            'guests.*.country_of_residence' => ['nullable', 'string', 'max:3'],
             'guests.*.nationality' => ['nullable', 'string', 'max:64'],
-            'guests.*.province' => ['nullable', 'string', 'max:255'],
-            'guests.*.state' => ['nullable', 'string', 'max:255'],
             'guests.*.street_name' => ['nullable', 'string', 'max:255'],
-            'guests.*.additional_street_name' => ['nullable', 'string', 'max:255'],
             'guests.*.city' => ['nullable', 'string', 'max:255'],
             'guests.*.zip' => ['nullable', 'string', 'max:32'],
-            'guests.*.supported_team' => ['nullable', 'string', 'max:255'],
             'guests.*.guest_id' => ['nullable', 'string', 'max:128'],
         ];
     }

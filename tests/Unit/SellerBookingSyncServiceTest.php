@@ -93,6 +93,84 @@ class SellerBookingSyncServiceTest extends TestCase
         $service->syncOrder($order);
     }
 
+    public function test_fetch_attendees_marks_order_so_cron_does_not_refetch(): void
+    {
+        $order = SbOrder::query()->create([
+            'booking_no' => 'SB-200',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+        ]);
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('fetchBookings')
+            ->once()
+            ->with(['booking_no' => 'SB-200'])
+            ->andReturn([
+                'result' => [[
+                    'booking_no' => 'SB-200',
+                    'booking_status' => SbOrder::STATUS_CONFIRMED,
+                    'attendee_details' => [[
+                        'first_name' => 'Ada',
+                        'last_name' => 'Lovelace',
+                        'email' => 'ada@example.com',
+                    ]],
+                ]],
+            ]);
+
+        $listingSales = Mockery::mock(ListingSalesService::class);
+        $listingSales->shouldReceive('queueStockReconcileForListingIds')->once()->andReturn(['queued' => 0]);
+
+        $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
+        $xs2SandboxOrders->shouldReceive('queueIfEligible')->once()->andReturn(false);
+
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $refreshed = $service->fetchAttendees($order, false);
+
+        $this->assertNotNull($refreshed->attendee_fetched_at);
+        $this->assertSame('Ada', $refreshed->attendees->first()?->first_name);
+
+        $summary = $service->fetchPendingAttendees(10);
+        $this->assertSame(0, $summary['fetched']);
+        $this->assertSame(0, $summary['failed']);
+    }
+
+    public function test_forced_fetch_attendees_can_overwrite_after_cron_marked_fetched(): void
+    {
+        $order = SbOrder::query()->create([
+            'booking_no' => 'SB-201',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'attendee_fetched_at' => now()->subHour(),
+        ]);
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('fetchBookings')
+            ->once()
+            ->with(['booking_no' => 'SB-201'])
+            ->andReturn([
+                'result' => [[
+                    'booking_no' => 'SB-201',
+                    'booking_status' => SbOrder::STATUS_CONFIRMED,
+                    'attendee_details' => [[
+                        'first_name' => 'Grace',
+                        'last_name' => 'Hopper',
+                    ]],
+                ]],
+            ]);
+
+        $listingSales = Mockery::mock(ListingSalesService::class);
+        $listingSales->shouldReceive('queueStockReconcileForListingIds')->once()->andReturn(['queued' => 0]);
+
+        $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
+        $xs2SandboxOrders->shouldReceive('queueIfEligible')->once()->andReturn(false);
+
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $refreshed = $service->fetchAttendees($order, true);
+
+        $this->assertSame('Grace', $refreshed->attendees->first()?->first_name);
+        $this->assertNotNull($refreshed->attendee_fetched_at);
+    }
+
     private function createTables(): void
     {
         Schema::dropIfExists('sb_order_attendees');
@@ -126,6 +204,8 @@ class SellerBookingSyncServiceTest extends TestCase
             $table->string('buyer_last_name')->nullable();
             $table->json('raw_payload')->nullable();
             $table->timestamp('synced_at')->nullable();
+            $table->timestamp('attendee_fetched_at')->nullable();
+            $table->text('attendee_fetch_error')->nullable();
             $table->timestamps();
         });
 
@@ -137,11 +217,21 @@ class SellerBookingSyncServiceTest extends TestCase
             $table->string('last_name')->nullable();
             $table->string('dob')->nullable();
             $table->string('nationality')->nullable();
+            $table->string('province')->nullable();
             $table->string('email')->nullable();
             $table->string('phone')->nullable();
             $table->string('passport')->nullable();
             $table->string('gender')->nullable();
             $table->json('raw_payload')->nullable();
+            $table->timestamps();
+        });
+
+        Schema::dropIfExists('xs2_orders');
+        Schema::create('xs2_orders', function (Blueprint $table): void {
+            $table->id();
+            $table->string('external_order_id');
+            $table->unsignedBigInteger('sb_order_id')->nullable();
+            $table->boolean('is_sandbox')->default(false);
             $table->timestamps();
         });
     }

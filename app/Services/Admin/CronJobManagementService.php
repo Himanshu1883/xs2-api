@@ -12,6 +12,7 @@ class CronJobManagementService
     public function __construct(
         private readonly CronConfigService $cronConfig,
         private readonly CronExecutionLogService $executionLogs,
+        private readonly CronIntervalService $intervals,
     ) {}
 
     /** @return array<string, mixed> */
@@ -47,6 +48,27 @@ class CronJobManagementService
             ],
             'scheduler' => $snapshot['scheduler'],
             'jobs' => $tasks,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    public function updateInterval(string $cronJobId, int $minutes): array
+    {
+        $this->assertKnownJob($cronJobId);
+
+        $updated = $this->intervals->updateMinutes($cronJobId, $minutes);
+        $task = $this->presentTask($this->findTask($cronJobId));
+
+        return [
+            'cron_job_id' => $cronJobId,
+            'interval_minutes' => $updated['interval_minutes'],
+            'interval_min_minutes' => $updated['interval_min_minutes'],
+            'interval_max_minutes' => $updated['interval_max_minutes'],
+            'interval_presets' => $updated['interval_presets'],
+            'interval_is_overridden' => $updated['interval_is_overridden'],
+            'requires_schedule_work_restart' => true,
+            'job' => $task,
+            'message' => $this->intervalSavedMessage($cronJobId, $updated['interval_minutes']),
         ];
     }
 
@@ -328,5 +350,30 @@ class CronJobManagementService
         }
 
         return null;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     * @return array<string, mixed>|null
+     */
+    private function presentTask(?array $task): ?array
+    {
+        if ($task === null) {
+            return null;
+        }
+
+        $task['description'] = $this->descriptionForTask($task);
+        $task['supports_run_now'] = $this->supportsRunNow((string) $task['id']);
+        $task['execution_logs_available'] = $this->executionLogs->isAvailable();
+        $task['execution_log_count'] = $this->executionLogs->countForJob((string) $task['id']);
+
+        return $task;
+    }
+
+    private function intervalSavedMessage(string $cronJobId, int $minutes): string
+    {
+        $label = $minutes === 1 ? 'every minute' : "every {$minutes} minutes";
+
+        return "Cron duration for {$cronJobId} saved ({$label}). OS cron (`php artisan schedule:run` every minute) picks this up on the next tick. Restart `php artisan schedule:work` if you use that long-running process.";
     }
 }

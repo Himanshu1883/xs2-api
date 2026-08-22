@@ -367,6 +367,88 @@ class Xs2Client
     }
 
     /** @return array<string, mixed> */
+    public function getBookingOrder(string $bookingOrderId): array
+    {
+        return $this->send(
+            'GET',
+            $this->endpoint('bookingorder_detail_endpoint', ['bookingorder_id' => $bookingOrderId]),
+            [],
+            'get_bookingorder',
+        );
+    }
+
+    /** @return array<string, mixed> */
+    public function getBooking(string $bookingId): array
+    {
+        return $this->send(
+            'GET',
+            $this->endpoint('booking_detail_endpoint', ['booking_id' => $bookingId]),
+            [],
+            'get_booking',
+        );
+    }
+
+    /**
+     * Download a single e-ticket PDF via GET /v1/etickets/download/{bookingorder_id}/{orderitem_id}/url/{url}.
+     *
+     * @return array{status: int, body: string, headers: array<string, list<string>>}
+     */
+    public function downloadEticketPdf(string $bookingOrderId, string $orderItemId, string $downloadLink): array
+    {
+        $this->validateConfig();
+
+        $uri = $this->endpoint('eticket_download_endpoint', [
+            'bookingorder_id' => $bookingOrderId,
+            'orderitem_id' => $orderItemId,
+            'url' => $downloadLink,
+        ]);
+        $url = $this->absoluteUrl($uri);
+        $requestHeaders = $this->requestHeaders();
+
+        try {
+            $response = Http::baseUrl(rtrim((string) $this->setting('base_url'), '/'))
+                ->withHeaders($requestHeaders)
+                ->accept('application/pdf, application/octet-stream, */*')
+                ->connectTimeout((int) $this->setting('connect_timeout', 10))
+                ->timeout((int) $this->setting('timeout', 30))
+                ->get($uri);
+        } catch (ConnectionException) {
+            throw new Xs2RequestException('XS2 e-ticket request could not connect.');
+        }
+
+        $this->debugger->record(
+            'download_eticket',
+            'GET',
+            $url,
+            $requestHeaders,
+            [
+                'bookingorder_id' => $bookingOrderId,
+                'orderitem_id' => $orderItemId,
+                'download_link' => $downloadLink,
+            ],
+            $response,
+        );
+
+        if (! $response->successful()) {
+            throw new Xs2RequestException(
+                $this->requestFailureMessage($response->status(), $response->json()),
+                $response->status(),
+            );
+        }
+
+        $body = $response->body();
+        if ($body === '') {
+            throw new Xs2ResponseException('XS2 e-ticket response was empty.');
+        }
+
+        return [
+            'status' => $response->status(),
+            'body' => $body,
+            'headers' => $response->headers(),
+        ];
+    }
+
+    /** @return array<string, mixed> */
     public function getTeam(string $teamId): array
     {
         return $this->send('GET', $this->endpoint('team_detail_endpoint', ['team_id' => $teamId]), [], 'get_team');

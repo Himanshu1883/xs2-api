@@ -7,7 +7,7 @@ Any code path that publishes an XS2 ticket listing to Seats Broker (SB) **must**
 | Layer | Class | Role |
 |-------|-------|------|
 | Pre-flight | `ListingPublishValidator` | Validates mapping, ticket fields, and transformed payload |
-| Transform | `Xs2SellerListingTransformer` | Builds SB payload; resolves `ticket_category` from dropdown |
+| Transform | `Xs2SellerListingTransformer` | Builds SB payload; always sends XS2 inventory category name |
 | Job | `PushXs2TicketToSellerApi` | Runs validator → transform → validate payload → HTTP |
 | Split | `SplitListingService` | Same validator + transformer gates for split listings |
 
@@ -16,8 +16,8 @@ Any code path that publishes an XS2 ticket listing to Seats Broker (SB) **must**
 | Field | Type | Source |
 |-------|------|--------|
 | `match_id` | integer | Confirmed `EventMapping.m_id` |
-| `ticket_category` | integer (optional) | SB `ticket_dropdown.category[].id` when resolvable |
-| `category_name` | string (optional) | XS2 `category_name` when dropdown ID cannot be resolved |
+| `ticket_category` | string | XS2 ticket/inventory `category_name` (never a mapped SB id) |
+| `category_name` | string | Same XS2 inventory `category_name` |
 | `ticket_type` | integer | SB dropdown match on XS2 ticket type |
 | `split_type` | integer | SB dropdown match on XS2 flags |
 | `seller_reference` | string | Stable XS2 external reference |
@@ -30,18 +30,13 @@ Any code path that publishes an XS2 ticket listing to Seats Broker (SB) **must**
 
 Optional: `ticket_block`, `ticket_row`, `ticket_details`, `home_town`.
 
+SB create/update requires the `ticket_category` field (`"The ticket category field is required."` when omitted). Always populate **`ticket_category` and `category_name`** with the XS2 inventory category name. Do **not** send a mapped Seller API catalog id or local mapping dropdown id.
+
 ## Category resolution
 
-When the SB ticket dropdown contains a matching category, publish with **`ticket_category`** (integer ID). When no dropdown match exists, publish with **`category_name`** set to the XS2 category name — no category-mapping table is required.
+Always publish with the XS2 ticket's inventory category name. Do not look up or require a Seller API `ticket_category` id. Category-mapping table rows and dropdown ids are not used for this field.
 
-Resolution order in `Xs2SellerListingTransformer::tryResolveCategoryId`:
-
-1. **Mapped seat IDs** — if category mapping has `stadium_seat_id` / details / candidate scores, try numeric ID match in dropdown.
-2. **Name match** — normalized match of XS2 `category_name` against dropdown `category[].category_name`.
-3. **Mapping hints** — stadium seat names from confirmed mapping details or ranked candidates.
-4. **Fallback** — include `category_name` with the raw XS2 category name; omit `ticket_category`.
-
-At least one of `ticket_category` or `category_name` must be present in the payload before calling SB.
+If the XS2 ticket has no category name, fail locally with a clear error and do not call SB.
 
 ## Publish gates (before transform)
 
@@ -53,31 +48,32 @@ At least one of `ticket_category` or `category_name` must be present in the payl
 
 ## Blocked vs allowed examples
 
-**Allowed** — no dropdown match (category_name fallback):
+**Allowed** — XS2 inventory name, even when SB dropdown has no match:
 
 ```
 XS2 category_name: "Corner"
 SB dropdown categories: ["Away", "Home"]
-→ category_name: "Corner" (no ticket_category)
-→ createListing(...) proceeds; SB may accept or reject the name
+→ ticket_category: "Corner"
+→ category_name: "Corner"
+→ createListing(...) proceeds
 ```
 
-**Allowed** — dropdown match:
+**Allowed** — XS2 inventory name, even when a dropdown id exists:
 
 ```
 XS2 category_name: "Longside Upper"
 SB dropdown: [{ id: 4, category_name: "Longside Upper" }]
-→ ticket_category: 4
+→ ticket_category: "Longside Upper"
+→ category_name: "Longside Upper"
 → createListing(...) proceeds
 ```
 
-**Allowed** — mapping hint when raw name differs:
+**Blocked** — missing XS2 inventory category name:
 
 ```
-XS2 category_name: "Matchday Premium"
-Mapping detail stadium_seat_name: "Category 1 Premium"
-SB dropdown: [{ id: 22, category_name: "Category 1 Premium" }]
-→ ticket_category: 22
+XS2 category_name: ""
+→ ListingTransformationException: XS2 inventory category name is missing.
+→ no Seller API HTTP call
 ```
 
 ## Admin split / quantity rules

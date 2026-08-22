@@ -13,6 +13,7 @@ use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
 use App\Services\SellerApi\SellerBookingSyncService;
 use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
+use App\Services\Xs2\Xs2GuestDataPayloadBuilder;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -23,7 +24,7 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
 {
     private const BOOKINGORDER_ID = 'xs2-bko-guest-sync';
 
-    private const TICKET_ID = 'xs2-ticket-guest-sync';
+    private const TICKET_ID = 'xs2-ticket-guest-sync_tck';
 
     protected function setUp(): void
     {
@@ -41,7 +42,7 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
         config()->set('xs2.sandbox.retry_times', 1);
     }
 
-    public function test_sb_booking_update_queues_guest_data_sync_when_xs2_order_exists(): void
+    public function test_sb_booking_update_persists_attendees_without_auto_pushing_guest_data(): void
     {
         Queue::fake();
 
@@ -79,9 +80,14 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
             'listingSales' => $listingSales,
         ])->sync();
 
-        Queue::assertPushed(SyncXs2OrderGuestDataFromSbOrder::class, function (SyncXs2OrderGuestDataFromSbOrder $job) use ($sbOrder): bool {
-            return $job->sbOrderId === $sbOrder->id;
-        });
+        $sbOrder->refresh();
+        $this->assertNotNull($sbOrder->attendee_fetched_at);
+        $this->assertDatabaseHas('sb_order_attendees', [
+            'sb_order_id' => $sbOrder->id,
+            'first_name' => 'Jane',
+            'last_name' => 'Doe',
+        ]);
+        Queue::assertNotPushed(SyncXs2OrderGuestDataFromSbOrder::class);
         Queue::assertNotPushed(\App\Jobs\CreateXs2SandboxOrderFromSbOrder::class);
     }
 
@@ -138,9 +144,19 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
         ]);
 
         Http::assertSent(function ($request): bool {
+            $guest = data_get($request->data(), 'items.0.guests.0');
+
             return $request->method() === 'PUT'
                 && str_contains($request->url(), '/v1/bookingorders/'.self::BOOKINGORDER_ID.'/guestdata')
-                && data_get($request->data(), 'items.0.guests.0.first_name') === 'Jane';
+                && data_get($request->data(), 'items.0.ticket_id') === self::TICKET_ID
+                && is_array($guest)
+                && array_keys($guest) === Xs2GuestDataPayloadBuilder::GUEST_FIELD_KEYS
+                && $guest['first_name'] === 'Jane'
+                && $guest['lead_guest'] === true
+                && $guest['guest_id'] === null
+                && ! array_key_exists('reservation_id', $guest)
+                && ! array_key_exists('ticket_id', $guest)
+                && ! array_key_exists('conditions', $guest);
         });
     }
 
@@ -174,34 +190,43 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_command_syncs_pending_linked_orders(): void
+    public function test_command_fetches_attendees_once_then_skips(): void
     {
-        Http::fake([
-            'https://sandbox.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID.'/guestdata*' => Http::sequence()
-                ->push([
-                    'items' => [[
-                        'ticket_id' => self::TICKET_ID,
-                        'guests' => [[
-                            'first_name' => ['condition' => 'required'],
-                            'last_name' => ['condition' => 'required'],
-                        ]],
-                    ]],
-                ])
-                ->push(['guestdata_status' => 'completed']),
-        ]);
+        $sbOrder = $this->seedLinkedOrder(withAttendees: false);
 
-        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
-        Xs2Order::query()->where('sb_order_id', $sbOrder->id)->update([
-            'xs2_bookingorder_id' => self::BOOKINGORDER_ID,
-            'xs2_booking_id' => 'xs2-booking-guest-sync',
-            'external_ticket_id' => self::TICKET_ID,
-            'is_sandbox' => true,
-        ]);
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('fetchBookings')
+            ->once()
+            ->with(['booking_no' => $sbOrder->booking_no])
+            ->andReturn([
+                'result' => [[
+                    'booking_no' => $sbOrder->booking_no,
+                    'booking_status' => SbOrder::STATUS_CONFIRMED,
+                    'ticket_id' => 906584,
+                    'listing_id' => '841765',
+                    'quantity' => 1,
+                    'attendee_details' => [[
+                        'first_name' => 'Jane',
+                        'last_name' => 'Doe',
+                        'email' => 'jane@example.com',
+                    ]],
+                ]],
+            ]);
+        $this->app->instance(SellerApiClient::class, $client);
+
+        $listingSales = Mockery::mock(ListingSalesService::class);
+        $listingSales->shouldReceive('queueStockReconcileForListingIds')->once()->andReturn(['queued' => 0]);
+        $this->app->instance(ListingSalesService::class, $listingSales);
 
         $exitCode = Artisan::call('xs2:sync-order-guest-data');
 
         $this->assertSame(0, $exitCode);
-        $this->assertStringContainsString('1 synced', Artisan::output());
+        $this->assertStringContainsString('1 fetched', Artisan::output());
+        $this->assertNotNull($sbOrder->fresh()->attendee_fetched_at);
+
+        $second = Artisan::call('xs2:sync-order-guest-data');
+        $this->assertSame(0, $second);
+        $this->assertStringContainsString('0 fetched', Artisan::output());
     }
 
     public function test_service_skips_when_sb_attendees_missing_required_guest_fields(): void
@@ -321,6 +346,7 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
             'sb_order_id' => $sbOrder->id,
             'xs2_booking_id' => 'xs2-booking-guest-sync',
             'xs2_bookingorder_id' => self::BOOKINGORDER_ID,
+            'xs2_reservation_id' => 'xs2-reservation-guest-sync_rsv',
             'external_ticket_id' => self::TICKET_ID,
             'quantity' => 1,
             'order_status' => 'confirmed',
