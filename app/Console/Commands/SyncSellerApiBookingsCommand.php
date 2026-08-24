@@ -19,6 +19,12 @@ class SyncSellerApiBookingsCommand extends Command
 
         $this->table(array_keys($summary), [array_map(strval(...), array_values($summary))]);
 
+        if (($summary['status'] ?? '') === 'failed') {
+            $this->error((string) ($summary['error'] ?? 'Seller API booking sync failed.'));
+
+            return self::FAILURE;
+        }
+
         return self::SUCCESS;
     }
 }

@@ -235,6 +235,78 @@ class SellerApiClient
         return $this->send('GET', $this->endpoint('booking_endpoint'), $payload, [], 'fetch_bookings');
     }
 
+    /**
+     * Fetch every booking page from the Seller listing API.
+     *
+     * @param  array<string, scalar|null>  $query
+     * @return array{result:list<array<string, mixed>>, pages:int}
+     */
+    public function fetchAllBookings(array $query = []): array
+    {
+        $page = max(1, (int) ($query['page'] ?? 1));
+        $perPage = (int) ($query['per_page'] ?? $query['limit'] ?? 100);
+        if ($perPage < 1) {
+            $perPage = 100;
+        }
+
+        $allRows = [];
+        $pages = 0;
+        $maxPages = max(1, (int) config('seller-api.booking_max_pages', 50));
+
+        do {
+            $pageQuery = [
+                ...$query,
+                'page' => $page,
+                'per_page' => $perPage,
+            ];
+            unset($pageQuery['limit']);
+
+            $response = $this->fetchBookings($pageQuery);
+            $pages++;
+
+            $rows = $this->bookingRowsFromResponse($response);
+            foreach ($rows as $row) {
+                $allRows[] = $row;
+            }
+
+            $lastPage = max(
+                1,
+                (int) data_get($response, 'meta.last_page', data_get($response, 'results.meta.last_page', $page)),
+            );
+            $hasMore = $page < $lastPage && $rows !== [];
+            $page++;
+        } while ($hasMore && $pages < $maxPages);
+
+        return [
+            'result' => $allRows,
+            'pages' => $pages,
+        ];
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function bookingRowsFromResponse(array $response): array
+    {
+        $candidates = [
+            data_get($response, 'result'),
+            data_get($response, 'results'),
+            data_get($response, 'results.data'),
+            data_get($response, 'results.bookings'),
+            data_get($response, 'data'),
+            data_get($response, 'data.bookings'),
+            data_get($response, 'bookings'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (! is_array($candidate) || ! array_is_list($candidate)) {
+                continue;
+            }
+
+            return array_values(array_filter($candidate, is_array(...)));
+        }
+
+        return [];
+    }
+
     public function sellerId(): int
     {
         $sellerId = filter_var($this->setting('seller_id'), FILTER_VALIDATE_INT);

@@ -56,7 +56,7 @@ class Xs2TicketMappingStatusService
      * Auto-publish paths (inventory sync, publish-mapped-listings) normally
      * require confirmed category mapping. When mapping is still pending but
      * the ticket carries an XS2 category name, push directly using that name
-     * as ticket_category — no dropdown or stadium-detail mapping required.
+     * as category_name — no dropdown or stadium-detail mapping required.
      */
     public function canAutoPublish(Xs2Ticket $ticket, ?string $status = null): bool
     {

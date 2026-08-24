@@ -26,7 +26,17 @@ class SellerBookingSyncService
     ) {}
 
     /**
-     * @return array{fetched:int, created:int, updated:int, attendees:int, stock_reconcile_queued:int, xs2_orders_queued:int}
+     * @return array{
+     *     fetched:int,
+     *     created:int,
+     *     updated:int,
+     *     attendees:int,
+     *     stock_reconcile_queued:int,
+     *     xs2_orders_queued:int,
+     *     status:string,
+     *     completed_at:string,
+     *     error:?string
+     * }
      */
     public function sync(array $query = []): array
     {
@@ -48,7 +58,7 @@ class SellerBookingSyncService
         ];
 
         try {
-            $rows = $this->extractBookingRows($this->client->fetchBookings($query));
+            $rows = $this->extractBookingRows($this->client->fetchAllBookings($query));
 
             $touchedListingIds = [];
 
@@ -73,7 +83,7 @@ class SellerBookingSyncService
      */
     public function processBookingPayload(array $row): array
     {
-        $bookingNo = $this->nullableString($row['booking_no'] ?? null);
+        $bookingNo = $this->bookingNumberFromRow($row);
         if ($bookingNo === null) {
             throw new \InvalidArgumentException('Booking payload is missing booking_no.');
         }
@@ -115,7 +125,7 @@ class SellerBookingSyncService
         $rows = $this->extractBookingRows($this->client->fetchBookings(['booking_no' => $bookingNo]));
         $match = null;
         foreach (array_values(array_filter($rows, is_array(...))) as $row) {
-            if ($this->nullableString($row['booking_no'] ?? null) === $bookingNo) {
+            if ($this->bookingNumberFromRow($row) === $bookingNo) {
                 $match = $row;
                 break;
             }
@@ -225,15 +235,65 @@ class SellerBookingSyncService
     /** @return list<array<string, mixed>> */
     private function extractBookingRows(array $response): array
     {
-        $rows = data_get($response, 'result');
-        if (! is_array($rows)) {
-            $rows = data_get($response, 'results', data_get($response, 'data', []));
-        }
-        if (! is_array($rows)) {
-            throw new \RuntimeException('Seller API booking response is missing a result array.');
+        $candidates = [
+            data_get($response, 'result'),
+            data_get($response, 'results'),
+            data_get($response, 'results.data'),
+            data_get($response, 'results.bookings'),
+            data_get($response, 'data'),
+            data_get($response, 'data.bookings'),
+            data_get($response, 'bookings'),
+            $response,
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (! is_array($candidate) || $candidate === []) {
+                continue;
+            }
+
+            // Associative wrapper (meta/status) — keep looking for a list of bookings.
+            if (! array_is_list($candidate)) {
+                continue;
+            }
+
+            $rows = array_values(array_filter($candidate, is_array(...)));
+            if ($rows === []) {
+                continue;
+            }
+
+            // Prefer lists that look like booking rows.
+            $first = $rows[0];
+            if (
+                $this->bookingNumberFromRow($first) !== null
+                || array_key_exists('booking_status', $first)
+                || array_key_exists('attendee_details', $first)
+                || array_key_exists('ticket_id', $first)
+            ) {
+                return $rows;
+            }
         }
 
-        return array_values(array_filter($rows, is_array(...)));
+        // Empty list responses are valid (no bookings yet).
+        foreach ([data_get($response, 'result'), data_get($response, 'results'), data_get($response, 'data')] as $emptyCandidate) {
+            if (is_array($emptyCandidate) && array_is_list($emptyCandidate) && $emptyCandidate === []) {
+                return [];
+            }
+        }
+
+        throw new \RuntimeException('Seller API booking response is missing a result array.');
+    }
+
+    /** @param  array<string, mixed>  $row */
+    private function bookingNumberFromRow(array $row): ?string
+    {
+        foreach (['booking_no', 'booking_number', 'bookingNo', 'order_no', 'order_number'] as $key) {
+            $value = $this->nullableString($row[$key] ?? null);
+            if ($value !== null) {
+                return $value;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -243,7 +303,7 @@ class SellerBookingSyncService
      */
     private function upsertBooking(array $row, array &$summary, array &$touchedListingIds, bool $forceAttendees = false): void
     {
-        $bookingNo = $this->nullableString($row['booking_no'] ?? null);
+        $bookingNo = $this->bookingNumberFromRow($row);
         if ($bookingNo === null) {
             return;
         }
@@ -445,7 +505,17 @@ class SellerBookingSyncService
 
     /**
      * @param  array{fetched:int, created:int, updated:int, attendees:int, stock_reconcile_queued:int, xs2_orders_queued:int}  $summary
-     * @return array{fetched:int, created:int, updated:int, attendees:int, stock_reconcile_queued:int, xs2_orders_queued:int, status:string, completed_at:string}
+     * @return array{
+     *     fetched:int,
+     *     created:int,
+     *     updated:int,
+     *     attendees:int,
+     *     stock_reconcile_queued:int,
+     *     xs2_orders_queued:int,
+     *     status:string,
+     *     completed_at:string,
+     *     error:?string
+     * }
      */
     private function finalizeRun(array $summary, ?string $fatalError = null): array
     {
@@ -471,6 +541,7 @@ class SellerBookingSyncService
 
         $summary['status'] = $failed ? 'failed' : 'completed';
         $summary['completed_at'] = now()->toIso8601String();
+        $summary['error'] = $failed ? $fatalError : null;
 
         return $summary;
     }

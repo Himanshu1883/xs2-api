@@ -67,6 +67,23 @@ class SbOrderController extends Controller
 
         $summary = $sync->sync();
 
+        if (($summary['status'] ?? '') === 'failed') {
+            $error = trim((string) ($summary['error'] ?? ''));
+            $message = $error !== ''
+                ? $error
+                : 'Seller API booking sync failed.';
+
+            if (str_contains(strtolower($message), 'invalid api key')
+                || str_contains(strtolower($message), 'in-active')) {
+                $message .= ' Set SELLER_API_LISTING_API_KEY to your SeatsBrokers seller Sanctum key (apiKey header), not the external catalog Bearer token. Confirm SELLER_API_LISTING_BASE_URL matches the environment where the order exists (sandbox vs production sellerapi).';
+            }
+
+            return response()->json([
+                'message' => $message,
+                'data' => $summary,
+            ], 502);
+        }
+
         return response()->json([
             'message' => sprintf(
                 'Synced %d booking(s) from Seller API (%d created, %d updated, %d attendee row(s), %d listing stock update(s) queued).',

@@ -54,15 +54,14 @@ class Xs2SellerListingTransformer
         $faceValue = (int) ($ticket->face_value ?? $ticket->net_rate ?? 0);
 
         $categoryName = $this->required($ticket->category_name, 'XS2 inventory category name');
-        $ticketCategoryId = $this->resolveTicketCategoryId($catalog, $categoryName, $matchId);
         $ticketTypeMapping = $this->resolveSellerTicketType($ticketForTransform);
 
+        // Seller listing create/update accepts category_name only — do not send ticket_category IDs.
         return [
             'seller_reference' => $this->reference($ticket, $matchId, $mappingState),
             'match_id' => $matchId,
             'ticket_type' => $this->resolveTicketTypeId($catalog, $ticketTypeMapping),
             'quantity' => $active ? $remaining : 0,
-            'ticket_category' => $ticketCategoryId,
             'category_name' => $categoryName,
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
             'ticket_row' => (string) data_get($ticket->options, 'ticket_row', ''),
@@ -133,99 +132,6 @@ class Xs2SellerListingTransformer
         }
 
         return (int) $mapping['id'];
-    }
-
-    /**
-     * Resolve ticket_category as an integer ID by fuzzy-matching the XS2
-     * category name against the SB ticket dropdown categories.
-     *
-     * @param  array<string, mixed>|null  $catalog
-     */
-    private function resolveTicketCategoryId(?array $catalog, string $xs2CategoryName, int $matchId): int
-    {
-        if ($catalog === null) {
-            throw new ListingTransformationException(
-                "Cannot publish: SB match_id {$matchId} is invalid or ticket dropdown unavailable."
-            );
-        }
-
-        $categories = data_get($catalog, 'category', []);
-        if (! is_array($categories) || $categories === []) {
-            throw new ListingTransformationException(
-                "Cannot publish: SB match_id {$matchId} has no ticket categories."
-            );
-        }
-
-        return $this->fuzzyMatchCategoryId($categories, $xs2CategoryName);
-    }
-
-    /**
-     * Priority-ordered fuzzy match of an XS2 category name to the SB
-     * dropdown's category list. Returns the matched integer ID.
-     *
-     * 1. Exact (case-insensitive)
-     * 2. SB name starts with XS2 name ("Longside" → "Longside Upper Tier")
-     * 3. XS2 name starts with SB name
-     * 4. Contains (either direction)
-     * 5. First-word match
-     * 6. Default: first category in the list
-     *
-     * @param  list<array<string, mixed>>  $categories
-     */
-    private function fuzzyMatchCategoryId(array $categories, string $xs2Name): int
-    {
-        $xs2Lower = mb_strtolower(trim($xs2Name));
-
-        $items = [];
-        foreach ($categories as $cat) {
-            if (! is_array($cat) || ! isset($cat['id'])) {
-                continue;
-            }
-            $items[] = [
-                'id' => (int) $cat['id'],
-                'name' => mb_strtolower(trim((string) ($cat['category_name'] ?? ''))),
-            ];
-        }
-
-        if ($items === []) {
-            return (int) $categories[0]['id'];
-        }
-
-        foreach ($items as $item) {
-            if ($item['name'] === $xs2Lower) {
-                return $item['id'];
-            }
-        }
-
-        foreach ($items as $item) {
-            if ($item['name'] !== '' && str_starts_with($item['name'], $xs2Lower)) {
-                return $item['id'];
-            }
-        }
-
-        foreach ($items as $item) {
-            if ($item['name'] !== '' && str_starts_with($xs2Lower, $item['name'])) {
-                return $item['id'];
-            }
-        }
-
-        foreach ($items as $item) {
-            if ($item['name'] !== '' && (str_contains($item['name'], $xs2Lower) || str_contains($xs2Lower, $item['name']))) {
-                return $item['id'];
-            }
-        }
-
-        $xs2FirstWord = explode(' ', $xs2Lower)[0] ?? '';
-        if ($xs2FirstWord !== '') {
-            foreach ($items as $item) {
-                $sbFirstWord = explode(' ', $item['name'])[0] ?? '';
-                if ($sbFirstWord !== '' && $sbFirstWord === $xs2FirstWord) {
-                    return $item['id'];
-                }
-            }
-        }
-
-        return $items[0]['id'];
     }
 
     /**

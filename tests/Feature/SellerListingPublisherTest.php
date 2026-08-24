@@ -239,7 +239,6 @@ class SellerListingPublisherTest extends TestCase
         $transformer->shouldReceive('transform')->once()->andReturn([
             'seller_reference' => $reference,
             'match_id' => $matchId,
-            'ticket_category' => 4,
             'category_name' => 'Longside Upper Tier',
             'ticket_type' => 2,
             'split_type' => 3,

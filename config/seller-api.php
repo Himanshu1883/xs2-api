@@ -24,6 +24,7 @@ return [
     // The current Seatsbrokers contract already uses this optional lookup.
     'ticket_dropdown_endpoint' => env('SELLER_API_TICKET_DROPDOWN_ENDPOINT', '/api/ticket_dropdown'),
     'booking_endpoint' => env('SELLER_API_BOOKING_ENDPOINT', '/api/booking'),
+    'booking_max_pages' => (int) env('SELLER_API_BOOKING_MAX_PAGES', 50),
 
     // External catalog (GET + Bearer). Events export is filesystem-only; venues sync persists to legacy tables.
     'events_endpoint' => env('SELLER_API_EVENTS_ENDPOINT', '/api/events'),

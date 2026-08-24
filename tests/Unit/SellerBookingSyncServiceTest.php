@@ -171,6 +171,65 @@ class SellerBookingSyncServiceTest extends TestCase
         $this->assertNotNull($refreshed->attendee_fetched_at);
     }
 
+    public function test_sync_surfaces_seller_api_failures_instead_of_silent_zero(): void
+    {
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('fetchAllBookings')
+            ->once()
+            ->andThrow(new \RuntimeException('Invalid API key or Account is in-active33'));
+
+        $listingSales = Mockery::mock(ListingSalesService::class);
+        $listingSales->shouldNotReceive('queueStockReconcileForListingIds');
+
+        $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
+        $xs2SandboxOrders->shouldIgnoreMissing();
+
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $summary = $service->sync();
+
+        $this->assertSame('failed', $summary['status']);
+        $this->assertSame(0, $summary['fetched']);
+        $this->assertSame('Invalid API key or Account is in-active33', $summary['error']);
+    }
+
+    public function test_sync_imports_bookings_from_paginated_fetch(): void
+    {
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('fetchAllBookings')
+            ->once()
+            ->andReturn([
+                'result' => [
+                    [
+                        'booking_no' => 'SB-300',
+                        'booking_status' => SbOrder::STATUS_CONFIRMED,
+                        'booking_status_text' => 'Confirmed',
+                        'ticket_id' => 1,
+                        'listing_id' => '99',
+                        'quantity' => 1,
+                        'attendee_details' => [],
+                    ],
+                ],
+                'pages' => 1,
+            ]);
+
+        $listingSales = Mockery::mock(ListingSalesService::class);
+        $listingSales->shouldReceive('queueStockReconcileForListingIds')
+            ->once()
+            ->andReturn(['queued' => 0]);
+
+        $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
+        $xs2SandboxOrders->shouldReceive('queueIfEligible')->once()->andReturn(false);
+
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $summary = $service->sync();
+
+        $this->assertSame('completed', $summary['status']);
+        $this->assertNull($summary['error']);
+        $this->assertSame(1, $summary['fetched']);
+        $this->assertSame(1, $summary['created']);
+        $this->assertTrue(SbOrder::query()->where('booking_no', 'SB-300')->exists());
+    }
+
     private function createTables(): void
     {
         Schema::dropIfExists('sb_order_attendees');
