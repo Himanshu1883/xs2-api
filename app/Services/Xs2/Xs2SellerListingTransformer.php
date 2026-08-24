@@ -4,6 +4,7 @@ namespace App\Services\Xs2;
 
 use App\Exceptions\Integrations\ListingTransformationException;
 use App\Models\EventMapping;
+use App\Models\Xs2CategoryMapping;
 use App\Models\Xs2Ticket;
 use App\Models\Xs2TicketMappingState;
 use App\Services\SellerApi\ListingSalesService;
@@ -54,7 +55,7 @@ class Xs2SellerListingTransformer
         $faceValue = (int) ($ticket->face_value ?? $ticket->net_rate ?? 0);
 
         $categoryName = $this->required($ticket->category_name, 'XS2 inventory category name');
-        $ticketCategoryId = $this->resolveTicketCategoryId($catalog, $categoryName, $matchId);
+        $ticketCategoryId = $this->resolveTicketCategoryId($catalog, $categoryName, $matchId, $mappingState);
         $ticketTypeMapping = $this->resolveSellerTicketType($ticketForTransform);
 
         return [
@@ -62,6 +63,7 @@ class Xs2SellerListingTransformer
             'match_id' => $matchId,
             'ticket_type' => $this->resolveTicketTypeId($catalog, $ticketTypeMapping),
             'quantity' => $active ? $remaining : 0,
+            // SB create requires an integer catalog id — never omit or send the XS2 name here.
             'ticket_category' => $ticketCategoryId,
             'category_name' => $categoryName,
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
@@ -136,13 +138,19 @@ class Xs2SellerListingTransformer
     }
 
     /**
-     * Resolve ticket_category as an integer ID by fuzzy-matching the XS2
-     * category name against the SB ticket dropdown categories.
+     * Resolve ticket_category as a positive integer ID from the SB ticket
+     * dropdown. Prefer a confirmed/mapped stadium seat id, then fuzzy-match
+     * XS2 / mapped category names. Never invent an ID — fail with a clear
+     * local error when nothing matches (e.g. "Matchday Premium" with no map).
      *
      * @param  array<string, mixed>|null  $catalog
      */
-    private function resolveTicketCategoryId(?array $catalog, string $xs2CategoryName, int $matchId): int
-    {
+    private function resolveTicketCategoryId(
+        ?array $catalog,
+        string $xs2CategoryName,
+        int $matchId,
+        ?Xs2TicketMappingState $mappingState = null,
+    ): int {
         if ($catalog === null) {
             throw new ListingTransformationException(
                 "Cannot publish: SB match_id {$matchId} is invalid or ticket dropdown unavailable."
@@ -156,29 +164,63 @@ class Xs2SellerListingTransformer
             );
         }
 
-        return $this->fuzzyMatchCategoryId($categories, $xs2CategoryName);
+        $categoryMapping = $mappingState?->categoryMapping;
+        if ($categoryMapping !== null) {
+            foreach ($this->categorySeatIds($categoryMapping) as $seatId) {
+                $id = $this->findIdByNumericId($categories, $seatId);
+                if ($id !== null) {
+                    return $id;
+                }
+            }
+        }
+
+        $tried = [];
+        foreach ($this->categoryCandidates($xs2CategoryName, $mappingState) as $candidate) {
+            $tried[] = $candidate;
+            $id = $this->fuzzyMatchCategoryId($categories, $candidate);
+            if ($id !== null) {
+                return $id;
+            }
+        }
+
+        $available = collect($categories)
+            ->filter(fn ($item): bool => is_array($item))
+            ->map(fn (array $item): string => trim((string) data_get($item, 'category_name', '')))
+            ->filter()
+            ->unique()
+            ->values()
+            ->implode(', ');
+
+        throw new ListingTransformationException(
+            'Cannot publish: XS2 category "'.$xs2CategoryName.'" does not match a Seats Broker ticket_category ID for match_id '.$matchId.'.'
+            .' Map the category in admin (or use a name that matches the SB dropdown), then re-Publish.'
+            .($available !== '' ? ' Available SB categories: '.$available.'.' : '')
+            .($tried !== [] ? ' Tried: '.implode(', ', $tried).'.' : '')
+        );
     }
 
     /**
-     * Priority-ordered fuzzy match of an XS2 category name to the SB
-     * dropdown's category list. Returns the matched integer ID.
+     * Priority-ordered fuzzy match of a category name to the SB dropdown.
+     * Returns null when nothing matches — callers must not invent a default ID.
      *
      * 1. Exact (case-insensitive)
-     * 2. SB name starts with XS2 name ("Longside" → "Longside Upper Tier")
-     * 3. XS2 name starts with SB name
+     * 2. SB name starts with candidate ("Longside" → "Longside Upper Tier")
+     * 3. Candidate starts with SB name
      * 4. Contains (either direction)
      * 5. First-word match
-     * 6. Default: first category in the list
      *
      * @param  list<array<string, mixed>>  $categories
      */
-    private function fuzzyMatchCategoryId(array $categories, string $xs2Name): int
+    private function fuzzyMatchCategoryId(array $categories, string $xs2Name): ?int
     {
         $xs2Lower = mb_strtolower(trim($xs2Name));
+        if ($xs2Lower === '') {
+            return null;
+        }
 
         $items = [];
         foreach ($categories as $cat) {
-            if (! is_array($cat) || ! isset($cat['id'])) {
+            if (! is_array($cat) || ! isset($cat['id']) || ! is_numeric($cat['id']) || (int) $cat['id'] < 1) {
                 continue;
             }
             $items[] = [
@@ -188,7 +230,7 @@ class Xs2SellerListingTransformer
         }
 
         if ($items === []) {
-            return (int) $categories[0]['id'];
+            return null;
         }
 
         foreach ($items as $item) {
@@ -225,7 +267,69 @@ class Xs2SellerListingTransformer
             }
         }
 
-        return $items[0]['id'];
+        return null;
+    }
+
+    /** @return list<int> */
+    private function categorySeatIds(Xs2CategoryMapping $categoryMapping): array
+    {
+        $seatIds = [];
+        if ($categoryMapping->stadium_seat_id !== null && is_numeric($categoryMapping->stadium_seat_id)) {
+            $seatIds[] = (int) $categoryMapping->stadium_seat_id;
+        }
+
+        if ($categoryMapping->relationLoaded('details')) {
+            foreach ($categoryMapping->details as $detail) {
+                if ($detail->stadium_seat_id !== null && is_numeric($detail->stadium_seat_id)) {
+                    $seatIds[] = (int) $detail->stadium_seat_id;
+                }
+            }
+        }
+
+        foreach ($categoryMapping->candidate_scores ?? [] as $candidate) {
+            $seatId = data_get($candidate, 'stadium_seat_id');
+            if (is_numeric($seatId) && (int) $seatId >= 1) {
+                $seatIds[] = (int) $seatId;
+            }
+        }
+
+        return array_values(array_unique($seatIds));
+    }
+
+    /** @return list<string> */
+    private function categoryCandidates(string $rawName, ?Xs2TicketMappingState $mappingState): array
+    {
+        $names = [$rawName];
+
+        $categoryMapping = $mappingState?->categoryMapping;
+        if ($categoryMapping !== null) {
+            if ($categoryMapping->relationLoaded('details')) {
+                foreach ($categoryMapping->details as $detail) {
+                    $names[] = (string) ($detail->stadium_seat_name ?: $detail->name ?: '');
+                }
+            }
+
+            foreach ($categoryMapping->candidate_scores ?? [] as $candidate) {
+                $names[] = (string) data_get($candidate, 'stadium_seat_name', '');
+            }
+        }
+
+        $seen = [];
+        $result = [];
+        foreach ($names as $name) {
+            $name = trim($name);
+            if ($name === '') {
+                continue;
+            }
+            $key = $this->normalise($name);
+            if ($key === '' || isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $result[] = $name;
+        }
+
+        return $result;
     }
 
     /**

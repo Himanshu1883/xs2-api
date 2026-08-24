@@ -60,6 +60,30 @@ class SellerApiClient
         return $this->endpoints->resolve($value, $params, 'Seller API');
     }
 
+    /**
+     * Coerce multipart field values to scalars/strings so integer IDs like
+     * ticket_category are always transmitted as digit strings.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, scalar>
+     */
+    private function scalarMultipartPayload(array $payload): array
+    {
+        $normalized = [];
+        foreach ($payload as $name => $value) {
+            if ($value === null || is_array($value) || is_object($value)) {
+                continue;
+            }
+            if (is_bool($value)) {
+                $normalized[(string) $name] = $value ? '1' : '0';
+            } else {
+                $normalized[(string) $name] = is_string($value) ? $value : (string) $value;
+            }
+        }
+
+        return $normalized;
+    }
+
     /** @param array<string,mixed> $payload @param array<string,string> $headers */
     private function send(string $method, string $endpoint, array $payload = [], array $headers = [], string $operation = 'seller_api'): array
     {
@@ -71,7 +95,7 @@ class SellerApiClient
 
         try {
             $response = $this->request()->withHeaders($headers)->send($method, $endpoint, [
-                $method === 'GET' ? 'query' : 'multipart' => $payload,
+                $method === 'GET' ? 'query' : 'multipart' => $this->scalarMultipartPayload($payload),
             ]);
             $this->debugger->record($operation, $method, $url, $requestHeaders, $payload, $response);
 

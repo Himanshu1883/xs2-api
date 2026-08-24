@@ -466,7 +466,7 @@ class SellerApiContractTest extends TestCase
         );
     }
 
-    public function test_transformer_defaults_to_first_category_id_when_no_fuzzy_match(): void
+    public function test_transformer_fails_when_no_fuzzy_category_match(): void
     {
         Cache::forget('seller-api:ticket-dropdown:45');
         $client = Mockery::mock(SellerApiClient::class);
@@ -477,7 +477,6 @@ class SellerApiContractTest extends TestCase
                 'category' => [['id' => 1, 'category_name' => 'Away']],
             ],
         ]);
-        $client->shouldReceive('sellerId')->once()->andReturn(77);
 
         $mapping = new EventMapping(['m_id' => 45]);
         $mapping->setRelation('xs2Event', new Xs2Event([
@@ -485,13 +484,16 @@ class SellerApiContractTest extends TestCase
             'date_start_local' => '2999-01-01 12:00:00',
         ]));
 
-        $payload = $this->transformer($client)->transform(
+        $this->expectException(ListingTransformationException::class);
+        $this->expectExceptionMessage('does not match a Seats Broker ticket_category ID');
+
+        $this->transformer($client)->transform(
             new Xs2Ticket([
                 'external_ticket_id' => 'xs2-unmatched-category',
                 'ticket_type' => 'eticket',
                 'ticket_status' => 'available',
                 'stock' => 2,
-                'category_name' => 'Corner',
+                'category_name' => 'Matchday Premium',
                 'currency_code' => 'EUR',
                 'net_rate' => 10000,
                 'flags' => [],
@@ -499,9 +501,6 @@ class SellerApiContractTest extends TestCase
             ]),
             $mapping,
         );
-
-        $this->assertSame('Corner', $payload['category_name']);
-        $this->assertSame(1, $payload['ticket_category']);
     }
 
     #[DataProvider('unsellableEvents')]
