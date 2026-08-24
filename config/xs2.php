@@ -62,8 +62,13 @@ return [
     // share one global rate limiter (Cache + RateLimiter) across every xs2-sync
     // worker, so extra xs2-sync workers reduce idle time when jobs release on
     // rate-limit contention without exceeding the configured RPM ceiling.
+    // Dedicated counts for docker-entrypoint.sh / run-queue-workers.sh so
+    // inventory (xs2-sync), publish+qty (seller-api), listing-gen, and
+    // reconcile each run on their own worker and do not block each other.
     'queue_workers' => [
         'xs2_sync' => max(1, (int) env('XS2_SYNC_WORKERS', $lowLoadMode ? 1 : 2)),
+        'xs2_listing_gen' => max(0, (int) env('XS2_LISTING_GEN_WORKERS', 1)),
+        'xs2_reconcile' => max(0, (int) env('XS2_RECONCILE_WORKERS', 1)),
         'xs2_guest' => max(1, (int) env('XS2_GUEST_WORKERS', $lowLoadMode ? 1 : 1)),
         'xs2_mapping' => max(1, (int) env('XS2_MAPPING_WORKERS', 1)),
         'seller_api' => max(1, (int) env('SELLER_API_WORKERS', $lowLoadMode ? 1 : 1)),
