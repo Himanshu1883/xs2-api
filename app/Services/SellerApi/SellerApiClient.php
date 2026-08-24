@@ -238,8 +238,11 @@ class SellerApiClient
     /**
      * Fetch every booking page from the Seller listing API.
      *
+     * SeatsBrokers returns `{ status, total, message, result }` (often without Laravel-style
+     * `meta.last_page`). Prefer `total` so we do not stop early when pagination meta is absent.
+     *
      * @param  array<string, scalar|null>  $query
-     * @return array{result:list<array<string, mixed>>, pages:int}
+     * @return array{result:list<array<string, mixed>>, pages:int, total:?int, listing_base_url:string}
      */
     public function fetchAllBookings(array $query = []): array
     {
@@ -251,7 +254,9 @@ class SellerApiClient
 
         $allRows = [];
         $pages = 0;
+        $reportedTotal = null;
         $maxPages = max(1, (int) config('seller-api.booking_max_pages', 50));
+        $listingBaseUrl = $this->listingBaseUrl();
 
         do {
             $pageQuery = [
@@ -264,6 +269,10 @@ class SellerApiClient
             $response = $this->fetchBookings($pageQuery);
             $pages++;
 
+            if ($reportedTotal === null && is_numeric(data_get($response, 'total'))) {
+                $reportedTotal = (int) data_get($response, 'total');
+            }
+
             $rows = $this->bookingRowsFromResponse($response);
             foreach ($rows as $row) {
                 $allRows[] = $row;
@@ -273,14 +282,26 @@ class SellerApiClient
                 1,
                 (int) data_get($response, 'meta.last_page', data_get($response, 'results.meta.last_page', $page)),
             );
-            $hasMore = $page < $lastPage && $rows !== [];
+            $hasMetaMore = $page < $lastPage && $rows !== [];
+            $hasTotalMore = $reportedTotal !== null
+                && count($allRows) < $reportedTotal
+                && $rows !== [];
+            $hasMore = $hasMetaMore || $hasTotalMore;
             $page++;
         } while ($hasMore && $pages < $maxPages);
 
         return [
             'result' => $allRows,
             'pages' => $pages,
+            'total' => $reportedTotal,
+            'listing_base_url' => $listingBaseUrl,
         ];
+    }
+
+    /** Resolved Seller listing host used for ticket/booking calls (sandbox vs production). */
+    public function resolvedListingBaseUrl(): string
+    {
+        return $this->listingBaseUrl();
     }
 
     /** @return list<array<string, mixed>> */

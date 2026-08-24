@@ -174,6 +174,8 @@ class SellerBookingSyncServiceTest extends TestCase
     public function test_sync_surfaces_seller_api_failures_instead_of_silent_zero(): void
     {
         $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('resolvedListingBaseUrl')
+            ->andReturn('https://sandbox-sellerapi.seatsbrokers.com');
         $client->shouldReceive('fetchAllBookings')
             ->once()
             ->andThrow(new \RuntimeException('Invalid API key or Account is in-active33'));
@@ -195,6 +197,8 @@ class SellerBookingSyncServiceTest extends TestCase
     public function test_sync_imports_bookings_from_paginated_fetch(): void
     {
         $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('resolvedListingBaseUrl')
+            ->andReturn('https://sandbox-sellerapi.seatsbrokers.com');
         $client->shouldReceive('fetchAllBookings')
             ->once()
             ->andReturn([
@@ -210,6 +214,8 @@ class SellerBookingSyncServiceTest extends TestCase
                     ],
                 ],
                 'pages' => 1,
+                'total' => 1,
+                'listing_base_url' => 'https://sandbox-sellerapi.seatsbrokers.com',
             ]);
 
         $listingSales = Mockery::mock(ListingSalesService::class);

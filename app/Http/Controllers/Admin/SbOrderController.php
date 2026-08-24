@@ -84,14 +84,23 @@ class SbOrderController extends Controller
             ], 502);
         }
 
+        $host = is_string($summary['listing_base_url'] ?? null) ? trim((string) $summary['listing_base_url']) : '';
+        $hostLabel = $host !== '' ? $host : 'Seller API';
+        $apiTotal = $summary['api_total'] ?? null;
+        $totalHint = is_numeric($apiTotal)
+            ? sprintf(', API total=%d', (int) $apiTotal)
+            : '';
+
         return response()->json([
             'message' => sprintf(
-                'Synced %d booking(s) from Seller API (%d created, %d updated, %d attendee row(s), %d listing stock update(s) queued).',
+                'Synced %d booking(s) from %s (%d created, %d updated, %d attendee row(s), %d listing stock update(s) queued%s). Sync only imports what this listing host returns for the configured listing apiKey.',
                 $summary['fetched'],
+                $hostLabel,
                 $summary['created'],
                 $summary['updated'],
                 $summary['attendees'],
                 $summary['stock_reconcile_queued'] ?? 0,
+                $totalHint,
             ),
             'data' => $summary,
         ]);

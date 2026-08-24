@@ -33,6 +33,9 @@ class SellerBookingSyncService
      *     attendees:int,
      *     stock_reconcile_queued:int,
      *     xs2_orders_queued:int,
+     *     pages:int,
+     *     api_total:?int,
+     *     listing_base_url:?string,
      *     status:string,
      *     completed_at:string,
      *     error:?string
@@ -55,10 +58,22 @@ class SellerBookingSyncService
             'attendees' => 0,
             'stock_reconcile_queued' => 0,
             'xs2_orders_queued' => 0,
+            'pages' => 0,
+            'api_total' => null,
+            'listing_base_url' => null,
         ];
 
         try {
-            $rows = $this->extractBookingRows($this->client->fetchAllBookings($query));
+            $summary['listing_base_url'] = $this->client->resolvedListingBaseUrl();
+            $payload = $this->client->fetchAllBookings($query);
+            $summary['pages'] = (int) ($payload['pages'] ?? 0);
+            $summary['api_total'] = isset($payload['total']) && is_numeric($payload['total'])
+                ? (int) $payload['total']
+                : null;
+            if (is_string($payload['listing_base_url'] ?? null) && $payload['listing_base_url'] !== '') {
+                $summary['listing_base_url'] = $payload['listing_base_url'];
+            }
+            $rows = $this->extractBookingRows($payload);
 
             $touchedListingIds = [];
 
@@ -71,6 +86,12 @@ class SellerBookingSyncService
 
             return $this->finalizeRun($summary);
         } catch (Throwable $exception) {
+            try {
+                $summary['listing_base_url'] ??= $this->client->resolvedListingBaseUrl();
+            } catch (Throwable) {
+                // ignore — host is diagnostic only
+            }
+
             return $this->finalizeRun($summary, $exception->getMessage());
         }
     }
@@ -504,7 +525,7 @@ class SellerBookingSyncService
     }
 
     /**
-     * @param  array{fetched:int, created:int, updated:int, attendees:int, stock_reconcile_queued:int, xs2_orders_queued:int}  $summary
+     * @param  array{fetched:int, created:int, updated:int, attendees:int, stock_reconcile_queued:int, xs2_orders_queued:int, pages?:int, api_total?:?int, listing_base_url?:?string}  $summary
      * @return array{
      *     fetched:int,
      *     created:int,
@@ -512,6 +533,9 @@ class SellerBookingSyncService
      *     attendees:int,
      *     stock_reconcile_queued:int,
      *     xs2_orders_queued:int,
+     *     pages:int,
+     *     api_total:?int,
+     *     listing_base_url:?string,
      *     status:string,
      *     completed_at:string,
      *     error:?string
@@ -535,9 +559,20 @@ class SellerBookingSyncService
                     'attendees' => (int) ($summary['attendees'] ?? 0),
                     'stock_reconcile_queued' => (int) ($summary['stock_reconcile_queued'] ?? 0),
                     'xs2_orders_queued' => (int) ($summary['xs2_orders_queued'] ?? 0),
+                    'pages' => (int) ($summary['pages'] ?? 0),
+                    'api_total' => $summary['api_total'] ?? null,
+                    'listing_base_url' => $summary['listing_base_url'] ?? null,
                 ],
             ]);
         }
+
+        $summary['pages'] = (int) ($summary['pages'] ?? 0);
+        $summary['api_total'] = array_key_exists('api_total', $summary) && is_numeric($summary['api_total'])
+            ? (int) $summary['api_total']
+            : ($summary['api_total'] ?? null);
+        $summary['listing_base_url'] = isset($summary['listing_base_url']) && is_string($summary['listing_base_url'])
+            ? $summary['listing_base_url']
+            : null;
 
         $summary['status'] = $failed ? 'failed' : 'completed';
         $summary['completed_at'] = now()->toIso8601String();
