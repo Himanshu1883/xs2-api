@@ -66,9 +66,6 @@ class SplitListingService
         if ($splitQty < 1) {
             $errors[] = 'Split quantity must be at least 1.';
         }
-        if ($splitQty > $stock) {
-            $errors[] = 'Split quantity cannot exceed current stock.';
-        }
         if (! in_array($type, ['percentage', 'fixed'], true)) {
             $errors[] = 'Price increment type must be percentage or fixed.';
         }
@@ -258,7 +255,7 @@ class SplitListingService
                 ...$result,
             ];
         } catch (\Throwable $e) {
-            $this->markFailed($ticket->fresh(), $e->getMessage());
+            $this->markFailedFromException($ticket->fresh(), $e);
             throw $e;
         }
     }
@@ -311,7 +308,7 @@ class SplitListingService
 
             return ['action' => 'synced', ...$result];
         } catch (\Throwable $e) {
-            $this->markFailed($ticket->fresh(), $e->getMessage());
+            $this->markFailedFromException($ticket->fresh(), $e);
             throw $e;
         }
     }
@@ -512,6 +509,8 @@ class SplitListingService
 
     public function markFailed(Xs2Ticket $ticket, string $message): void
     {
+        $message = $this->normalizeActivityMessage($message);
+
         $ticket->update([
             'split_sync_status' => 'failed',
             'split_sync_error' => mb_substr($message, 0, 5000),
@@ -519,6 +518,25 @@ class SplitListingService
             'sync_error' => mb_substr($message, 0, 5000),
         ]);
         $this->logActivity($ticket, null, 'sync_fail', $message);
+    }
+
+    public function markFailedFromException(Xs2Ticket $ticket, \Throwable $exception): void
+    {
+        $this->markFailed($ticket, $this->formatFailureMessage($exception));
+    }
+
+    public function formatFailureMessage(\Throwable $exception): string
+    {
+        if ($exception instanceof ValidationException) {
+            $errors = collect($exception->errors())->flatten()->filter()->values()->all();
+            if ($errors !== []) {
+                return implode(' ', array_map(strval(...), $errors));
+            }
+        }
+
+        return trim($exception->getMessage()) !== ''
+            ? $exception->getMessage()
+            : 'Split listing operation failed.';
     }
 
     /**
@@ -594,7 +612,9 @@ class SplitListingService
                 'last_error' => mb_substr($e->getMessage(), 0, 5000),
                 'last_request' => $payload,
             ]);
-            $this->logActivity($ticket, $split, 'create_fail', $e->getMessage());
+            $this->logActivity($ticket, $split, 'create_fail', $this->formatFailureMessage($e), [
+                'exception' => get_class($e),
+            ]);
             throw $e;
         }
 
@@ -650,7 +670,9 @@ class SplitListingService
                 'last_error' => mb_substr($e->getMessage(), 0, 5000),
                 'last_request' => $payload,
             ]);
-            $this->logActivity($ticket, $split, 'update_fail', $e->getMessage());
+            $this->logActivity($ticket, $split, 'update_fail', $this->formatFailureMessage($e), [
+                'exception' => get_class($e),
+            ]);
             throw $e;
         }
     }
@@ -672,7 +694,9 @@ class SplitListingService
                 ]);
             } catch (\Throwable $e) {
                 $split->update(['last_error' => mb_substr($e->getMessage(), 0, 5000)]);
-                $this->logActivity($ticket, $split, 'delete_fail', $e->getMessage());
+                $this->logActivity($ticket, $split, 'delete_fail', $this->formatFailureMessage($e), [
+                    'exception' => get_class($e),
+                ]);
                 Log::channel(config('services.seller_api.log_channel', 'stack'))->warning(
                     'Split listing delete failed; marking deleted locally.',
                     ['listing_split_id' => $split->id, 'error' => $e->getMessage()]
@@ -811,8 +835,20 @@ class SplitListingService
             'master_listing_id' => $ticket->id,
             'listing_split_id' => $split?->id,
             'action' => $action,
-            'message' => mb_substr($message, 0, 255),
+            'message' => $this->normalizeActivityMessage($message),
             'metadata' => $metadata,
         ]);
+    }
+
+    private function normalizeActivityMessage(string $message): string
+    {
+        $message = trim($message);
+
+        if ($message === '') {
+            return '';
+        }
+
+        // Keep activity rows compact even after widening the column to TEXT.
+        return mb_substr($message, 0, 4000);
     }
 }

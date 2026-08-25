@@ -4,11 +4,13 @@ namespace Tests\Unit;
 
 use App\Contracts\MarketplaceListingPublisher;
 use App\Models\ListingSplit;
+use App\Models\ListingSplitActivity;
 use App\Models\Xs2Event;
 use App\Models\Xs2Ticket;
 use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
 use App\Services\SplitListings\SplitListingService;
+use App\Services\Xs2\ListingPublishValidator;
 use App\Services\Xs2\Xs2SellerListingTransformer;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Database\Schema\Blueprint;
@@ -31,8 +33,18 @@ class SplitListingServiceTest extends TestCase
             Mockery::mock(Xs2SellerListingTransformer::class),
             Mockery::mock(SellerApiClient::class),
             Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
             Mockery::mock(ListingSalesService::class),
         );
+    }
+
+    private function publishValidatorMock(): ListingPublishValidator
+    {
+        $validator = Mockery::mock(ListingPublishValidator::class);
+        $validator->shouldReceive('validateForPublish')->byDefault();
+        $validator->shouldReceive('validatePayload')->byDefault();
+
+        return $validator;
     }
 
     public function test_quantity_split_uses_floor_division_with_remainder_on_last(): void
@@ -85,6 +97,44 @@ class SplitListingServiceTest extends TestCase
         $this->assertSame(146.41, $preview['totals']['highest_price']);
     }
 
+    public function test_preview_allows_split_quantity_above_stock_when_remainder_fits(): void
+    {
+        $ticket = $this->ticket(['stock' => 3, 'net_rate' => 10000]);
+
+        $preview = $this->service->preview($ticket, [
+            'split_quantity' => 4,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5,
+            'base_price' => 100,
+        ]);
+
+        $this->assertSame([['split_order' => 1, 'quantity' => 3, 'price' => 100.0]], $preview['listings']);
+        $this->assertSame(3, $preview['totals']['total_quantity']);
+    }
+
+    public function test_format_failure_message_includes_validation_errors(): void
+    {
+        $exception = \Illuminate\Validation\ValidationException::withMessages([
+            'split' => ['Split quantity must be at least 1.'],
+        ]);
+
+        $message = $this->service->formatFailureMessage($exception);
+
+        $this->assertSame('Split quantity must be at least 1.', $message);
+    }
+
+    public function test_log_activity_stores_long_failure_messages(): void
+    {
+        $ticket = $this->ticket(['stock' => 3, 'net_rate' => 10000]);
+        $longMessage = str_repeat('Seller API validation failed. ', 40);
+
+        $this->service->markFailed($ticket, $longMessage);
+
+        $activity = ListingSplitActivity::query()->first();
+        $this->assertNotNull($activity);
+        $this->assertSame(mb_substr(trim($longMessage), 0, 4000), $activity->message);
+    }
+
     public function test_stock_decrease_to_five_updates_trailing_split_quantity(): void
     {
         $publisher = Mockery::mock(MarketplaceListingPublisher::class);
@@ -114,6 +164,7 @@ class SplitListingServiceTest extends TestCase
             $transformer,
             $client,
             Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
         );
 
         $ticket = $this->ticket([
@@ -170,6 +221,7 @@ class SplitListingServiceTest extends TestCase
             Mockery::mock(Xs2SellerListingTransformer::class),
             $client,
             Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
         );
 
         $ticket = $this->ticket([
@@ -220,6 +272,7 @@ class SplitListingServiceTest extends TestCase
             $transformer,
             $client,
             Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
         );
 
         $ticket = $this->ticket([
@@ -286,6 +339,7 @@ class SplitListingServiceTest extends TestCase
             $transformer,
             $client,
             Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
         );
 
         $ticket = $this->ticket([
@@ -350,6 +404,7 @@ class SplitListingServiceTest extends TestCase
             $transformer,
             $client,
             Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
         );
 
         $ticket = $this->ticket([
@@ -490,7 +545,7 @@ class SplitListingServiceTest extends TestCase
             $table->unsignedBigInteger('master_listing_id');
             $table->unsignedBigInteger('listing_split_id')->nullable();
             $table->string('action', 50);
-            $table->string('message')->nullable();
+            $table->text('message')->nullable();
             $table->json('metadata')->nullable();
             $table->timestamps();
         });

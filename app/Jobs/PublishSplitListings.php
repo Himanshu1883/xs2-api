@@ -57,10 +57,12 @@ class PublishSplitListings implements ShouldBeUniqueUntilProcessing, ShouldQueue
             return;
         }
 
-        app(SplitListingService::class)->markFailed(
-            $ticket,
-            $exception?->getMessage() ?? 'Split publish failed.',
-        );
+        $splits = app(SplitListingService::class);
+        if ($exception) {
+            $splits->markFailedFromException($ticket, $exception);
+        } else {
+            $splits->markFailed($ticket, 'Split publish failed.');
+        }
 
         Log::channel(config('services.seller_api.log_channel', 'stack'))->error('Split listing publish job failed.', [
             'ticket_id' => $this->ticketId,
