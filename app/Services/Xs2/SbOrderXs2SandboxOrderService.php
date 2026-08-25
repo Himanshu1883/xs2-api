@@ -10,6 +10,7 @@ use App\Models\SbOrderAttendee;
 use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
 use App\Models\Xs2Ticket;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -227,6 +228,77 @@ class SbOrderXs2SandboxOrderService
         }
     }
 
+    /**
+     * @param  iterable<SbOrder>  $orders
+     */
+    public function attachXs2ListingResolutions(iterable $orders): void
+    {
+        $resolutions = $this->resolveXs2ListingResolutionsForOrders($orders);
+
+        foreach ($orders as $order) {
+            $order->setAttribute(
+                'xs2_listing_resolution',
+                $resolutions[$order->id] ?? ['xs2_listing_id' => null, 'external_ticket_id' => null],
+            );
+        }
+    }
+
+    /**
+     * @param  iterable<SbOrder>  $orders
+     * @return array<int, array{xs2_listing_id: string|null, external_ticket_id: string|null}>
+     */
+    public function resolveXs2ListingResolutionsForOrders(iterable $orders): array
+    {
+        $ordersList = collect($orders);
+        if ($ordersList->isEmpty()) {
+            return [];
+        }
+
+        $listingIds = [];
+        foreach ($ordersList as $order) {
+            foreach ($this->marketplaceListingIds($order) as $listingId) {
+                $listingIds[] = $listingId;
+            }
+        }
+        $listingIds = array_values(array_unique($listingIds));
+
+        $mappingsByListingId = ExternalListingMapping::query()
+            ->whereIn('seller_listing_id', $listingIds)
+            ->get()
+            ->keyBy('seller_listing_id');
+
+        $splitsByListingId = collect();
+        if (Schema::hasTable('listing_splits')) {
+            $splitsByListingId = ListingSplit::query()
+                ->whereIn('seatsbroker_listing_id', $listingIds)
+                ->with('masterListing')
+                ->get()
+                ->keyBy('seatsbroker_listing_id');
+        }
+
+        $ticketIds = $mappingsByListingId->pluck('xs2_ticket_id')
+            ->merge($splitsByListingId->pluck('master_listing_id'))
+            ->filter()
+            ->unique()
+            ->values();
+
+        $ticketsById = $ticketIds->isEmpty()
+            ? collect()
+            : Xs2Ticket::query()->whereIn('id', $ticketIds)->get()->keyBy('id');
+
+        $resolutions = [];
+        foreach ($ordersList as $order) {
+            $resolutions[$order->id] = $this->resolveXs2ListingResolutionFromLookups(
+                $order,
+                $mappingsByListingId,
+                $splitsByListingId,
+                $ticketsById,
+            );
+        }
+
+        return $resolutions;
+    }
+
     public function resolveSandboxTicket(SbOrder $order): ?Xs2Ticket
     {
         foreach ($this->marketplaceListingIds($order) as $listingId) {
@@ -367,8 +439,56 @@ class SbOrderXs2SandboxOrderService
         return Xs2Order::query()->where('sb_order_id', $order->id)->first();
     }
 
+    /**
+     * @param  Collection<string, ExternalListingMapping>  $mappingsByListingId
+     * @param  Collection<string, ListingSplit>  $splitsByListingId
+     * @param  Collection<int, Xs2Ticket>  $ticketsById
+     * @return array{xs2_listing_id: string|null, external_ticket_id: string|null}
+     */
+    private function resolveXs2ListingResolutionFromLookups(
+        SbOrder $order,
+        Collection $mappingsByListingId,
+        Collection $splitsByListingId,
+        Collection $ticketsById,
+    ): array {
+        foreach ($this->marketplaceListingIds($order) as $listingId) {
+            $mapping = $mappingsByListingId->get($listingId);
+            if ($mapping !== null) {
+                $ticket = $ticketsById->get($mapping->xs2_ticket_id);
+                if ($ticket !== null && filled($ticket->external_ticket_id)) {
+                    return [
+                        'xs2_listing_id' => (string) $ticket->external_ticket_id,
+                        'external_ticket_id' => (string) $ticket->external_ticket_id,
+                    ];
+                }
+            }
+
+            $split = $splitsByListingId->get($listingId);
+            if ($split !== null) {
+                $master = $split->relationLoaded('masterListing')
+                    ? $split->masterListing
+                    : $ticketsById->get($split->master_listing_id);
+                if ($master !== null) {
+                    $split->setRelation('masterListing', $master);
+                }
+
+                $xs2ListingId = $split->xs2ListingId();
+                $externalTicketId = $master?->external_ticket_id;
+
+                if ($xs2ListingId !== null || filled($externalTicketId)) {
+                    return [
+                        'xs2_listing_id' => $xs2ListingId ?? (string) $externalTicketId,
+                        'external_ticket_id' => filled($externalTicketId) ? (string) $externalTicketId : null,
+                    ];
+                }
+            }
+        }
+
+        return ['xs2_listing_id' => null, 'external_ticket_id' => null];
+    }
+
     /** @return list<string> */
-    private function marketplaceListingIds(SbOrder $order): array
+    public function marketplaceListingIds(SbOrder $order): array
     {
         $ids = [];
         if ($order->ticket_id !== null) {

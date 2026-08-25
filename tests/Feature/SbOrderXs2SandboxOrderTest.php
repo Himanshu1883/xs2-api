@@ -196,6 +196,42 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         ]);
     }
 
+    public function test_sb_orders_index_includes_resolved_xs2_listing_ids(): void
+    {
+        $masterTicket = $this->seedSandboxTicketMapping('906584');
+        $splitTicket = $this->seedSplitListingMapping('906999', '65e39feec62e49dc8f2e486023c7bd6b');
+
+        SbOrder::query()->create([
+            'booking_no' => 'SB-IDX-MASTER',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+        ]);
+
+        SbOrder::query()->create([
+            'booking_no' => 'SB-IDX-SPLIT',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'ticket_id' => 906999,
+            'listing_id' => '906999',
+            'quantity' => 2,
+        ]);
+
+        $response = $this->withToken($this->adminToken())
+            ->getJson('/api/admin/sb-orders')
+            ->assertOk();
+
+        $rows = collect($response->json('data'))->keyBy('booking_no');
+
+        $this->assertSame($masterTicket->external_ticket_id, $rows['SB-IDX-MASTER']['xs2_listing_id']);
+        $this->assertSame($masterTicket->external_ticket_id, $rows['SB-IDX-MASTER']['xs2_external_ticket_id']);
+        $this->assertSame(
+            '65e39feec62e49dc8f2e486023c7bd6b-S2',
+            $rows['SB-IDX-SPLIT']['xs2_listing_id'],
+        );
+        $this->assertSame($splitTicket->external_ticket_id, $rows['SB-IDX-SPLIT']['xs2_external_ticket_id']);
+    }
+
     public function test_admin_can_manually_create_xs2_order_from_sb_order(): void
     {
         Http::fake([

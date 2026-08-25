@@ -16,6 +16,10 @@ use Illuminate\Http\JsonResponse;
 
 class SbOrderController extends Controller
 {
+    public function __construct(
+        private readonly SbOrderXs2SandboxOrderService $xs2SandboxOrders,
+    ) {}
+
     public function index(SbOrderIndexRequest $request)
     {
         $this->authorize('viewAny', EventMapping::class);
@@ -50,9 +54,10 @@ class SbOrderController extends Controller
             $query->whereDate('match_date', '<=', $filters['date_to']);
         }
 
-        return SbOrderResource::collection(
-            $query->orderByDesc('synced_at')->orderByDesc('id')->paginate($filters['per_page'] ?? 20)
-        );
+        $orders = $query->orderByDesc('synced_at')->orderByDesc('id')->paginate($filters['per_page'] ?? 20);
+        $this->xs2SandboxOrders->attachXs2ListingResolutions($orders->getCollection());
+
+        return SbOrderResource::collection($orders);
     }
 
     public function show(SbOrder $sbOrder): SbOrderResource
@@ -60,6 +65,7 @@ class SbOrderController extends Controller
         $this->authorize('viewAny', EventMapping::class);
 
         $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
         return new SbOrderResource($sbOrder);
     }
@@ -124,6 +130,9 @@ class SbOrderController extends Controller
         $statusLabel = $refreshed->booking_status_text
             ?? ($refreshed->booking_status !== null ? (string) $refreshed->booking_status : 'unknown');
 
+        $refreshed->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $this->xs2SandboxOrders->attachXs2ListingResolutions([$refreshed]);
+
         return response()->json([
             'message' => sprintf(
                 'Updated booking %s from Seller API (status: %s).',
@@ -147,6 +156,7 @@ class SbOrderController extends Controller
         }
 
         $refreshed->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $this->xs2SandboxOrders->attachXs2ListingResolutions([$refreshed]);
 
         if ($refreshed->attendees->isEmpty()) {
             return response()->json([
@@ -193,6 +203,7 @@ class SbOrderController extends Controller
         }
 
         $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
         $message = ($result['created'] ?? false)
             ? sprintf(
@@ -225,6 +236,7 @@ class SbOrderController extends Controller
         }
 
         $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
         return response()->json([
             'message' => sprintf(
