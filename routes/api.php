@@ -89,6 +89,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::post('cron-config/toggle-sb-order-sync', [AdminCronConfigController::class, 'toggleSbOrderSync']);
     Route::get('queue/cron-jobs', [AdminCronJobController::class, 'index']);
     Route::get('queue/cron-jobs/{cronJobId}/logs', [AdminCronJobController::class, 'logs']);
+    Route::get('queue/cron-execution-logs/{logId}', [AdminCronJobController::class, 'executionLog'])->whereNumber('logId');
     Route::post('queue/cron-jobs/{cronJobId}/run', [AdminCronJobController::class, 'run']);
     Route::patch('queue/cron-jobs/{cronJobId}/interval', [AdminCronJobController::class, 'updateInterval']);
     Route::get('webhooks/settings', [AdminWebhookController::class, 'showSettings']);

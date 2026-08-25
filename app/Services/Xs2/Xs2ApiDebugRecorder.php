@@ -144,6 +144,16 @@ class Xs2ApiDebugRecorder
         $existing = array_slice($existing, -25);
         Cache::put($this->cronLogCacheKey(), $existing, now()->addHours(6));
 
+        try {
+            app(\App\Services\Admin\CronExecutionLogService::class)->appendInventoryApiRequests(
+                $interactions,
+                $externalEventId,
+                $taskId,
+            );
+        } catch (\Throwable) {
+            // Cron execution logs are optional during migrations or tests.
+        }
+
         return $entry;
     }
 

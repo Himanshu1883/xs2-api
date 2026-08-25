@@ -74,6 +74,19 @@ class AdminCronJobTest extends TestCase
             'finished_at' => now()->subMinutes(4),
             'duration_ms' => 60000,
             'message' => 'Scheduled run completed successfully.',
+            'metadata' => [
+                'command' => 'xs2:sync-inventory --mode=incremental',
+                'summary' => ['dispatched' => 12, 'waves' => 2],
+                'api_requests' => [
+                    [
+                        'method' => 'GET',
+                        'url' => 'https://api.xs2event.com/v1/tickets',
+                        'response_status' => 200,
+                        'request_body' => [],
+                        'response_body' => ['items' => []],
+                    ],
+                ],
+            ],
         ]);
 
         $token = $this->adminToken();
@@ -83,7 +96,55 @@ class AdminCronJobTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.cron_job_id', 'xs2-inventory-incremental')
             ->assertJsonCount(1, 'data.logs')
-            ->assertJsonPath('data.logs.0.status', 'success');
+            ->assertJsonPath('data.logs.0.status', 'success')
+            ->assertJsonPath('data.logs.0.command', 'xs2:sync-inventory --mode=incremental')
+            ->assertJsonPath('data.logs.0.summary.dispatched', 12)
+            ->assertJsonCount(1, 'data.logs.0.api_requests');
+    }
+
+    public function test_admin_can_view_single_cron_execution_log(): void
+    {
+        $log = CronExecutionLog::query()->create([
+            'cron_job_id' => 'xs2-inventory-full',
+            'trigger' => 'manual',
+            'status' => 'success',
+            'started_at' => now()->subMinute(),
+            'finished_at' => now(),
+            'duration_ms' => 1000,
+            'message' => 'Queued full inventory sync jobs.',
+            'metadata' => [
+                'command' => 'xs2:sync-inventory --mode=full',
+                'api_requests' => [
+                    [
+                        'method' => 'GET',
+                        'url' => 'https://api.xs2event.com/v1/events/evt-1',
+                        'response_status' => 200,
+                        'request_body' => [],
+                        'response_body' => ['id' => 'evt-1'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $token = $this->adminToken();
+
+        $this->withToken($token)
+            ->getJson('/api/admin/queue/cron-execution-logs/'.$log->id)
+            ->assertOk()
+            ->assertJsonPath('data.id', $log->id)
+            ->assertJsonPath('data.cron_job_id', 'xs2-inventory-full')
+            ->assertJsonPath('data.command', 'xs2:sync-inventory --mode=full')
+            ->assertJsonCount(1, 'data.api_requests');
+    }
+
+    public function test_unknown_cron_execution_log_returns_validation_error(): void
+    {
+        $token = $this->adminToken();
+
+        $this->withToken($token)
+            ->getJson('/api/admin/queue/cron-execution-logs/999999')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['log_id']);
     }
 
     public function test_admin_can_view_global_cron_execution_logs_via_live_stats(): void

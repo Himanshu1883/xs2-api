@@ -85,6 +85,21 @@ class CronJobManagementService
     }
 
     /** @return array<string, mixed> */
+    public function executionLog(int $logId): array
+    {
+        $log = $this->executionLogs->find($logId);
+        if ($log === null) {
+            throw ValidationException::withMessages([
+                'log_id' => ["Unknown cron execution log #{$logId}."],
+            ]);
+        }
+
+        $this->assertKnownJob((string) $log['cron_job_id']);
+
+        return $log;
+    }
+
+    /** @return array<string, mixed> */
     public function runNow(string $cronJobId): array
     {
         $task = $this->findTask($cronJobId);
@@ -104,6 +119,9 @@ class CronJobManagementService
         }
 
         $logId = $this->executionLogs->start($cronJobId, 'manual');
+        if ($logId > 0) {
+            app(CronExecutionContext::class)->set($logId, $cronJobId);
+        }
 
         try {
             $result = $this->dispatchRun($cronJobId);
@@ -112,7 +130,10 @@ class CronJobManagementService
                     $logId,
                     'success',
                     message: (string) ($result['message'] ?? 'Manual run completed.'),
-                    metadata: $result,
+                    metadata: [
+                        'summary' => $result,
+                        ...$result,
+                    ],
                 );
             }
 
@@ -134,6 +155,8 @@ class CronJobManagementService
             throw ValidationException::withMessages([
                 'run' => [$exception->getMessage()],
             ]);
+        } finally {
+            app(CronExecutionContext::class)->clear();
         }
     }
 

@@ -34,6 +34,16 @@ class AdminCronJobController extends Controller
         ]);
     }
 
+    public function executionLog(int $logId): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        return response()->json([
+            'message' => 'Cron execution log retrieved successfully.',
+            'data' => $this->cronJobs->executionLog($logId),
+        ]);
+    }
+
     public function run(string $cronJobId): JsonResponse
     {
         $this->authorize('viewAny', EventMapping::class);
