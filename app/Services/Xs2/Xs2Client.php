@@ -183,9 +183,12 @@ class Xs2Client
             }
 
             if (! in_array($response->status(), $retryableStatuses, true)) {
-                throw new Xs2RequestException(
-                    $this->requestFailureMessage($response->status(), $response->json()),
+                $json = $response->json();
+
+                throw Xs2RequestException::fromHttpResponse(
                     $response->status(),
+                    is_array($json) ? $json : null,
+                    $url,
                 );
             }
 
@@ -430,9 +433,12 @@ class Xs2Client
         );
 
         if (! $response->successful()) {
-            throw new Xs2RequestException(
-                $this->requestFailureMessage($response->status(), $response->json()),
+            $json = $response->json();
+
+            throw Xs2RequestException::fromHttpResponse(
                 $response->status(),
+                is_array($json) ? $json : null,
+                $url,
             );
         }
 

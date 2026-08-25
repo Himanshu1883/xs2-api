@@ -3,15 +3,12 @@
 namespace App\Services\Xs2;
 
 use App\Exceptions\Integrations\Xs2RequestException;
-use App\Models\ExternalListingMapping;
-use App\Models\ListingSplit;
 use App\Models\SbOrder;
 use App\Models\SbOrderAttendee;
 use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
 use App\Models\Xs2OrderGuestDataLog;
 use App\Models\Xs2SyncState;
-use App\Models\Xs2Ticket;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
@@ -194,14 +191,6 @@ class SbOrderXs2GuestDataSyncService
         }
 
         $sbOrder = $xs2Order->sbOrder;
-        $ticketId = $sbOrder !== null
-            ? $this->resolveTicketId($xs2Order, $sbOrder)
-            : $this->nullableString($xs2Order->external_ticket_id);
-        if ($ticketId === null) {
-            $this->persistGuestDataLog($xs2Order, null, null, null, 'XS2 ticket_id could not be resolved.');
-
-            return $this->failResult($xs2Order, $xs2Order->sb_order_id, 'XS2 ticket_id could not be resolved.') + ['log_id' => $xs2Order->guestDataLogs()->latest('id')->value('id')];
-        }
 
         if (! $this->guestApiConfigured($xs2Order)) {
             $this->persistGuestDataLog($xs2Order, null, null, null, 'XS2 guest-data API credentials are not configured.');
@@ -213,6 +202,14 @@ class SbOrderXs2GuestDataSyncService
 
         try {
             $guestPayload = $this->fetchBookingOrderGuestDataWithRetry($xs2Order, $bookingOrderId);
+            $ticketId = $this->resolveGuestDataTicketId($xs2Order, $sbOrder, $guestPayload);
+            if ($ticketId === null) {
+                $message = 'XS2 ticket_id could not be resolved.';
+                $this->persistGuestDataLog($xs2Order, null, null, null, $message);
+
+                return $this->failResult($xs2Order, $xs2Order->sb_order_id, $message) + ['log_id' => $xs2Order->guestDataLogs()->latest('id')->value('id')];
+            }
+
             $requirements = $this->guestRequirements($guestPayload, $ticketId);
             if ($requirements === []) {
                 $ticketPayload = $this->fetchTicketGuestRequirements($xs2Order, $ticketId);
@@ -283,7 +280,8 @@ class SbOrderXs2GuestDataSyncService
             ])->save();
 
             $status = $exception instanceof Xs2RequestException ? $exception->status : null;
-            $log = $this->persistGuestDataLog($xs2Order, $requestPayload, $status, null, $message);
+            $responseBody = $exception instanceof Xs2RequestException ? $exception->responseBody : null;
+            $log = $this->persistGuestDataLog($xs2Order, $requestPayload, $status, $responseBody, $message);
 
             return $this->failResult($xs2Order, $xs2Order->sb_order_id, $message) + ['log_id' => $log?->id];
         }
@@ -380,11 +378,6 @@ class SbOrderXs2GuestDataSyncService
             return $this->failResult($xs2Order, $sbOrder->id, 'XS2 bookingorder_id is missing.');
         }
 
-        $ticketId = $this->resolveTicketId($xs2Order, $sbOrder);
-        if ($ticketId === null) {
-            return $this->failResult($xs2Order, $sbOrder->id, 'XS2 ticket_id could not be resolved.');
-        }
-
         $fingerprint = $this->attendeeFingerprint($sbOrder);
         if ($fingerprint !== null
             && $fingerprint === $xs2Order->guest_data_source_fingerprint
@@ -399,6 +392,11 @@ class SbOrderXs2GuestDataSyncService
 
         try {
             $guestPayload = $this->fetchBookingOrderGuestDataWithRetry($xs2Order, $bookingOrderId);
+            $ticketId = $this->resolveGuestDataTicketId($xs2Order, $sbOrder, $guestPayload);
+            if ($ticketId === null) {
+                return $this->failResult($xs2Order, $sbOrder->id, 'XS2 ticket_id could not be resolved.');
+            }
+
             $requirements = $this->guestRequirements($guestPayload, $ticketId);
             if ($requirements === []) {
                 $ticketPayload = $this->fetchTicketGuestRequirements($xs2Order, $ticketId);
@@ -682,36 +680,53 @@ class SbOrderXs2GuestDataSyncService
         }
     }
 
-    private function resolveTicketId(Xs2Order $xs2Order, SbOrder $sbOrder): ?string
+    /**
+     * Resolve the XS2 ticket_id for guest-data PUT requests.
+     *
+     * Prefer the ticket_id returned on the booking-order guest-data GET (authoritative
+     * for split listings), then the SB listing resolution (split-aware xs2_listing_id),
+     * then stored xs2_order.external_ticket_id.
+     */
+    private function resolveGuestDataTicketId(Xs2Order $xs2Order, ?SbOrder $sbOrder, array $guestPayload): ?string
     {
-        $fromOrder = $this->nullableString($xs2Order->external_ticket_id);
-        if ($fromOrder !== null) {
-            return $fromOrder;
+        $fromPayload = $this->ticketIdFromGuestPayload($guestPayload);
+        if ($fromPayload !== null) {
+            return $fromPayload;
         }
 
-        foreach ($this->marketplaceListingIds($sbOrder) as $listingId) {
-            $mapping = ExternalListingMapping::query()
-                ->where('seller_listing_id', $listingId)
-                ->first();
-            if ($mapping !== null) {
-                $ticket = Xs2Ticket::query()->find($mapping->xs2_ticket_id);
-                $ticketId = $this->nullableString($ticket?->external_ticket_id);
-                if ($ticketId !== null) {
-                    return $ticketId;
-                }
+        if ($sbOrder !== null) {
+            $fromListing = $this->resolveTicketIdFromSbListing($sbOrder);
+            if ($fromListing !== null) {
+                return $fromListing;
+            }
+        }
+
+        return $this->nullableString($xs2Order->external_ticket_id);
+    }
+
+    private function resolveTicketIdFromSbListing(SbOrder $sbOrder): ?string
+    {
+        $resolutions = app(SbOrderXs2SandboxOrderService::class)
+            ->resolveXs2ListingResolutionsForOrders([$sbOrder]);
+
+        return $this->nullableString($resolutions[$sbOrder->id]['xs2_listing_id'] ?? null);
+    }
+
+    private function ticketIdFromGuestPayload(array $payload): ?string
+    {
+        $items = $payload['items'] ?? [];
+        if (! is_array($items)) {
+            return null;
+        }
+
+        foreach ($items as $item) {
+            if (! is_array($item)) {
+                continue;
             }
 
-            if (Schema::hasTable('listing_splits')) {
-                $split = ListingSplit::query()
-                    ->where('seatsbroker_listing_id', $listingId)
-                    ->first();
-                if ($split !== null) {
-                    $ticket = Xs2Ticket::query()->find($split->master_listing_id);
-                    $ticketId = $this->nullableString($ticket?->external_ticket_id);
-                    if ($ticketId !== null) {
-                        return $ticketId;
-                    }
-                }
+            $ticketId = $this->nullableString($item['ticket_id'] ?? null);
+            if ($ticketId !== null) {
+                return $ticketId;
             }
         }
 

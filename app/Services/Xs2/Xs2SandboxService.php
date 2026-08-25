@@ -411,9 +411,13 @@ class Xs2SandboxService
         );
 
         if (! $response->successful()) {
-            throw new Xs2RequestException(
-                $this->requestFailureMessage($response->status(), $response->json(), $url),
+            $json = $response->json();
+
+            throw Xs2RequestException::fromHttpResponse(
                 $response->status(),
+                is_array($json) ? $json : null,
+                $url,
+                'XS2 sandbox request failed',
             );
         }
 
@@ -653,9 +657,11 @@ class Xs2SandboxService
     {
         $result = $this->sendDetailed($method, $uri, $options, $operation);
         if (! $result['success']) {
-            throw new Xs2RequestException(
-                (string) ($result['message'] ?? 'XS2 sandbox request failed.'),
-                $result['status'],
+            throw Xs2RequestException::fromHttpResponse(
+                (int) ($result['status'] ?? 0),
+                $result['data'] ?? null,
+                null,
+                'XS2 sandbox request failed',
             );
         }
 
@@ -746,7 +752,12 @@ class Xs2SandboxService
                     'status' => $response->status(),
                     'data' => $body,
                     'headers' => $headers,
-                    'message' => $this->requestFailureMessage($response->status(), $json, $url),
+                    'message' => Xs2RequestException::formatMessage(
+                        $response->status(),
+                        $body,
+                        $url,
+                        'XS2 sandbox request failed',
+                    ),
                 ];
             }
 
@@ -756,7 +767,12 @@ class Xs2SandboxService
                     'status' => $response->status(),
                     'data' => $body,
                     'headers' => $headers,
-                    'message' => $this->requestFailureMessage($response->status(), $json, $url),
+                    'message' => Xs2RequestException::formatMessage(
+                        $response->status(),
+                        $body,
+                        $url,
+                        'XS2 sandbox request failed',
+                    ),
                 ];
             }
 

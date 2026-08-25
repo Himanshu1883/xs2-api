@@ -138,6 +138,20 @@ class Xs2GuestDataPayloadBuilderTest extends TestCase
         $this->assertSame('NLD', $payload['items'][0]['guests'][0]['country_of_residence']);
     }
 
+    public function test_country_of_residence_converts_country_name_to_alpha3(): void
+    {
+        $payload = app(Xs2GuestDataPayloadBuilder::class)->build(
+            self::TICKET_ID,
+            [[
+                'first_name' => 'Carlos',
+                'last_name' => 'Garcia',
+                'nationality' => 'Spain',
+            ]],
+        );
+
+        $this->assertSame('ESP', $payload['items'][0]['guests'][0]['country_of_residence']);
+    }
+
     public function test_country_of_residence_uppercases_alpha3(): void
     {
         $payload = app(Xs2GuestDataPayloadBuilder::class)->build(

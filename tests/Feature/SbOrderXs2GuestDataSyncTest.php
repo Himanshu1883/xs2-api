@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\SyncXs2OrderGuestDataFromSbOrder;
 use App\Models\ExternalListingMapping;
+use App\Models\ListingSplit;
 use App\Models\SbOrder;
 use App\Models\SbOrderAttendee;
 use App\Models\Xs2Event;
@@ -296,6 +297,165 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
 
         $this->assertTrue($result['synced']);
         $this->assertSame(self::BOOKINGORDER_ID, $xs2Order->fresh()->xs2_bookingorder_id);
+    }
+
+    public function test_service_uses_split_listing_ticket_id_for_guest_data_push(): void
+    {
+        $masterTicketId = '65e39feec62e49dc8f2e486023c7bd6b_spp';
+        $splitTicketId = $masterTicketId.'-S2';
+
+        Http::fake([
+            'https://sandbox.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID.'/guestdata*' => Http::sequence()
+                ->push([
+                    'items' => [[
+                        'ticket_id' => $splitTicketId,
+                        'guests' => [[
+                            'first_name' => ['condition' => 'required'],
+                            'last_name' => ['condition' => 'required'],
+                            'passport_number' => ['condition' => 'required'],
+                        ]],
+                    ]],
+                ])
+                ->push([
+                    'guestdata_status' => 'completed',
+                    'items' => [[
+                        'ticket_id' => $splitTicketId,
+                        'guests' => [[
+                            'first_name' => 'Jane',
+                            'last_name' => 'Doe',
+                            'passport_number' => 'AB1234567',
+                        ]],
+                    ]],
+                ]),
+        ]);
+
+        $sbOrder = $this->seedSplitLinkedOrder($masterTicketId, '920288');
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill([
+            'xs2_bookingorder_id' => self::BOOKINGORDER_ID,
+            'xs2_booking_id' => 'xs2-booking-guest-sync',
+            'external_ticket_id' => $masterTicketId,
+            'is_sandbox' => true,
+        ])->save();
+
+        $result = app(SbOrderXs2GuestDataSyncService::class)->syncForSbOrder($sbOrder->fresh(['attendees', 'xs2Order']));
+
+        $this->assertTrue($result['synced']);
+
+        Http::assertSent(function ($request) use ($splitTicketId): bool {
+            return $request->method() === 'PUT'
+                && data_get($request->data(), 'items.0.ticket_id') === $splitTicketId;
+        });
+    }
+
+    public function test_push_guest_data_includes_xs2_response_body_on_failure(): void
+    {
+        Http::fake([
+            'https://sandbox.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID.'/guestdata*' => Http::sequence()
+                ->push([
+                    'items' => [[
+                        'ticket_id' => self::TICKET_ID,
+                        'guests' => [[
+                            'first_name' => ['condition' => 'required'],
+                            'last_name' => ['condition' => 'required'],
+                        ]],
+                    ]],
+                ])
+                ->push([
+                    'message' => 'Invalid or missing guest data',
+                    'errors' => ['country_of_residence' => 'must be ISO alpha-3'],
+                ], 422),
+        ]);
+
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill([
+            'xs2_bookingorder_id' => self::BOOKINGORDER_ID,
+            'external_ticket_id' => self::TICKET_ID,
+            'is_sandbox' => true,
+        ])->save();
+
+        app(SbOrderXs2GuestDataSyncService::class)->copyAttendeesFromSbOrder($sbOrder);
+
+        $result = app(SbOrderXs2GuestDataSyncService::class)->pushGuestDataForXs2Order($xs2Order->fresh(['attendees', 'sbOrder']));
+
+        $this->assertFalse($result['synced']);
+        $this->assertStringContainsString('Invalid or missing guest data', (string) $result['error']);
+        $this->assertStringContainsString('country_of_residence', (string) $result['error']);
+
+        $this->assertDatabaseHas('xs2_order_guest_data_logs', [
+            'xs2_order_id' => $xs2Order->id,
+            'response_status' => 422,
+        ]);
+    }
+
+    private function seedSplitLinkedOrder(string $masterTicketId, string $seatsbrokerListingId): SbOrder
+    {
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'evt-guest-split',
+            'event_name' => 'Guest Split Event',
+            'sport_type' => 'soccer',
+            'event_status' => 'notstarted',
+            'raw_payload' => [],
+        ]);
+
+        $ticket = Xs2Ticket::query()->create([
+            'xs2_event_id' => $event->id,
+            'external_ticket_id' => $masterTicketId,
+            'external_event_id' => $event->external_event_id,
+            'category_name' => 'Tribuna',
+            'net_rate' => 10000,
+            'currency_code' => 'EUR',
+            'is_sandbox' => true,
+            'ticket_status' => 'available',
+            'stock' => 10,
+            'sync_status' => 'pending',
+            'raw_payload' => [],
+        ]);
+
+        ListingSplit::query()->create([
+            'master_listing_id' => $ticket->id,
+            'split_order' => 2,
+            'seller_reference' => 'XS2-'.$masterTicketId.'-S2',
+            'quantity' => 2,
+            'price' => 120.00,
+            'seatsbroker_listing_id' => $seatsbrokerListingId,
+            'status' => 'active',
+            'sync_status' => 'synced',
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-GUEST-SPLIT-001',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'ticket_id' => (int) $seatsbrokerListingId,
+            'listing_id' => $seatsbrokerListingId,
+            'quantity' => 1,
+            'match_name' => 'Guest Split Match',
+        ]);
+
+        Xs2Order::query()->create([
+            'external_order_id' => self::BOOKINGORDER_ID,
+            'is_sandbox' => true,
+            'sb_order_id' => $sbOrder->id,
+            'xs2_booking_id' => 'xs2-booking-guest-sync',
+            'xs2_bookingorder_id' => self::BOOKINGORDER_ID,
+            'xs2_reservation_id' => 'xs2-reservation-guest-split_rsv',
+            'external_ticket_id' => $masterTicketId,
+            'quantity' => 1,
+            'order_status' => 'confirmed',
+        ]);
+
+        SbOrderAttendee::query()->create([
+            'sb_order_id' => $sbOrder->id,
+            'position' => 0,
+            'first_name' => 'Jane',
+            'last_name' => 'Doe',
+            'email' => 'jane@example.com',
+            'passport' => 'AB1234567',
+        ]);
+
+        return $sbOrder;
     }
 
     private function seedLinkedOrder(bool $withAttendees): SbOrder

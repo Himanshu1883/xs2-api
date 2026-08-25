@@ -177,8 +177,48 @@ class Xs2GuestDataPayloadBuilder
             return self::ISO_ALPHA2_TO_ALPHA3[$value] ?? $value;
         }
 
+        $normalizedName = preg_replace('/[^A-Z]/', '', $value) ?? $value;
+        if ($normalizedName !== '' && isset(self::COUNTRY_NAME_TO_ALPHA3[$normalizedName])) {
+            return self::COUNTRY_NAME_TO_ALPHA3[$normalizedName];
+        }
+
         return $value;
     }
+
+    /**
+     * Common country names → ISO 3166-1 alpha-3 (normalized to uppercase letters only).
+     *
+     * @var array<string, string>
+     */
+    private const COUNTRY_NAME_TO_ALPHA3 = [
+        'AFGHANISTAN' => 'AFG', 'ALBANIA' => 'ALB', 'ALGERIA' => 'DZA', 'ANDORRA' => 'AND',
+        'ANGOLA' => 'AGO', 'ARGENTINA' => 'ARG', 'ARMENIA' => 'ARM', 'AUSTRALIA' => 'AUS',
+        'AUSTRIA' => 'AUT', 'AZERBAIJAN' => 'AZE', 'BAHRAIN' => 'BHR', 'BANGLADESH' => 'BGD',
+        'BELARUS' => 'BLR', 'BELGIUM' => 'BEL', 'BOLIVIA' => 'BOL', 'BOSNIAANDHERZEGOVINA' => 'BIH',
+        'BRAZIL' => 'BRA', 'BULGARIA' => 'BGR', 'CAMBODIA' => 'KHM', 'CAMEROON' => 'CMR',
+        'CANADA' => 'CAN', 'CHILE' => 'CHL', 'CHINA' => 'CHN', 'COLOMBIA' => 'COL',
+        'COSTARICA' => 'CRI', 'CROATIA' => 'HRV', 'CUBA' => 'CUB', 'CYPRUS' => 'CYP',
+        'CZECHIA' => 'CZE', 'CZECHREPUBLIC' => 'CZE', 'DENMARK' => 'DNK', 'ECUADOR' => 'ECU',
+        'EGYPT' => 'EGY', 'ESTONIA' => 'EST', 'FINLAND' => 'FIN', 'FRANCE' => 'FRA',
+        'GEORGIA' => 'GEO', 'GERMANY' => 'DEU', 'GHANA' => 'GHA', 'GREECE' => 'GRC',
+        'HONGKONG' => 'HKG', 'HUNGARY' => 'HUN', 'ICELAND' => 'ISL', 'INDIA' => 'IND',
+        'INDONESIA' => 'IDN', 'IRAN' => 'IRN', 'IRAQ' => 'IRQ', 'IRELAND' => 'IRL',
+        'ISRAEL' => 'ISR', 'ITALY' => 'ITA', 'JAMAICA' => 'JAM', 'JAPAN' => 'JPN',
+        'JORDAN' => 'JOR', 'KAZAKHSTAN' => 'KAZ', 'KENYA' => 'KEN', 'KUWAIT' => 'KWT',
+        'LATVIA' => 'LVA', 'LEBANON' => 'LBN', 'LITHUANIA' => 'LTU', 'LUXEMBOURG' => 'LUX',
+        'MALAYSIA' => 'MYS', 'MALTA' => 'MLT', 'MEXICO' => 'MEX', 'MOLDOVA' => 'MDA',
+        'MONTENEGRO' => 'MNE', 'MOROCCO' => 'MAR', 'NETHERLANDS' => 'NLD', 'NEWZEALAND' => 'NZL',
+        'NIGERIA' => 'NGA', 'NORWAY' => 'NOR', 'OMAN' => 'OMN', 'PAKISTAN' => 'PAK',
+        'PANAMA' => 'PAN', 'PERU' => 'PER', 'PHILIPPINES' => 'PHL', 'POLAND' => 'POL',
+        'PORTUGAL' => 'PRT', 'QATAR' => 'QAT', 'ROMANIA' => 'ROU', 'RUSSIA' => 'RUS',
+        'SAUDIARABIA' => 'SAU', 'SERBIA' => 'SRB', 'SINGAPORE' => 'SGP', 'SLOVAKIA' => 'SVK',
+        'SLOVENIA' => 'SVN', 'SOUTHAFRICA' => 'ZAF', 'SOUTHKOREA' => 'KOR', 'SPAIN' => 'ESP',
+        'SRILANKA' => 'LKA', 'SWEDEN' => 'SWE', 'SWITZERLAND' => 'CHE', 'SYRIA' => 'SYR',
+        'TAIWAN' => 'TWN', 'THAILAND' => 'THA', 'TUNISIA' => 'TUN', 'TURKEY' => 'TUR',
+        'UKRAINE' => 'UKR', 'UNITEDARABEMIRATES' => 'ARE', 'UNITEDKINGDOM' => 'GBR',
+        'UNITEDSTATES' => 'USA', 'USA' => 'USA', 'UK' => 'GBR', 'URUGUAY' => 'URY',
+        'UZBEKISTAN' => 'UZB', 'VENEZUELA' => 'VEN', 'VIETNAM' => 'VNM',
+    ];
 
     /**
      * ISO 3166-1 alpha-2 → alpha-3 mapping for common countries in the XS2 guest-data domain.

@@ -792,7 +792,8 @@ class Xs2SandboxTestFlowTest extends TestCase
                 ],
             ])
             ->assertStatus(422)
-            ->assertJsonPath('message', 'XS2 sandbox request failed with HTTP 422 (https://sandbox.xs2.test/v1/bookingorders/'.self::SANDBOX_BOOKINGORDER_ID.'/guestdata): passport_number is required for guest 1');
+            ->assertJsonPath('message', fn (string $message): bool => str_contains($message, 'passport_number is required for guest 1')
+                && str_contains($message, 'Response:'));
     }
 
     public function test_admin_can_download_sandbox_eticket_pdf(): void
