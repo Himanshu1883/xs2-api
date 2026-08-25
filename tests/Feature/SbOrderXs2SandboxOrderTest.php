@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\CreateXs2SandboxOrderFromSbOrder;
 use App\Models\ExternalListingMapping;
+use App\Models\ListingSplit;
 use App\Models\SbOrder;
 use App\Models\User;
 use App\Models\Xs2Event;
@@ -136,6 +137,62 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->assertDatabaseHas('sb_order_xs2_sync_logs', [
             'sb_order_id' => $sbOrder->id,
             'status' => 'success',
+        ]);
+    }
+
+    public function test_service_creates_xs2_sandbox_order_via_listing_split_with_is_sandbox_zero_ticket(): void
+    {
+        Http::fake([
+            'https://sandbox.xs2.test/v1/reservations' => Http::response([
+                'reservation_id' => 'sandbox-reservation-split_rsv',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookings' => Http::response([
+                'booking_id' => self::SANDBOX_BOOKING_ID,
+                'booking_code' => 'SBXSPLIT',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookingorders*' => Http::sequence()
+                ->push([
+                    'bookingorders' => [[
+                        'booking_id' => self::SANDBOX_BOOKING_ID,
+                        'bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+                    ]],
+                ])
+                ->push([
+                    'bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+                    'booking_id' => self::SANDBOX_BOOKING_ID,
+                    'event_name' => 'FC Barcelona vs Test',
+                    'booking_status' => 'confirmed',
+                ]),
+        ]);
+
+        $ticket = $this->seedSplitListingMapping('920288', '65e39feec62e49dc8f2e486023c7bd6b_spp');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67156',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'ticket_id' => 920288,
+            'listing_id' => '287339',
+            'quantity' => 1,
+            'match_name' => 'FC Barcelona vs Test',
+            'stadium_name' => 'Camp Nou',
+            'match_date' => '2026-10-01',
+        ]);
+
+        $service = app(SbOrderXs2SandboxOrderService::class);
+
+        $this->assertTrue($service->queueIfEligible($sbOrder));
+        $this->assertNull($service->resolveQueueSkipReason($sbOrder));
+
+        $result = $service->createFromSbOrder($sbOrder);
+
+        $this->assertTrue($result['created']);
+        $this->assertFalse($result['skipped']);
+        $this->assertDatabaseHas('xs2_orders', [
+            'sb_order_id' => $sbOrder->id,
+            'is_sandbox' => true,
+            'external_order_id' => self::SANDBOX_BOOKINGORDER_ID,
+            'xs2_booking_id' => self::SANDBOX_BOOKING_ID,
+            'external_ticket_id' => $ticket->external_ticket_id,
         ]);
     }
 
@@ -344,6 +401,44 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'seller_listing_id' => $sellerListingId,
             'seller_reference' => 'XS2-ref',
             'status' => 'active',
+        ]);
+
+        return $ticket;
+    }
+
+    private function seedSplitListingMapping(string $seatsbrokerListingId, string $externalTicketId): Xs2Ticket
+    {
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'sandbox-event-split',
+            'event_name' => 'FC Barcelona vs Test',
+            'sport_type' => 'soccer',
+            'event_status' => 'notstarted',
+            'raw_payload' => [],
+        ]);
+
+        $ticket = Xs2Ticket::query()->create([
+            'external_ticket_id' => $externalTicketId,
+            'external_event_id' => $event->external_event_id,
+            'xs2_event_id' => $event->id,
+            'is_sandbox' => false,
+            'ticket_status' => 'available',
+            'stock' => 10,
+            'net_rate' => 12000,
+            'currency_code' => 'EUR',
+            'category_name' => 'Category A',
+            'sync_status' => 'pending',
+            'raw_payload' => [],
+        ]);
+
+        ListingSplit::query()->create([
+            'master_listing_id' => $ticket->id,
+            'split_order' => 2,
+            'seller_reference' => 'XS2-'.$externalTicketId.'-S2',
+            'quantity' => 2,
+            'price' => 120.00,
+            'seatsbroker_listing_id' => $seatsbrokerListingId,
+            'status' => 'active',
+            'sync_status' => 'synced',
         ]);
 
         return $ticket;

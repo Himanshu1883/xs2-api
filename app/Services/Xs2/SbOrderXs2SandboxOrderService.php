@@ -76,7 +76,12 @@ class SbOrderXs2SandboxOrderService
 
         $ticket = $this->resolveSandboxTicket($order);
         if ($ticket === null) {
-            return $this->skip($existing, 'No sandbox XS2 ticket mapping found for this SB order.', $order);
+            return $this->skip(
+                $existing,
+                $this->resolveTicketMappingSkipReason($order)
+                    ?? 'No sandbox XS2 ticket mapping found for this SB order.',
+                $order,
+            );
         }
 
         $quantity = max(1, (int) ($order->quantity ?? 1));
@@ -279,7 +284,47 @@ class SbOrderXs2SandboxOrderService
         }
 
         if ($this->resolveSandboxTicket($order) === null) {
-            return 'No sandbox XS2 ticket mapping found for this SB order.';
+            return $this->resolveTicketMappingSkipReason($order)
+                ?? 'No sandbox XS2 ticket mapping found for this SB order.';
+        }
+
+        return null;
+    }
+
+    public function resolveTicketMappingSkipReason(SbOrder $order): ?string
+    {
+        foreach ($this->marketplaceListingIds($order) as $listingId) {
+            $mapping = ExternalListingMapping::query()
+                ->where('seller_listing_id', $listingId)
+                ->first();
+            if ($mapping !== null) {
+                $ticket = Xs2Ticket::query()->find($mapping->xs2_ticket_id);
+                if ($ticket === null) {
+                    return "external_listing_mappings for seller_listing_id {$listingId} references missing xs2_ticket_id {$mapping->xs2_ticket_id}.";
+                }
+
+                $reason = $this->ticketIneligibleReason($ticket, 'external_listing_mappings', $listingId);
+                if ($reason !== null) {
+                    return $reason;
+                }
+            }
+
+            if (Schema::hasTable('listing_splits')) {
+                $split = ListingSplit::query()
+                    ->where('seatsbroker_listing_id', $listingId)
+                    ->first();
+                if ($split !== null) {
+                    $ticket = Xs2Ticket::query()->find($split->master_listing_id);
+                    if ($ticket === null) {
+                        return "listing_splits for seatsbroker_listing_id {$listingId} references missing master_listing_id {$split->master_listing_id}.";
+                    }
+
+                    $reason = $this->ticketIneligibleReason($ticket, 'listing_splits', $listingId);
+                    if ($reason !== null) {
+                        return $reason;
+                    }
+                }
+            }
         }
 
         return null;
@@ -342,11 +387,38 @@ class SbOrderXs2SandboxOrderService
             return false;
         }
 
+        if ($this->apiEnvironment->xs2OrdersEnvironment() === ApiEnvironmentService::ENV_SANDBOX) {
+            // Sandbox Create Order API accepts mapped tickets even when local is_sandbox=0
+            // (historical inventory synced before sandbox flag separation).
+            return filled($ticket->external_ticket_id);
+        }
+
         if (Schema::hasColumn('xs2_tickets', 'is_sandbox')) {
             return (bool) $ticket->is_sandbox;
         }
 
         return true;
+    }
+
+    private function ticketIneligibleReason(Xs2Ticket $ticket, string $source, string $listingId): ?string
+    {
+        if ($this->isSandboxTicket($ticket)) {
+            return null;
+        }
+
+        if (! filled($ticket->external_ticket_id)) {
+            return "Mapped XS2 ticket #{$ticket->id} from {$source} (seller_listing_id {$listingId}) is missing external_ticket_id.";
+        }
+
+        if (
+            Schema::hasColumn('xs2_tickets', 'is_sandbox')
+            && ! (bool) $ticket->is_sandbox
+            && $this->apiEnvironment->xs2OrdersEnvironment() !== ApiEnvironmentService::ENV_SANDBOX
+        ) {
+            return "Mapped XS2 ticket #{$ticket->id} from {$source} (seller_listing_id {$listingId}) is not marked is_sandbox.";
+        }
+
+        return "Mapped XS2 ticket #{$ticket->id} from {$source} (seller_listing_id {$listingId}) is not eligible for sandbox order creation.";
     }
 
     private function resolveBookingEmail(SbOrder $order): string
