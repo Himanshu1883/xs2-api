@@ -83,4 +83,17 @@ return [
         'avoid leaving odd' => ['id' => 3, 'name' => 'Avoid Leaving Odd'],
     ],
     'split_types_default_id' => (int) env('SELLER_API_DEFAULT_SPLIT_TYPE_ID', 1),
+
+    /*
+    | When SB ticket_dropdown returns no categories for a match, allow publish using
+    | a confirmed admin stadium_seat_id mapping (ticket_category = stadium_seats.id).
+    | SB exposes no Seller API to create match ticket categories — only read via dropdown.
+    */
+    'allow_mapped_seat_when_empty_dropdown' => (bool) env('SELLER_API_ALLOW_MAPPED_SEAT_WHEN_EMPTY_DROPDOWN', true),
+
+    /*
+    | After strict fuzzy name rules fail, pick the best similar_text match when score
+    | is at or above this threshold (0–100). A warning is logged; confirm in admin when unsure.
+    */
+    'ticket_category_similarity_threshold' => (float) env('SELLER_API_TICKET_CATEGORY_SIMILARITY_THRESHOLD', 65),
 ];

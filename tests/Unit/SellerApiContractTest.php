@@ -429,6 +429,120 @@ class SellerApiContractTest extends TestCase
         $this->assertSame($mappedPayload, $fallbackPayload);
     }
 
+    public function test_transformer_uses_mapped_seat_id_when_dropdown_has_no_categories(): void
+    {
+        Cache::forget('seller-api:ticket-dropdown:11544');
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('ticketDropdown')->once()->with(11544)->andReturn([
+            'result' => [
+                'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                'category' => [],
+            ],
+        ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
+
+        $mapping = new EventMapping(['m_id' => 11544]);
+        $mapping->setRelation('xs2Event', new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => '2999-01-01 12:00:00',
+        ]));
+
+        $payload = $this->transformer($client)->transform(
+            new Xs2Ticket([
+                'external_ticket_id' => 'xs2-empty-dropdown',
+                'ticket_type' => 'eticket',
+                'ticket_status' => 'available',
+                'stock' => 2,
+                'category_name' => 'Silver Club Grada',
+                'currency_code' => 'EUR',
+                'net_rate' => 10000,
+                'flags' => [],
+                'options' => [],
+            ]),
+            $mapping,
+            $this->mappedCategoryState(),
+        );
+
+        $this->assertSame(4, $payload['ticket_category']);
+        $this->assertSame('Silver Club Grada', $payload['category_name']);
+    }
+
+    public function test_transformer_uses_similarity_fallback_when_strict_fuzzy_fails(): void
+    {
+        Cache::forget('seller-api:ticket-dropdown:11622');
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('ticketDropdown')->once()->with(11622)->andReturn([
+            'result' => [
+                'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                'category' => [['id' => 12, 'category_name' => 'Silv Club Grada']],
+            ],
+        ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
+
+        $mapping = new EventMapping(['m_id' => 11622]);
+        $mapping->setRelation('xs2Event', new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => '2999-01-01 12:00:00',
+        ]));
+
+        $payload = $this->transformer($client)->transform(
+            new Xs2Ticket([
+                'external_ticket_id' => 'xs2-similarity-category',
+                'ticket_type' => 'eticket',
+                'ticket_status' => 'available',
+                'stock' => 2,
+                'category_name' => 'Silver Club Grada',
+                'currency_code' => 'EUR',
+                'net_rate' => 10000,
+                'flags' => [],
+                'options' => [],
+            ]),
+            $mapping,
+        );
+
+        $this->assertSame(12, $payload['ticket_category']);
+        $this->assertSame('Silver Club Grada', $payload['category_name']);
+    }
+
+    public function test_transformer_fails_when_empty_dropdown_and_no_mapped_seat(): void
+    {
+        Cache::forget('seller-api:ticket-dropdown:11544');
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('ticketDropdown')->once()->with(11544)->andReturn([
+            'result' => [
+                'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                'category' => [],
+            ],
+        ]);
+
+        $mapping = new EventMapping(['m_id' => 11544]);
+        $mapping->setRelation('xs2Event', new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => '2999-01-01 12:00:00',
+        ]));
+
+        $this->expectException(ListingTransformationException::class);
+        $this->expectExceptionMessage('has no ticket categories');
+
+        $this->transformer($client)->transform(
+            new Xs2Ticket([
+                'external_ticket_id' => 'xs2-empty-no-map',
+                'ticket_type' => 'eticket',
+                'ticket_status' => 'available',
+                'stock' => 2,
+                'category_name' => 'Silver Club Grada',
+                'currency_code' => 'EUR',
+                'net_rate' => 10000,
+                'flags' => [],
+                'options' => [],
+            ]),
+            $mapping,
+        );
+    }
+
     public function test_transformer_fails_when_xs2_inventory_category_name_is_missing(): void
     {
         Cache::forget('seller-api:ticket-dropdown:45');

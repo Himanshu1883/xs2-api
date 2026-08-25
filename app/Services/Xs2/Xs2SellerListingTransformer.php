@@ -17,11 +17,17 @@ class Xs2SellerListingTransformer
     public function __construct(
         private readonly SellerApiClient $sellerApi,
         private readonly ?ListingSalesService $listingSales = null,
+        private readonly ?Xs2TextNormalizer $textNormalizer = null,
     ) {}
 
     private function listingSales(): ListingSalesService
     {
         return $this->listingSales ?? app(ListingSalesService::class);
+    }
+
+    private function textNormalizer(): Xs2TextNormalizer
+    {
+        return $this->textNormalizer ?? app(Xs2TextNormalizer::class);
     }
 
     /**
@@ -140,8 +146,9 @@ class Xs2SellerListingTransformer
     /**
      * Resolve ticket_category as a positive integer ID from the SB ticket
      * dropdown. Prefer a confirmed/mapped stadium seat id, then fuzzy-match
-     * XS2 / mapped category names. Never invent an ID — fail with a clear
-     * local error when nothing matches (e.g. "Matchday Premium" with no map).
+     * XS2 / mapped category names, then similar_text when above threshold.
+     * When the dropdown has no categories, use a confirmed mapped stadium_seat_id.
+     * SB exposes no API to create match ticket categories — never invent an ID.
      *
      * @param  array<string, mixed>|null  $catalog
      */
@@ -159,8 +166,22 @@ class Xs2SellerListingTransformer
 
         $categories = data_get($catalog, 'category', []);
         if (! is_array($categories) || $categories === []) {
+            $mappedSeatId = $this->confirmedMappedSeatCategoryId($mappingState?->categoryMapping);
+            if ($mappedSeatId !== null) {
+                $this->logTicketCategoryResolutionWarning(
+                    $matchId,
+                    $xs2CategoryName,
+                    'mapped_seat_empty_dropdown',
+                    $mappedSeatId,
+                    ['stadium_seat_id' => $mappedSeatId],
+                );
+
+                return $mappedSeatId;
+            }
+
             throw new ListingTransformationException(
                 "Cannot publish: SB match_id {$matchId} has no ticket categories."
+                .' Seats Broker does not expose a Seller API to create match ticket categories — configure categories for this match in SB admin, or confirm a stadium seat mapping in XS2 admin.'
             );
         }
 
@@ -183,6 +204,23 @@ class Xs2SellerListingTransformer
             }
         }
 
+        $similarityMatch = $this->bestSimilarityCategoryMatch($categories, $tried);
+        if ($similarityMatch !== null) {
+            $this->logTicketCategoryResolutionWarning(
+                $matchId,
+                $xs2CategoryName,
+                'similarity_fallback',
+                $similarityMatch['id'],
+                [
+                    'xs2_candidate' => $similarityMatch['xs2_candidate'],
+                    'sb_category_name' => $similarityMatch['sb_name'],
+                    'similarity_score' => $similarityMatch['score'],
+                ],
+            );
+
+            return $similarityMatch['id'];
+        }
+
         $available = collect($categories)
             ->filter(fn ($item): bool => is_array($item))
             ->map(fn (array $item): string => trim((string) data_get($item, 'category_name', '')))
@@ -194,8 +232,111 @@ class Xs2SellerListingTransformer
         throw new ListingTransformationException(
             'Cannot publish: XS2 category "'.$xs2CategoryName.'" does not match a Seats Broker ticket_category ID for match_id '.$matchId.'.'
             .' Map the category in admin (or use a name that matches the SB dropdown), then re-Publish.'
+            .' Seats Broker does not expose a Seller API to create match ticket categories.'
             .($available !== '' ? ' Available SB categories: '.$available.'.' : '')
             .($tried !== [] ? ' Tried: '.implode(', ', $tried).'.' : '')
+        );
+    }
+
+    private function confirmedMappedSeatCategoryId(?Xs2CategoryMapping $categoryMapping): ?int
+    {
+        if (! config('seller-api.allow_mapped_seat_when_empty_dropdown', true)) {
+            return null;
+        }
+
+        if ($categoryMapping === null || ! $this->categoryMappingIsPublishable($categoryMapping)) {
+            return null;
+        }
+
+        foreach ($this->categorySeatIds($categoryMapping) as $seatId) {
+            if ($seatId >= 1) {
+                return $seatId;
+            }
+        }
+
+        return null;
+    }
+
+    private function categoryMappingIsPublishable(Xs2CategoryMapping $categoryMapping): bool
+    {
+        if ($categoryMapping->manually_confirmed === true) {
+            return true;
+        }
+
+        return in_array((string) $categoryMapping->status, ['mapped', 'created'], true);
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $categories
+     * @param  list<string>  $candidates
+     * @return array{id: int, xs2_candidate: string, sb_name: string, score: float}|null
+     */
+    private function bestSimilarityCategoryMatch(array $categories, array $candidates): ?array
+    {
+        $threshold = (float) config('seller-api.ticket_category_similarity_threshold', 65);
+        if ($threshold <= 0) {
+            return null;
+        }
+
+        $items = [];
+        foreach ($categories as $cat) {
+            if (! is_array($cat) || ! isset($cat['id']) || ! is_numeric($cat['id']) || (int) $cat['id'] < 1) {
+                continue;
+            }
+            $name = trim((string) data_get($cat, 'category_name', ''));
+            if ($name === '') {
+                continue;
+            }
+            $items[] = ['id' => (int) $cat['id'], 'name' => $name];
+        }
+
+        if ($items === []) {
+            return null;
+        }
+
+        $best = null;
+        $normalizer = $this->textNormalizer();
+        foreach ($candidates as $candidate) {
+            $candidate = trim($candidate);
+            if ($candidate === '') {
+                continue;
+            }
+            foreach ($items as $item) {
+                $score = $normalizer->similarity($candidate, $item['name']);
+                if ($score < $threshold) {
+                    continue;
+                }
+                if ($best === null || $score > $best['score']) {
+                    $best = [
+                        'id' => $item['id'],
+                        'xs2_candidate' => $candidate,
+                        'sb_name' => $item['name'],
+                        'score' => $score,
+                    ];
+                }
+            }
+        }
+
+        return $best;
+    }
+
+    /** @param  array<string, scalar|null>  $context */
+    private function logTicketCategoryResolutionWarning(
+        int $matchId,
+        string $xs2CategoryName,
+        string $strategy,
+        int $ticketCategoryId,
+        array $context = [],
+    ): void {
+        \Log::channel(config('services.seller_api.log_channel', 'stack'))->warning(
+            'Resolved ticket_category via fallback — confirm mapping in admin.',
+            [
+                'match_id' => $matchId,
+                'xs2_category_name' => $xs2CategoryName,
+                'ticket_category' => $ticketCategoryId,
+                'strategy' => $strategy,
+                ...$context,
+            ],
         );
     }
 

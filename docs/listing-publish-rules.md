@@ -38,7 +38,11 @@ Resolve `ticket_category` from the SB `/api/ticket_dropdown` categories for the 
 
 1. Confirmed / mapped `stadium_seat_id` (mapping details or candidate scores) when that ID exists in the dropdown
 2. Fuzzy name match on the XS2 inventory name and mapped SB category names (exact → starts-with → contains → first-word)
-3. Otherwise **fail locally** with a clear error listing available SB categories — do not invent a default ID and do not call SB
+3. **Similarity fallback** — best `similar_text` match when score ≥ `SELLER_API_TICKET_CATEGORY_SIMILARITY_THRESHOLD` (default 65); logs a warning
+4. When the dropdown `category` array is **empty** but admin has a confirmed/mapped `stadium_seat_id`, use that ID (logs a warning)
+5. Otherwise **fail locally** with a clear error listing available SB categories — do not invent a default ID and do not call SB
+
+**SB limitation:** The Seller API has no endpoint to create match ticket categories (`POST /api/ticket/create` requires an existing integer `ticket_category` from the dropdown). Categories must be configured in SB admin for the match, or resolved via XS2 stadium seat mapping. Venue catalog sync (`GET /api/venues`) populates local `stadium_seats` for mapping UI only — it does not add categories to a match dropdown.
 
 Cron / re-publish will keep failing until a resolvable integer category is available (map the category in admin, or use a name that matches the dropdown), then re-Publish.
 
@@ -81,6 +85,24 @@ XS2 category_name: "Matchday Premium"
 SB dropdown: [{ id: 1, category_name: "Away" }]
 → ListingTransformationException: does not match a Seats Broker ticket_category ID ...
 → no Seller API HTTP call
+```
+
+**Allowed** — empty SB dropdown but confirmed stadium seat mapping (match_id 11544-style):
+
+```
+SB dropdown: category: []
+Mapped stadium_seat_id: 88 (manually confirmed)
+→ ticket_category: 88 (warning logged)
+→ createListing(...) proceeds
+```
+
+**Allowed** — similarity fallback when strict fuzzy fails:
+
+```
+XS2 category_name: "Silver Club Grada"
+SB dropdown: [{ id: 12, category_name: "Silv Club Grada" }]
+→ ticket_category: 12 (warning logged)
+→ createListing(...) proceeds
 ```
 
 **Blocked** — missing XS2 inventory category name:
