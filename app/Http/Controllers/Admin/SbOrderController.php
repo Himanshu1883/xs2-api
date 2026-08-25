@@ -11,6 +11,7 @@ use App\Models\SbOrder;
 use App\Models\SbOrderXs2SyncLog;
 use App\Services\SellerApi\SellerBookingSyncService;
 use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
+use App\Services\Xs2\SbOrderXs2SandboxOrderService;
 use Illuminate\Http\JsonResponse;
 
 class SbOrderController extends Controller
@@ -161,6 +162,53 @@ class SbOrderController extends Controller
                 $refreshed->booking_no,
             ),
             'data' => new SbOrderResource($refreshed),
+        ]);
+    }
+
+    public function createXs2Order(SbOrder $sbOrder, SbOrderXs2SandboxOrderService $sandboxOrder): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+
+        if ($sbOrder->xs2Order && filled($sbOrder->xs2Order->xs2_booking_id)) {
+            return response()->json([
+                'message' => 'XS2 order already exists for this SB order.',
+            ], 422);
+        }
+
+        $result = $sandboxOrder->createFromSbOrder($sbOrder);
+
+        if ($result['skipped'] ?? false) {
+            return response()->json([
+                'message' => $result['reason'] ?? 'Could not create XS2 order.',
+            ], 422);
+        }
+
+        $xs2Order = $result['order'];
+        if ($xs2Order === null || ! filled($xs2Order->xs2_booking_id)) {
+            return response()->json([
+                'message' => $result['reason'] ?? 'XS2 order creation failed.',
+            ], 422);
+        }
+
+        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+
+        $message = ($result['created'] ?? false)
+            ? sprintf(
+                'Created XS2 sandbox order %s for booking %s.',
+                $xs2Order->external_order_id,
+                $sbOrder->booking_no,
+            )
+            : sprintf(
+                'Updated XS2 sandbox order %s for booking %s.',
+                $xs2Order->external_order_id,
+                $sbOrder->booking_no,
+            );
+
+        return response()->json([
+            'message' => $message,
+            'data' => new SbOrderResource($sbOrder),
         ]);
     }
 

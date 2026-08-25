@@ -139,6 +139,94 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         ]);
     }
 
+    public function test_admin_can_manually_create_xs2_order_from_sb_order(): void
+    {
+        Http::fake([
+            'https://sandbox.xs2.test/v1/reservations' => Http::response([
+                'reservation_id' => 'sandbox-reservation-manual_rsv',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookings' => Http::response([
+                'booking_id' => self::SANDBOX_BOOKING_ID,
+                'booking_code' => 'SBXMANUAL',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookingorders*' => Http::sequence()
+                ->push([
+                    'bookingorders' => [[
+                        'booking_id' => self::SANDBOX_BOOKING_ID,
+                        'bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+                    ]],
+                ])
+                ->push([
+                    'bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+                    'booking_id' => self::SANDBOX_BOOKING_ID,
+                    'event_name' => 'FC Barcelona vs Test',
+                    'booking_status' => 'confirmed',
+                ]),
+        ]);
+
+        $ticket = $this->seedSandboxTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-MANUAL-001',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 2,
+            'match_name' => 'FC Barcelona vs Test',
+            'stadium_name' => 'Camp Nou',
+            'match_date' => '2026-10-01',
+        ]);
+
+        $token = $this->adminToken();
+
+        $this->withToken($token)
+            ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
+            ->assertOk()
+            ->assertJsonPath('data.xs2_order.xs2_booking_id', self::SANDBOX_BOOKING_ID)
+            ->assertJsonPath('data.xs2_order.external_order_id', self::SANDBOX_BOOKINGORDER_ID);
+
+        $this->assertDatabaseHas('xs2_orders', [
+            'sb_order_id' => $sbOrder->id,
+            'is_sandbox' => true,
+            'external_order_id' => self::SANDBOX_BOOKINGORDER_ID,
+            'xs2_booking_id' => self::SANDBOX_BOOKING_ID,
+            'external_ticket_id' => $ticket->external_ticket_id,
+        ]);
+        $this->assertDatabaseHas('sb_order_xs2_sync_logs', [
+            'sb_order_id' => $sbOrder->id,
+            'status' => 'success',
+        ]);
+    }
+
+    public function test_manual_create_xs2_order_rejects_when_booking_already_exists(): void
+    {
+        $ticket = $this->seedSandboxTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-MANUAL-002',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+            'match_name' => 'FC Barcelona vs Test',
+        ]);
+
+        Xs2Order::query()->create([
+            'external_order_id' => self::SANDBOX_BOOKINGORDER_ID,
+            'is_sandbox' => true,
+            'sb_order_id' => $sbOrder->id,
+            'xs2_booking_id' => self::SANDBOX_BOOKING_ID,
+            'xs2_bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+            'external_ticket_id' => $ticket->external_ticket_id,
+            'quantity' => 1,
+            'order_status' => 'confirmed',
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'XS2 order already exists for this SB order.');
+    }
+
     public function test_admin_sb_order_xs2_sync_log_endpoint_returns_log(): void
     {
         $token = $this->adminToken();
