@@ -15,6 +15,7 @@ class ListingSplitResource extends JsonResource
             'quantity' => (int) $this->quantity,
             'price' => $this->price !== null ? (float) $this->price : null,
             'seatsbroker_listing_id' => $this->seatsbroker_listing_id,
+            'xs2_listing_id' => $this->xs2ListingId(),
             'seller_reference' => $this->seller_reference,
             'status' => $this->status,
             'sync_status' => $this->sync_status,

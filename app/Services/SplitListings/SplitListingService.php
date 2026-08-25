@@ -477,6 +477,7 @@ class SplitListingService
                 'quantity' => $split->quantity,
                 'price' => (float) $split->price,
                 'seatsbroker_listing_id' => $split->seatsbroker_listing_id,
+                'xs2_listing_id' => $split->xs2ListingId(),
                 'status' => $split->status,
                 'sync_status' => $split->sync_status,
                 'last_synced_at' => $split->last_synced_at,

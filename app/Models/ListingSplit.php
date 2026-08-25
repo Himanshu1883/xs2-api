@@ -36,4 +36,19 @@ class ListingSplit extends Model
     {
         return $query->where('status', 'active');
     }
+
+    /** XS2 inventory ticket id for this split (master external_ticket_id + split suffix). */
+    public function xs2ListingId(): ?string
+    {
+        $prefix = (string) config('services.seller_api.external_reference_prefix', 'XS2-');
+        if ($this->seller_reference && str_starts_with($this->seller_reference, $prefix)) {
+            return substr($this->seller_reference, strlen($prefix));
+        }
+
+        if ($this->relationLoaded('masterListing') && $this->masterListing?->external_ticket_id) {
+            return $this->masterListing->external_ticket_id.'-S'.$this->split_order;
+        }
+
+        return null;
+    }
 }
