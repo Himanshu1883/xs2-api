@@ -31,7 +31,7 @@ class Xs2GuestDataPayloadBuilderTest extends TestCase
         $this->assertSame(['items'], array_keys($payload));
         $this->assertCount(1, $payload['items']);
         $this->assertSame(self::TICKET_ID, $payload['items'][0]['ticket_id']);
-        $this->assertSame(Xs2GuestDataPayloadBuilder::GUEST_FIELD_KEYS, array_keys($payload['items'][0]['guests'][0]));
+        $guest = $payload['items'][0]['guests'][0];
         $this->assertSame([
             'first_name' => 'John',
             'last_name' => 'Doe',
@@ -45,11 +45,11 @@ class Xs2GuestDataPayloadBuilderTest extends TestCase
             'street_name' => 'Hereweg 95',
             'city' => 'Groningen',
             'zip' => '9721AA',
-            'guest_id' => null,
-        ], $payload['items'][0]['guests'][0]);
+        ], $guest);
+        $this->assertArrayNotHasKey('guest_id', $guest);
     }
 
-    public function test_build_sends_nulls_for_empty_optional_fields_and_merges_existing_guest_id(): void
+    public function test_build_applies_address_defaults_and_omits_null_optional_fields(): void
     {
         $payload = app(Xs2GuestDataPayloadBuilder::class)->build(
             self::TICKET_ID,
@@ -70,6 +70,7 @@ class Xs2GuestDataPayloadBuilderTest extends TestCase
                 ['guest_id' => 'guest-1_gst'],
                 ['guest_id' => ['value' => 'guest-2_gst']],
             ],
+            'Madrid',
         );
 
         $first = $payload['items'][0]['guests'][0];
@@ -80,16 +81,82 @@ class Xs2GuestDataPayloadBuilderTest extends TestCase
         $this->assertSame('guest-1_gst', $first['guest_id']);
         $this->assertSame('guest-2_gst', $second['guest_id']);
         $this->assertSame('unknown', $first['gender']);
-        $this->assertNull($first['passport_number']);
-        $this->assertNull($first['street_name']);
+        $this->assertArrayNotHasKey('passport_number', $first);
+        $this->assertSame('Not provided', $first['street_name']);
+        $this->assertSame('Madrid', $first['city']);
+        $this->assertSame('00000', $first['zip']);
         $this->assertArrayNotHasKey('conditions', $first);
         $this->assertArrayNotHasKey('reservation_id', $first);
         $this->assertArrayNotHasKey('ticket_id', $first);
         $this->assertArrayNotHasKey('additional_street_name', $first);
-        $this->assertArrayNotHasKey('province', $first);
         $this->assertArrayNotHasKey('supported_team', $first);
-        $this->assertSame(Xs2GuestDataPayloadBuilder::GUEST_FIELD_KEYS, array_keys($first));
-        $this->assertSame(Xs2GuestDataPayloadBuilder::GUEST_FIELD_KEYS, array_keys($second));
+        $this->assertArrayNotHasKey('province', $first);
+        $this->assertSame('Not provided', $second['street_name']);
+        $this->assertSame('Madrid', $second['city']);
+        $this->assertSame('00000', $second['zip']);
+    }
+
+    public function test_build_uses_barcelona_when_default_city_not_provided(): void
+    {
+        $payload = app(Xs2GuestDataPayloadBuilder::class)->build(
+            self::TICKET_ID,
+            [['first_name' => 'Test', 'last_name' => 'User']],
+        );
+
+        $this->assertSame('Barcelona', $payload['items'][0]['guests'][0]['city']);
+    }
+
+    public function test_build_includes_province_and_merges_existing_guest_ids(): void
+    {
+        $payload = app(Xs2GuestDataPayloadBuilder::class)->build(
+            self::TICKET_ID,
+            [[
+                'first_name' => 'Carlos',
+                'last_name' => 'Garcia',
+                'province' => 'Catalonia',
+            ]],
+            [[
+                'guest_id' => 'guest-existing_gst',
+                'reservation_id' => 'res-123_rsv',
+                'ticket_id' => 'ticket-456_tck',
+            ]],
+        );
+
+        $guest = $payload['items'][0]['guests'][0];
+        $this->assertSame('Catalonia', $guest['province']);
+        $this->assertSame('guest-existing_gst', $guest['guest_id']);
+        $this->assertSame('res-123_rsv', $guest['reservation_id']);
+        $this->assertSame('ticket-456_tck', $guest['ticket_id']);
+    }
+
+    public function test_build_normalizes_spain_country_name_to_esp(): void
+    {
+        $payload = app(Xs2GuestDataPayloadBuilder::class)->build(
+            self::TICKET_ID,
+            [[
+                'first_name' => 'Carlos',
+                'last_name' => 'Garcia',
+                'nationality' => 'SPAIN',
+            ]],
+        );
+
+        $this->assertSame('ESP', $payload['items'][0]['guests'][0]['country_of_residence']);
+    }
+
+    public function test_build_output_contains_no_null_values(): void
+    {
+        $payload = app(Xs2GuestDataPayloadBuilder::class)->build(
+            self::TICKET_ID,
+            [[
+                'first_name' => 'Jane',
+                'last_name' => 'Doe',
+                'email' => 'jane@example.com',
+            ]],
+        );
+
+        foreach ($payload['items'][0]['guests'][0] as $value) {
+            $this->assertNotNull($value);
+        }
     }
 
     public function test_street_name_concatenates_house_number_when_separate(): void
@@ -166,6 +233,20 @@ class Xs2GuestDataPayloadBuilderTest extends TestCase
         $this->assertSame('NLD', $payload['items'][0]['guests'][0]['country_of_residence']);
     }
 
+    public function test_contact_phone_adds_plus_prefix_when_missing(): void
+    {
+        $payload = app(Xs2GuestDataPayloadBuilder::class)->build(
+            self::TICKET_ID,
+            [[
+                'first_name' => 'Jane',
+                'last_name' => 'Doe',
+                'phone' => '34612345678',
+            ]],
+        );
+
+        $this->assertSame('+34612345678', $payload['items'][0]['guests'][0]['contact_phone']);
+    }
+
     public function test_gender_normalizes_other_to_unknown(): void
     {
         $payload = app(Xs2GuestDataPayloadBuilder::class)->build(
@@ -180,27 +261,14 @@ class Xs2GuestDataPayloadBuilderTest extends TestCase
         $this->assertSame('unknown', $payload['items'][0]['guests'][0]['gender']);
     }
 
-    public function test_only_official_xs2_fields_are_present_in_guest_output(): void
+    public function test_guest_field_keys_include_province(): void
     {
         $officialFields = [
             'first_name', 'last_name', 'passport_number', 'contact_email', 'contact_phone',
             'lead_guest', 'date_of_birth', 'gender', 'country_of_residence',
-            'street_name', 'city', 'zip', 'guest_id',
+            'street_name', 'city', 'zip', 'province', 'guest_id',
         ];
 
         $this->assertSame($officialFields, Xs2GuestDataPayloadBuilder::GUEST_FIELD_KEYS);
-
-        $payload = app(Xs2GuestDataPayloadBuilder::class)->build(
-            self::TICKET_ID,
-            [['first_name' => 'Test', 'last_name' => 'User']],
-        );
-
-        $guestKeys = array_keys($payload['items'][0]['guests'][0]);
-        $this->assertSame($officialFields, $guestKeys);
-
-        $nonDocFields = ['additional_street_name', 'province', 'supported_team', 'conditions', 'reservation_id', 'ticket_id'];
-        foreach ($nonDocFields as $field) {
-            $this->assertArrayNotHasKey($field, $payload['items'][0]['guests'][0], "Non-doc field '{$field}' should not be in guest output");
-        }
     }
 }

@@ -32,8 +32,21 @@ class Xs2GuestDataPayloadBuilder
         'street_name',
         'city',
         'zip',
+        'province',
         'guest_id',
     ];
+
+    /** @var list<string> */
+    public const MERGED_EXISTING_GUEST_KEYS = [
+        'reservation_id',
+        'ticket_id',
+    ];
+
+    private const DEFAULT_STREET_NAME = 'Not provided';
+
+    private const DEFAULT_CITY = 'Barcelona';
+
+    private const DEFAULT_ZIP = '00000';
 
     /**
      * @param  Collection<int, Xs2OrderAttendee|SbOrderAttendee>|iterable<int, Xs2OrderAttendee|SbOrderAttendee|array<string, mixed>>  $attendees
@@ -44,6 +57,7 @@ class Xs2GuestDataPayloadBuilder
         string $ticketId,
         iterable $attendees,
         array $existingGuests = [],
+        ?string $defaultCity = null,
     ): array {
         $guests = [];
         foreach (Collection::make($attendees)->values() as $index => $attendee) {
@@ -51,6 +65,7 @@ class Xs2GuestDataPayloadBuilder
                 $attendee,
                 $index,
                 is_array($existingGuests[$index] ?? null) ? $existingGuests[$index] : [],
+                $defaultCity,
             );
         }
 
@@ -79,6 +94,7 @@ class Xs2GuestDataPayloadBuilder
             'zip', 'postal_code', 'postcode' => ['zip', 'postal_code', 'postcode', 'zipcode'],
             'gender' => ['gender'],
             'city' => ['city'],
+            'province', 'state' => ['province', 'state'],
             default => [$requirement],
         };
 
@@ -94,6 +110,7 @@ class Xs2GuestDataPayloadBuilder
         object|array $attendee,
         int $index,
         array $existingGuest,
+        ?string $defaultCity,
     ): array {
         $country = $this->normalizeCountryAlpha3(
             $this->firstString($attendee, ['nationality', 'country_of_residence', 'country']),
@@ -115,21 +132,94 @@ class Xs2GuestDataPayloadBuilder
         $guestId = $this->nullableString($existingGuestId)
             ?? $this->firstString($attendee, ['guest_id']);
 
-        return [
+        $guest = [
             'first_name' => $this->firstString($attendee, ['first_name', 'firstname']),
             'last_name' => $this->firstString($attendee, ['last_name', 'lastname']),
             'passport_number' => $this->firstString($attendee, ['passport', 'passport_number']),
             'contact_email' => $this->firstString($attendee, ['email', 'contact_email']),
-            'contact_phone' => $this->firstString($attendee, ['phone', 'contact_phone', 'mobile']),
+            'contact_phone' => $this->normalizeContactPhone(
+                $this->firstString($attendee, ['phone', 'contact_phone', 'mobile']),
+            ),
             'lead_guest' => $index === 0,
             'date_of_birth' => $this->firstString($attendee, ['dob', 'date_of_birth']),
             'gender' => $gender,
             'country_of_residence' => $country,
-            'street_name' => $this->resolveStreetName($attendee),
-            'city' => $this->firstString($attendee, ['city']),
-            'zip' => $this->firstString($attendee, ['zip', 'postal_code', 'postcode', 'zipcode']),
+            'street_name' => $this->resolveStreetNameWithDefault($attendee),
+            'city' => $this->resolveCity($attendee, $defaultCity),
+            'zip' => $this->resolveZip($attendee),
             'guest_id' => $guestId,
         ];
+
+        $province = $this->firstString($attendee, ['province', 'state']);
+        if ($province !== null) {
+            $guest['province'] = $province;
+        }
+
+        foreach (self::MERGED_EXISTING_GUEST_KEYS as $key) {
+            $value = $this->nullableString($existingGuest[$key] ?? null);
+            if ($value !== null) {
+                $guest[$key] = $value;
+            }
+        }
+
+        return $this->omitNullValues($guest);
+    }
+
+    /**
+     * @param  Xs2OrderAttendee|SbOrderAttendee|array<string, mixed>  $attendee
+     */
+    private function resolveStreetNameWithDefault(object|array $attendee): string
+    {
+        return $this->resolveStreetName($attendee) ?? self::DEFAULT_STREET_NAME;
+    }
+
+    /**
+     * @param  Xs2OrderAttendee|SbOrderAttendee|array<string, mixed>  $attendee
+     */
+    private function resolveCity(object|array $attendee, ?string $defaultCity): string
+    {
+        $city = $this->firstString($attendee, ['city']);
+
+        return $city ?? $defaultCity ?? self::DEFAULT_CITY;
+    }
+
+    /**
+     * @param  Xs2OrderAttendee|SbOrderAttendee|array<string, mixed>  $attendee
+     */
+    private function resolveZip(object|array $attendee): string
+    {
+        return $this->firstString($attendee, ['zip', 'postal_code', 'postcode', 'zipcode'])
+            ?? self::DEFAULT_ZIP;
+    }
+
+    private function normalizeContactPhone(?string $phone): ?string
+    {
+        if ($phone === null) {
+            return null;
+        }
+
+        $phone = trim($phone);
+        if ($phone === '') {
+            return null;
+        }
+
+        if (! str_starts_with($phone, '+')) {
+            return '+'.$phone;
+        }
+
+        return $phone;
+    }
+
+    /**
+     * @param  array<string, mixed>  $guest
+     * @return array<string, mixed>
+     */
+    private function omitNullValues(array $guest): array
+    {
+        return array_filter(
+            $guest,
+            static fn (mixed $value): bool => $value !== null,
+        );
     }
 
     /**
@@ -312,6 +402,8 @@ class Xs2GuestDataPayloadBuilder
             'date_of_birth' => $attendee->dob ?? null,
             'nationality' => $attendee->nationality ?? null,
             'country_of_residence' => $attendee->nationality ?? null,
+            'province' => $attendee->province ?? null,
+            'state' => $attendee->province ?? null,
             'email' => $attendee->email ?? null,
             'contact_email' => $attendee->email ?? null,
             'phone' => $attendee->phone ?? null,

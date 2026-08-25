@@ -14,7 +14,6 @@ use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
 use App\Services\SellerApi\SellerBookingSyncService;
 use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
-use App\Services\Xs2\Xs2GuestDataPayloadBuilder;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
@@ -151,10 +150,12 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
                 && str_contains($request->url(), '/v1/bookingorders/'.self::BOOKINGORDER_ID.'/guestdata')
                 && data_get($request->data(), 'items.0.ticket_id') === self::TICKET_ID
                 && is_array($guest)
-                && array_keys($guest) === Xs2GuestDataPayloadBuilder::GUEST_FIELD_KEYS
                 && $guest['first_name'] === 'Jane'
                 && $guest['lead_guest'] === true
-                && $guest['guest_id'] === null
+                && $guest['street_name'] === 'Not provided'
+                && $guest['city'] === 'Barcelona'
+                && $guest['zip'] === '00000'
+                && ! array_key_exists('guest_id', $guest)
                 && ! array_key_exists('reservation_id', $guest)
                 && ! array_key_exists('ticket_id', $guest)
                 && ! array_key_exists('conditions', $guest);

@@ -9,6 +9,7 @@ use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
 use App\Models\Xs2OrderGuestDataLog;
 use App\Models\Xs2SyncState;
+use App\Models\Xs2Ticket;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
@@ -241,6 +242,7 @@ class SbOrderXs2GuestDataSyncService
                 $ticketId,
                 $xs2Order->attendees,
                 $existingGuests,
+                $this->resolveGuestDataDefaultCity($xs2Order, $sbOrder),
             );
 
             $response = $this->updateBookingGuestData(
@@ -429,6 +431,7 @@ class SbOrderXs2GuestDataSyncService
                 $ticketId,
                 $sbOrder->attendees,
                 $existingGuests,
+                $this->resolveGuestDataDefaultCity($xs2Order, $sbOrder),
             );
 
             $response = $this->updateBookingGuestData(
@@ -683,25 +686,52 @@ class SbOrderXs2GuestDataSyncService
     /**
      * Resolve the XS2 ticket_id for guest-data PUT requests.
      *
-     * Prefer the ticket_id returned on the booking-order guest-data GET (authoritative
-     * for split listings), then the SB listing resolution (split-aware xs2_listing_id),
-     * then stored xs2_order.external_ticket_id.
+     * Prefer split-aware xs2_listing_id from the SB order listing, then the ticket_id
+     * on the booking-order guest-data GET, then stored xs2_order.external_ticket_id.
      */
     private function resolveGuestDataTicketId(Xs2Order $xs2Order, ?SbOrder $sbOrder, array $guestPayload): ?string
     {
+        $fromListing = $sbOrder !== null ? $this->resolveTicketIdFromSbListing($sbOrder) : null;
+        if ($fromListing !== null) {
+            return $fromListing;
+        }
+
         $fromPayload = $this->ticketIdFromGuestPayload($guestPayload);
         if ($fromPayload !== null) {
             return $fromPayload;
         }
 
+        return $this->nullableString($xs2Order->external_ticket_id);
+    }
+
+    private function resolveGuestDataDefaultCity(Xs2Order $xs2Order, ?SbOrder $sbOrder): string
+    {
+        $ticketIds = [];
         if ($sbOrder !== null) {
             $fromListing = $this->resolveTicketIdFromSbListing($sbOrder);
             if ($fromListing !== null) {
-                return $fromListing;
+                $ticketIds[] = $fromListing;
             }
         }
 
-        return $this->nullableString($xs2Order->external_ticket_id);
+        $externalTicketId = $this->nullableString($xs2Order->external_ticket_id);
+        if ($externalTicketId !== null) {
+            $ticketIds[] = $externalTicketId;
+        }
+
+        foreach (array_unique($ticketIds) as $ticketId) {
+            $ticket = Xs2Ticket::query()
+                ->where('external_ticket_id', $ticketId)
+                ->with('xs2Event')
+                ->first();
+
+            $city = $this->nullableString($ticket?->xs2Event?->city);
+            if ($city !== null) {
+                return $city;
+            }
+        }
+
+        return 'Barcelona';
     }
 
     private function resolveTicketIdFromSbListing(SbOrder $sbOrder): ?string
