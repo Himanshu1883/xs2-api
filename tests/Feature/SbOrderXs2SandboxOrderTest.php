@@ -50,7 +50,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->seedSandboxTicketMapping('906584');
 
         $client = Mockery::mock(SellerApiClient::class);
-        $client->shouldReceive('fetchBookings')
+        $client->shouldReceive('resolvedListingBaseUrl')->andReturn('https://seller.test');
+        $client->shouldReceive('fetchAllBookings')
             ->once()
             ->andReturn([
                 'result' => [[
@@ -132,6 +133,39 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'xs2_booking_id' => self::SANDBOX_BOOKING_ID,
             'external_ticket_id' => $ticket->external_ticket_id,
         ]);
+        $this->assertDatabaseHas('sb_order_xs2_sync_logs', [
+            'sb_order_id' => $sbOrder->id,
+            'status' => 'success',
+        ]);
+    }
+
+    public function test_admin_sb_order_xs2_sync_log_endpoint_returns_log(): void
+    {
+        $token = $this->adminToken();
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-9010',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'ticket_id' => 906584,
+            'quantity' => 1,
+            'match_name' => 'FC Barcelona vs Test',
+        ]);
+
+        \App\Models\SbOrderXs2SyncLog::query()->create([
+            'sb_order_id' => $sbOrder->id,
+            'status' => 'queued',
+            'skip_reason' => null,
+            'reservation_request' => ['items' => []],
+            'reservation_response' => ['reservation_id' => 'sandbox-reservation-sb_rsv'],
+            'reservation_response_status' => 201,
+            'reservation_response_headers' => ['content-type' => ['application/json']],
+        ]);
+
+        $this->withToken($token)
+            ->getJson("/api/admin/sb-orders/{$sbOrder->id}/xs2-sync-log")
+            ->assertOk()
+            ->assertJsonPath('data.status', 'queued')
+            ->assertJsonPath('data.reservation_response_status', 201)
+            ->assertJsonPath('data.reservation_response.reservation_id', 'sandbox-reservation-sb_rsv');
     }
 
     public function test_service_skips_order_creation_when_create_order_environment_is_production(): void

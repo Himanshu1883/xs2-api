@@ -358,6 +358,7 @@ class SellerBookingSyncService
 
             $order->load('attendees');
             $queueXs2SandboxOrder = $this->xs2SandboxOrders->queueIfEligible($order);
+            $this->xs2SandboxOrders->recordQueueDecision($order);
         });
 
         if ($queueXs2SandboxOrder) {

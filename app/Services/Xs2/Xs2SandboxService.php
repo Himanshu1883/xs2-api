@@ -243,12 +243,56 @@ class Xs2SandboxService
         );
     }
 
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{
+     *     success: bool,
+     *     status: int|null,
+     *     data: array<string, mixed>,
+     *     headers: array<string, list<string>>,
+     *     message: string|null
+     * }
+     */
+    public function createReservationDetailed(array $payload): array
+    {
+        $this->validateConfig();
+
+        return $this->sendDetailed(
+            'POST',
+            $this->endpoint('reservations_endpoint'),
+            ['json' => $payload],
+            'sandbox_create_reservation',
+        );
+    }
+
     /** @param array<string, mixed> $payload */
     public function createBooking(array $payload): array
     {
         $this->validateConfig();
 
         return $this->send(
+            'POST',
+            (string) $this->setting('bookings_endpoint', '/v1/bookings'),
+            ['json' => $payload],
+            'sandbox_create_booking',
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{
+     *     success: bool,
+     *     status: int|null,
+     *     data: array<string, mixed>,
+     *     headers: array<string, list<string>>,
+     *     message: string|null
+     * }
+     */
+    public function createBookingDetailed(array $payload): array
+    {
+        $this->validateConfig();
+
+        return $this->sendDetailed(
             'POST',
             (string) $this->setting('bookings_endpoint', '/v1/bookings'),
             ['json' => $payload],
@@ -607,6 +651,29 @@ class Xs2SandboxService
      */
     private function send(string $method, string $uri, array $options = [], string $operation = 'xs2_sandbox_api'): array
     {
+        $result = $this->sendDetailed($method, $uri, $options, $operation);
+        if (! $result['success']) {
+            throw new Xs2RequestException(
+                (string) ($result['message'] ?? 'XS2 sandbox request failed.'),
+                $result['status'],
+            );
+        }
+
+        return $result['data'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @return array{
+     *     success: bool,
+     *     status: int|null,
+     *     data: array<string, mixed>,
+     *     headers: array<string, list<string>>,
+     *     message: string|null
+     * }
+     */
+    private function sendDetailed(string $method, string $uri, array $options = [], string $operation = 'xs2_sandbox_api'): array
+    {
         $attempts = max(1, (int) $this->setting('retry_times', 2));
         $retryableStatuses = [429, 500, 502, 503, 504];
         $url = $this->absoluteUrl($uri);
@@ -634,7 +701,13 @@ class Xs2SandboxService
                         $exception->getMessage(),
                     );
 
-                    throw new Xs2RequestException('XS2 sandbox request could not connect.');
+                    return [
+                        'success' => false,
+                        'status' => null,
+                        'data' => [],
+                        'headers' => [],
+                        'message' => 'XS2 sandbox request could not connect.',
+                    ];
                 }
 
                 $this->backoff($attempt);
@@ -643,34 +716,60 @@ class Xs2SandboxService
             }
 
             $this->debugger->record($operation, $method, $url, $requestHeaders, $payload, $response);
+            $headers = $response->headers();
+            $json = $response->json();
+            $body = is_array($json) ? $json : [];
 
             if ($response->successful()) {
-                $json = $response->json();
                 if (! is_array($json)) {
-                    throw new Xs2ResponseException('XS2 sandbox response is not a JSON object or array.');
+                    return [
+                        'success' => false,
+                        'status' => $response->status(),
+                        'data' => [],
+                        'headers' => $headers,
+                        'message' => 'XS2 sandbox response is not a JSON object or array.',
+                    ];
                 }
 
-                return $json;
+                return [
+                    'success' => true,
+                    'status' => $response->status(),
+                    'data' => $json,
+                    'headers' => $headers,
+                    'message' => null,
+                ];
             }
 
             if (! in_array($response->status(), $retryableStatuses, true)) {
-                throw new Xs2RequestException(
-                    $this->requestFailureMessage($response->status(), $response->json(), $url),
-                    $response->status(),
-                );
+                return [
+                    'success' => false,
+                    'status' => $response->status(),
+                    'data' => $body,
+                    'headers' => $headers,
+                    'message' => $this->requestFailureMessage($response->status(), $json, $url),
+                ];
             }
 
             if ($attempt === $attempts) {
-                throw new Xs2RequestException(
-                    $this->requestFailureMessage($response->status(), $response->json(), $url),
-                    $response->status(),
-                );
+                return [
+                    'success' => false,
+                    'status' => $response->status(),
+                    'data' => $body,
+                    'headers' => $headers,
+                    'message' => $this->requestFailureMessage($response->status(), $json, $url),
+                ];
             }
 
             $this->backoff($attempt);
         }
 
-        throw new Xs2RequestException('XS2 sandbox request failed.');
+        return [
+            'success' => false,
+            'status' => null,
+            'data' => [],
+            'headers' => [],
+            'message' => 'XS2 sandbox request failed.',
+        ];
     }
 
     /** @param array<string,mixed>|list<mixed> $response @param list<string> $keys @return list<mixed>|null */

@@ -128,6 +128,7 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::post('sb-orders/{sbOrder}/refresh', [SbOrderController::class, 'refresh'])->whereNumber('sbOrder');
     Route::post('sb-orders/{sbOrder}/fetch-attendees', [SbOrderController::class, 'fetchAttendees'])->whereNumber('sbOrder');
     Route::post('sb-orders/{sbOrder}/move-to-xs2', [SbOrderController::class, 'moveToXs2Order'])->whereNumber('sbOrder');
+    Route::get('sb-orders/{sbOrder}/xs2-sync-log', [SbOrderController::class, 'xs2SyncLog'])->whereNumber('sbOrder');
     Route::get('sb-orders/{sbOrder}', [SbOrderController::class, 'show'])->whereNumber('sbOrder');
 
     Route::get('xs2-orders', [Xs2OrderController::class, 'index']);

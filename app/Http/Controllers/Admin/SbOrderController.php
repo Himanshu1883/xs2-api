@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Admin;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\SbOrderIndexRequest;
 use App\Http\Resources\SbOrderResource;
+use App\Http\Resources\SbOrderXs2SyncLogResource;
 use App\Models\EventMapping;
 use App\Models\SbOrder;
+use App\Models\SbOrderXs2SyncLog;
 use App\Services\SellerApi\SellerBookingSyncService;
 use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
 use Illuminate\Http\JsonResponse;
@@ -184,6 +186,19 @@ class SbOrderController extends Controller
                 $sbOrder->xs2Order?->external_order_id ?? $result['xs2_order_id'],
             ),
             'data' => new SbOrderResource($sbOrder),
+        ]);
+    }
+
+    public function xs2SyncLog(SbOrder $sbOrder): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $log = SbOrderXs2SyncLog::query()
+            ->where('sb_order_id', $sbOrder->id)
+            ->first();
+
+        return response()->json([
+            'data' => $log !== null ? new SbOrderXs2SyncLogResource($log) : null,
         ]);
     }
 }

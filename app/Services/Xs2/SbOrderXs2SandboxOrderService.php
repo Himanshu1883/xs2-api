@@ -23,6 +23,7 @@ class SbOrderXs2SandboxOrderService
         private readonly Xs2SandboxService $sandbox,
         private readonly ApiEnvironmentService $apiEnvironment,
         private readonly SbOrderXs2GuestDataSyncService $guestDataSync,
+        private readonly SbOrderXs2SyncLogService $syncLogs,
     ) {}
 
     /**
@@ -40,23 +41,30 @@ class SbOrderXs2SandboxOrderService
             return $this->skip(
                 null,
                 'XS2 production order creation is not implemented (UnsupportedXs2ReservationService); switch Create Order API to sandbox.',
+                $order,
             );
         }
 
         if (! $this->isEnabled()) {
-            return $this->skip(null, 'XS2 sandbox auto-order sync is disabled.');
+            return $this->skip(null, 'XS2 sandbox auto-order sync is disabled.', $order);
         }
 
         if (! $this->sandbox->isConfigured()) {
-            return $this->skip(null, 'XS2 sandbox credentials are not configured.');
+            return $this->skip(null, 'XS2 sandbox credentials are not configured.', $order);
         }
 
         if ($this->isCancelled($order)) {
-            return $this->skip(null, 'SB order is cancelled.');
+            return $this->skip(null, 'SB order is cancelled.', $order);
         }
 
         $existing = $this->existingOrder($order);
         if ($existing !== null && filled($existing->xs2_booking_id)) {
+            $this->syncLogs->recordSkipped(
+                $order->id,
+                'XS2 sandbox order already exists for this SB order.',
+                $existing->id,
+            );
+
             return [
                 'order' => $existing,
                 'created' => false,
@@ -68,13 +76,13 @@ class SbOrderXs2SandboxOrderService
 
         $ticket = $this->resolveSandboxTicket($order);
         if ($ticket === null) {
-            return $this->skip($existing, 'No sandbox XS2 ticket mapping found for this SB order.');
+            return $this->skip($existing, 'No sandbox XS2 ticket mapping found for this SB order.', $order);
         }
 
         $quantity = max(1, (int) ($order->quantity ?? 1));
         $netRate = (int) ($ticket->net_rate ?? 0);
         if ($netRate <= 0) {
-            return $this->skip($existing, 'Sandbox ticket is missing net_rate.');
+            return $this->skip($existing, 'Sandbox ticket is missing net_rate.', $order);
         }
 
         $currency = (string) ($ticket->currency_code ?? $order->currency_type ?? 'EUR');
@@ -98,7 +106,13 @@ class SbOrderXs2SandboxOrderService
 
         try {
             return DB::transaction(function () use ($order, $ticket, $existing, $reservationRequest, $quantity, $bookingEmail): array {
-                $reservationResponse = $this->sandbox->createReservation($reservationRequest);
+                $reservationResult = $this->sandbox->createReservationDetailed($reservationRequest);
+                $this->syncLogs->recordReservationExchange($order->id, $reservationRequest, $reservationResult);
+                if (! $reservationResult['success']) {
+                    throw new \RuntimeException((string) ($reservationResult['message'] ?? 'XS2 sandbox reservation failed.'));
+                }
+
+                $reservationResponse = $reservationResult['data'];
                 $reservationId = $this->nullableString($reservationResponse['reservation_id'] ?? null);
                 if ($reservationId === null) {
                     throw new \RuntimeException('XS2 sandbox reservation response did not include reservation_id.');
@@ -113,7 +127,13 @@ class SbOrderXs2SandboxOrderService
                     'is_test_booking' => true,
                 ];
 
-                $bookingResponse = $this->sandbox->createBooking($bookingRequest);
+                $bookingResult = $this->sandbox->createBookingDetailed($bookingRequest);
+                $this->syncLogs->recordBookingExchange($order->id, $bookingRequest, $bookingResult);
+                if (! $bookingResult['success']) {
+                    throw new \RuntimeException((string) ($bookingResult['message'] ?? 'XS2 sandbox booking failed.'));
+                }
+
+                $bookingResponse = $bookingResult['data'];
                 $bookingId = $this->nullableString($bookingResponse['booking_id'] ?? null);
                 if ($bookingId === null) {
                     throw new \RuntimeException('XS2 sandbox booking response did not include booking_id.');
@@ -152,6 +172,8 @@ class SbOrderXs2SandboxOrderService
                 // Guest-data push is best-effort; failures are tracked on guest_data_sync_error.
                 $this->trySubmitGuestData($xs2Order, $order);
 
+                $this->syncLogs->recordSuccess($order->id, $xs2Order->id);
+
                 return [
                     'order' => $xs2Order->fresh(['attendees']),
                     'created' => $created,
@@ -187,6 +209,8 @@ class SbOrderXs2SandboxOrderService
                     'synced_at' => now(),
                 ])->save();
             }
+
+            $this->syncLogs->recordFailure($order->id, $message, $existing->id);
 
             return [
                 'order' => $existing->fresh(),
@@ -229,19 +253,48 @@ class SbOrderXs2SandboxOrderService
 
     public function queueIfEligible(SbOrder $order): bool
     {
+        return $this->resolveQueueSkipReason($order) === null;
+    }
+
+    public function resolveQueueSkipReason(SbOrder $order): ?string
+    {
         if ($this->apiEnvironment->xs2OrdersEnvironment() !== ApiEnvironmentService::ENV_SANDBOX) {
-            return false;
+            return 'XS2 orders environment is not sandbox.';
         }
 
-        if (! $this->isEnabled() || ! $this->sandbox->isConfigured() || $this->isCancelled($order)) {
-            return false;
+        if (! $this->isEnabled()) {
+            return 'XS2 sandbox auto-order sync is disabled.';
+        }
+
+        if (! $this->sandbox->isConfigured()) {
+            return 'XS2 sandbox credentials are not configured.';
+        }
+
+        if ($this->isCancelled($order)) {
+            return 'SB order is cancelled.';
         }
 
         if ($this->existingOrder($order)?->xs2_booking_id) {
-            return false;
+            return 'XS2 sandbox order already exists for this SB order.';
         }
 
-        return $this->resolveSandboxTicket($order) !== null;
+        if ($this->resolveSandboxTicket($order) === null) {
+            return 'No sandbox XS2 ticket mapping found for this SB order.';
+        }
+
+        return null;
+    }
+
+    public function recordQueueDecision(SbOrder $order): void
+    {
+        $reason = $this->resolveQueueSkipReason($order);
+        if ($reason !== null) {
+            $this->syncLogs->recordNotQueued($order->id, $reason);
+
+            return;
+        }
+
+        $this->syncLogs->recordQueued($order->id);
     }
 
     private function isEnabled(): bool
@@ -452,8 +505,12 @@ class SbOrderXs2SandboxOrderService
     }
 
     /** @return array{order: Xs2Order|null, created: bool, updated: bool, skipped: bool, reason: string|null} */
-    private function skip(?Xs2Order $order, string $reason): array
+    private function skip(?Xs2Order $order, string $reason, ?SbOrder $sbOrder = null): array
     {
+        if ($sbOrder !== null) {
+            $this->syncLogs->recordSkipped($sbOrder->id, $reason, $order?->id);
+        }
+
         return [
             'order' => $order,
             'created' => false,

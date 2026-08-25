@@ -46,6 +46,11 @@ class SbOrder extends Model
         return $this->hasOne(Xs2Order::class, 'sb_order_id');
     }
 
+    public function xs2SyncLog(): HasOne
+    {
+        return $this->hasOne(SbOrderXs2SyncLog::class, 'sb_order_id');
+    }
+
     /**
      * Bookings that consume inventory (everything except cancelled).
      * Status meanings from Seller API: 1 Confirmed, 2 Pending, 3 Cancelled, 4 Completed.
