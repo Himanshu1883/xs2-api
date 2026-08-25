@@ -61,8 +61,7 @@ class SellerApiClient
     }
 
     /**
-     * Coerce multipart field values to scalars/strings so integer IDs like
-     * ticket_category are always transmitted as digit strings.
+     * Coerce multipart field values to scalars/strings for Seller API multipart requests.
      *
      * @param  array<string, mixed>  $payload
      * @return array<string, scalar>

@@ -74,7 +74,6 @@ class SellerApiContractTest extends TestCase
             'ticket_type' => 2,
             'quantity' => 4,
             'category_name' => 'Longside Upper Tier',
-            'ticket_category' => 4,
             'seller_reference' => 'XS2-xs2-ticket-1-event-45',
         ], 'XS2-xs2-ticket-1-event-45');
 
@@ -87,8 +86,7 @@ class SellerApiContractTest extends TestCase
                 && $part['contents'] === 'XS2-xs2-ticket-1-event-45')
             && collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'category_name'
                 && $part['contents'] === 'Longside Upper Tier')
-            && collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'ticket_category'
-                && (string) $part['contents'] === '4'));
+            && ! collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'ticket_category'));
     }
 
     public function test_client_does_not_retry_client_validation_failures(): void
@@ -373,7 +371,6 @@ class SellerApiContractTest extends TestCase
             'match_id' => 45,
             'ticket_type' => 2,
             'quantity' => 4,
-            'ticket_category' => 4,
             'category_name' => 'Longside Upper Tier',
             'ticket_block' => '',
             'ticket_row' => '',
@@ -388,7 +385,7 @@ class SellerApiContractTest extends TestCase
         ], $payload);
     }
 
-    public function test_transformer_sends_integer_ticket_category_id_from_dropdown(): void
+    public function test_transformer_omits_ticket_category_and_sends_category_name(): void
     {
         Cache::forget('seller-api:ticket-dropdown:45');
         $client = Mockery::mock(SellerApiClient::class);
@@ -424,8 +421,8 @@ class SellerApiContractTest extends TestCase
 
         $this->assertSame('Longside Upper Tier', $mappedPayload['category_name']);
         $this->assertSame('Longside Upper Tier', $fallbackPayload['category_name']);
-        $this->assertSame(4, $mappedPayload['ticket_category']);
-        $this->assertSame(4, $fallbackPayload['ticket_category']);
+        $this->assertArrayNotHasKey('ticket_category', $mappedPayload);
+        $this->assertArrayNotHasKey('ticket_category', $fallbackPayload);
         $this->assertSame($mappedPayload, $fallbackPayload);
     }
 
@@ -464,11 +461,11 @@ class SellerApiContractTest extends TestCase
             $this->mappedCategoryState(),
         );
 
-        $this->assertSame(4, $payload['ticket_category']);
         $this->assertSame('Silver Club Grada', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
-    public function test_transformer_uses_similarity_fallback_when_strict_fuzzy_fails(): void
+    public function test_transformer_omits_ticket_category_when_similarity_would_have_matched(): void
     {
         Cache::forget('seller-api:ticket-dropdown:11622');
         $client = Mockery::mock(SellerApiClient::class);
@@ -502,11 +499,11 @@ class SellerApiContractTest extends TestCase
             $mapping,
         );
 
-        $this->assertSame(12, $payload['ticket_category']);
         $this->assertSame('Silver Club Grada', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
-    public function test_transformer_fails_when_empty_dropdown_and_no_mapped_seat(): void
+    public function test_transformer_publishes_with_empty_dropdown_when_category_name_present(): void
     {
         Cache::forget('seller-api:ticket-dropdown:11544');
         $client = Mockery::mock(SellerApiClient::class);
@@ -518,16 +515,15 @@ class SellerApiContractTest extends TestCase
             ],
         ]);
 
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
+
         $mapping = new EventMapping(['m_id' => 11544]);
         $mapping->setRelation('xs2Event', new Xs2Event([
             'event_status' => 'notstarted',
             'date_start_local' => '2999-01-01 12:00:00',
         ]));
 
-        $this->expectException(ListingTransformationException::class);
-        $this->expectExceptionMessage('has no ticket categories');
-
-        $this->transformer($client)->transform(
+        $payload = $this->transformer($client)->transform(
             new Xs2Ticket([
                 'external_ticket_id' => 'xs2-empty-no-map',
                 'ticket_type' => 'eticket',
@@ -541,6 +537,9 @@ class SellerApiContractTest extends TestCase
             ]),
             $mapping,
         );
+
+        $this->assertSame('Silver Club Grada', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_fails_when_xs2_inventory_category_name_is_missing(): void
@@ -580,7 +579,7 @@ class SellerApiContractTest extends TestCase
         );
     }
 
-    public function test_transformer_fails_when_no_fuzzy_category_match(): void
+    public function test_transformer_publishes_when_dropdown_category_does_not_match(): void
     {
         Cache::forget('seller-api:ticket-dropdown:45');
         $client = Mockery::mock(SellerApiClient::class);
@@ -591,6 +590,7 @@ class SellerApiContractTest extends TestCase
                 'category' => [['id' => 1, 'category_name' => 'Away']],
             ],
         ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
 
         $mapping = new EventMapping(['m_id' => 45]);
         $mapping->setRelation('xs2Event', new Xs2Event([
@@ -598,10 +598,7 @@ class SellerApiContractTest extends TestCase
             'date_start_local' => '2999-01-01 12:00:00',
         ]));
 
-        $this->expectException(ListingTransformationException::class);
-        $this->expectExceptionMessage('does not match a Seats Broker ticket_category ID');
-
-        $this->transformer($client)->transform(
+        $payload = $this->transformer($client)->transform(
             new Xs2Ticket([
                 'external_ticket_id' => 'xs2-unmatched-category',
                 'ticket_type' => 'eticket',
@@ -615,6 +612,9 @@ class SellerApiContractTest extends TestCase
             ]),
             $mapping,
         );
+
+        $this->assertSame('Matchday Premium', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     #[DataProvider('unsellableEvents')]
