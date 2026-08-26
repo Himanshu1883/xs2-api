@@ -7,7 +7,7 @@ Any code path that publishes an XS2 ticket listing to Seats Broker (SB) **must**
 | Layer | Class | Role |
 |-------|-------|------|
 | Pre-flight | `ListingPublishValidator` | Validates mapping, ticket fields, and transformed payload |
-| Transform | `Xs2SellerListingTransformer` | Builds SB payload with XS2 `category_name` (no numeric `ticket_category`) |
+| Transform | `Xs2SellerListingTransformer` | Builds SB payload; resolves integer `ticket_category` + XS2 `category_name` |
 | Job | `PushXs2TicketToSellerApi` | Runs validator → transform → validate payload → HTTP |
 | Split | `SplitListingService` | Same validator + transformer gates for split listings |
 
@@ -16,6 +16,7 @@ Any code path that publishes an XS2 ticket listing to Seats Broker (SB) **must**
 | Field | Type | Source |
 |-------|------|--------|
 | `match_id` | integer | Confirmed `EventMapping.m_id` |
+| `ticket_category` | integer | SB ticket-dropdown category ID (≥ 1) |
 | `category_name` | string | XS2 ticket/inventory `category_name` |
 | `ticket_type` | integer | SB dropdown match on XS2 ticket type |
 | `split_type` | integer | SB dropdown match on XS2 flags |
@@ -29,9 +30,23 @@ Any code path that publishes an XS2 ticket listing to Seats Broker (SB) **must**
 
 Optional: `ticket_block`, `ticket_row`, `ticket_details`, `home_town`.
 
-**Do not send** numeric `ticket_category` in the publish payload. Category is conveyed via `category_name` only.
+SB create/update requires `ticket_category` as an **integer** catalog ID (`"The ticket category must be an integer."` when omitted or sent as a string name). Always send both **`ticket_category` (int)** and **`category_name`** (XS2 inventory name).
 
-**Risk:** SB Seller API docs historically required `ticket_category` as an integer catalog ID (`"The ticket category must be an integer."` when omitted or sent as a string name). If SB still enforces that rule server-side, create/update may return 422 until SB accepts name-only category input.
+**Multi-marketplace (LiveFootball + StubHub / HelloTickets):** When an event is published to LiveFootball together with external marketplaces, SB needs `ticket_category` to build the native LiveFootball flat ticket payload (`ticket_id`, `stadium_seat_id`, `seat_category`, etc.). Without it, SB may route LiveFootball through the StubHub `ticket_groups` adapter instead.
+
+## Category resolution
+
+Resolve `ticket_category` from the SB `/api/ticket_dropdown` categories for the match, in order:
+
+1. Confirmed / mapped `stadium_seat_id` (mapping details or candidate scores) when that ID exists in the dropdown
+2. Fuzzy name match on the XS2 inventory name and mapped SB category names (exact → starts-with → contains → first-word)
+3. **Similarity fallback** — best `similar_text` match when score ≥ `SELLER_API_TICKET_CATEGORY_SIMILARITY_THRESHOLD` (default 65); logs a warning
+4. When the dropdown `category` array is **empty** but admin has a confirmed/mapped `stadium_seat_id`, use that ID (logs a warning)
+5. Otherwise **fail locally** with a clear error listing available SB categories — do not invent a default ID and do not call SB
+
+**SB limitation:** The Seller API has no endpoint to create match ticket categories (`POST /api/ticket/create` requires an existing integer `ticket_category` from the dropdown). Categories must be configured in SB admin for the match, or resolved via XS2 stadium seat mapping. Venue catalog sync (`GET /api/venues`) populates local `stadium_seats` for mapping UI only — it does not add categories to a match dropdown.
+
+Cron / re-publish will keep failing until a resolvable integer category is available (map the category in admin, or use a name that matches the dropdown), then re-Publish.
 
 ## Publish gates (before transform)
 
@@ -40,24 +55,55 @@ Optional: `ticket_block`, `ticket_row`, `ticket_details`, `home_town`.
 3. Mapping status allows publish (`canAutoPublish` / `isManualPublishable`).
 4. XS2 `category_name` is non-empty.
 5. Price and currency are present.
-6. Transformed payload has a non-empty `category_name`.
+6. Transformed payload has a numeric `ticket_category` ≥ 1.
 
 ## Blocked vs allowed examples
 
-**Allowed** — XS2 inventory category name present:
+**Allowed** — XS2 name fuzzy-matches dropdown:
 
 ```
 XS2 category_name: "Longside Upper"
+SB dropdown: [{ id: 4, category_name: "Longside Upper Tier" }]
+→ ticket_category: 4
 → category_name: "Longside Upper"
-→ createListing(...) proceeds (no ticket_category field)
+→ createListing(...) proceeds
 ```
 
-**Allowed** — pending category mapping with non-empty XS2 name:
+**Allowed** — mapped stadium seat ID present in dropdown:
 
 ```
 XS2 category_name: "Matchday Premium"
-Mapping status: pending_category_mapping
+Mapped stadium_seat_id: 22
+SB dropdown: [{ id: 22, category_name: "Category 1 Premium" }, ...]
+→ ticket_category: 22
 → category_name: "Matchday Premium"
+→ createListing(...) proceeds
+```
+
+**Blocked** — no match (e.g. pending mapping, name not in dropdown):
+
+```
+XS2 category_name: "Matchday Premium"
+SB dropdown: [{ id: 1, category_name: "Away" }]
+→ ListingTransformationException: does not match a Seats Broker ticket_category ID ...
+→ no Seller API HTTP call
+```
+
+**Allowed** — empty SB dropdown but confirmed stadium seat mapping (match_id 11544-style):
+
+```
+SB dropdown: category: []
+Mapped stadium_seat_id: 88 (manually confirmed)
+→ ticket_category: 88 (warning logged)
+→ createListing(...) proceeds
+```
+
+**Allowed** — similarity fallback when strict fuzzy fails:
+
+```
+XS2 category_name: "Silver Club Grada"
+SB dropdown: [{ id: 12, category_name: "Silv Club Grada" }]
+→ ticket_category: 12 (warning logged)
 → createListing(...) proceeds
 ```
 
@@ -71,4 +117,4 @@ XS2 category_name: ""
 
 ## Admin split / quantity rules
 
-Split publish uses the same transformer and validator. Failed creates without an SB listing ID are not fixed by qty-sync alone — re-Publish (or run Seats Broker new listing publish after deploy).
+Split publish uses the same transformer and validator. Failed creates without an SB listing ID are not fixed by qty-sync alone — re-resolve category and re-Publish (or run Seats Broker new listing publish after deploy).

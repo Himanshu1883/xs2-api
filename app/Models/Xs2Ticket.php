@@ -19,6 +19,8 @@ class Xs2Ticket extends Model
 
     public const FLAG_NO_AWAYTEAM_PROVINCE = 'no_awayteam_province_allowed';
 
+    public const FLAG_NO_AWAY_FANS = 'no_away_fans';
+
     /** @var list<string> */
     public const KNOWN_FLAGS = [
         self::FLAG_PAIRS_ONLY,
@@ -26,6 +28,7 @@ class Xs2Ticket extends Model
         self::FLAG_PACKAGE_RATE,
         self::FLAG_NO_AWAYTEAM_NATIONALITY,
         self::FLAG_NO_AWAYTEAM_PROVINCE,
+        self::FLAG_NO_AWAY_FANS,
     ];
 
     protected $guarded = [];

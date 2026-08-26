@@ -37,8 +37,28 @@ class ListingPublishValidatorTest extends TestCase
         ]);
     }
 
-    public function test_validate_payload_accepts_category_name_without_ticket_category(): void
+    public function test_validate_payload_rejects_ticket_category_id_without_category_name(): void
     {
+        $this->expectException(ListingTransformationException::class);
+        $this->expectExceptionMessage('XS2 inventory category name is missing.');
+
+        $this->validator->validatePayload([
+            'match_id' => 45,
+            'seller_reference' => 'XS2-ref-1',
+            'ticket_category' => 4,
+            'ticket_type' => 2,
+            'split_type' => 3,
+            'seller_id' => 77,
+            'quantity' => 2,
+            'price' => '100.00',
+        ]);
+    }
+
+    public function test_validate_payload_rejects_missing_ticket_category_id(): void
+    {
+        $this->expectException(ListingTransformationException::class);
+        $this->expectExceptionMessage('ticket_category ID');
+
         $this->validator->validatePayload([
             'match_id' => 45,
             'seller_reference' => 'XS2-ref-1',
@@ -49,11 +69,27 @@ class ListingPublishValidatorTest extends TestCase
             'quantity' => 2,
             'price' => '100.00',
         ]);
-
-        $this->addToAssertionCount(1);
     }
 
-    public function test_validate_payload_ignores_numeric_ticket_category_when_present(): void
+    public function test_validate_payload_rejects_string_ticket_category(): void
+    {
+        $this->expectException(ListingTransformationException::class);
+        $this->expectExceptionMessage('ticket_category ID');
+
+        $this->validator->validatePayload([
+            'match_id' => 45,
+            'seller_reference' => 'XS2-ref-1',
+            'ticket_category' => 'Corner',
+            'category_name' => 'Corner',
+            'ticket_type' => 2,
+            'split_type' => 3,
+            'seller_id' => 77,
+            'quantity' => 2,
+            'price' => '100.00',
+        ]);
+    }
+
+    public function test_validate_payload_accepts_integer_ticket_category_id(): void
     {
         $this->validator->validatePayload([
             'match_id' => 45,
