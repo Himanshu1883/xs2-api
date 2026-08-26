@@ -69,8 +69,6 @@ class Xs2SellerListingTransformer
             'match_id' => $matchId,
             'ticket_type' => $this->resolveTicketTypeId($catalog, $ticketTypeMapping),
             'quantity' => $active ? $remaining : 0,
-            // SB create requires an integer catalog id — never omit or send the XS2 name here.
-            'ticket_category' => $ticketCategoryId,
             'category_name' => $categoryName,
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
             'ticket_row' => (string) data_get($ticket->options, 'ticket_row', ''),

@@ -74,7 +74,6 @@ class SellerApiContractTest extends TestCase
             'ticket_type' => 2,
             'quantity' => 4,
             'category_name' => 'Longside Upper Tier',
-            'ticket_category' => 4,
             'seller_reference' => 'XS2-xs2-ticket-1-event-45',
         ], 'XS2-xs2-ticket-1-event-45');
 
@@ -87,8 +86,7 @@ class SellerApiContractTest extends TestCase
                 && $part['contents'] === 'XS2-xs2-ticket-1-event-45')
             && collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'category_name'
                 && $part['contents'] === 'Longside Upper Tier')
-            && collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'ticket_category'
-                && (string) $part['contents'] === '4'));
+            && ! collect($request->data())->contains(fn (array $part): bool => $part['name'] === 'ticket_category'));
     }
 
     public function test_client_does_not_retry_client_validation_failures(): void
@@ -373,7 +371,6 @@ class SellerApiContractTest extends TestCase
             'match_id' => 45,
             'ticket_type' => 2,
             'quantity' => 4,
-            'ticket_category' => 4,
             'category_name' => 'Longside Upper Tier',
             'ticket_block' => '',
             'ticket_row' => '',
@@ -498,8 +495,8 @@ class SellerApiContractTest extends TestCase
 
         $this->assertSame('Longside Upper Tier', $mappedPayload['category_name']);
         $this->assertSame('Longside Upper Tier', $fallbackPayload['category_name']);
-        $this->assertSame(4, $mappedPayload['ticket_category']);
-        $this->assertSame(4, $fallbackPayload['ticket_category']);
+        $this->assertArrayNotHasKey('ticket_category', $mappedPayload);
+        $this->assertArrayNotHasKey('ticket_category', $fallbackPayload);
         $this->assertSame($mappedPayload, $fallbackPayload);
     }
 
@@ -549,7 +546,7 @@ class SellerApiContractTest extends TestCase
             $mappingState,
         );
 
-        $this->assertSame(5, $payload['ticket_category']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
         $this->assertSame('Longside Lower Tier', $payload['category_name']);
         $this->assertArrayHasKey('match_id', $payload);
         $this->assertArrayHasKey('ticket_type', $payload);
@@ -591,7 +588,7 @@ class SellerApiContractTest extends TestCase
             $this->mappedCategoryState(),
         );
 
-        $this->assertSame(4, $payload['ticket_category']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
         $this->assertSame('Silver Club Grada', $payload['category_name']);
     }
 
@@ -629,7 +626,7 @@ class SellerApiContractTest extends TestCase
             $mapping,
         );
 
-        $this->assertSame(12, $payload['ticket_category']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
         $this->assertSame('Silver Club Grada', $payload['category_name']);
     }
 

@@ -79,14 +79,6 @@ class ListingPublishValidator
 
         $this->required(trim((string) ($payload['seller_reference'] ?? '')), 'seller_reference');
         $this->required(trim((string) ($payload['category_name'] ?? '')), 'XS2 inventory category name');
-
-        $ticketCategory = $payload['ticket_category'] ?? null;
-        if (! is_numeric($ticketCategory) || (int) $ticketCategory < 1) {
-            throw new ListingTransformationException(
-                'Seller API payload is missing a valid ticket_category ID.'
-            );
-        }
-
         foreach (['ticket_type', 'split_type', 'seller_id'] as $field) {
             if (! isset($payload[$field]) || ! is_numeric($payload[$field]) || (int) $payload[$field] < 1) {
                 throw new ListingTransformationException("Seller API payload is missing a valid {$field}.");

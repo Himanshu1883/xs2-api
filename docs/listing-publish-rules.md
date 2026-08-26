@@ -30,6 +30,8 @@ Any code path that publishes an XS2 ticket listing to Seats Broker (SB) **must**
 
 Optional: `ticket_block`, `ticket_row`, `ticket_details`, `home_town`.
 
+**Publish payload:** Do not include numeric `ticket_category`; send `category_name` only.
+
 SB create/update requires `ticket_category` as an **integer** catalog ID (`"The ticket category must be an integer."` when omitted or sent as a string name). Always send both **`ticket_category` (int)** and **`category_name`** (XS2 inventory name).
 
 **Multi-marketplace (LiveFootball + StubHub / HelloTickets):** When an event is published to LiveFootball together with external marketplaces, SB needs `ticket_category` to build the native LiveFootball flat ticket payload (`ticket_id`, `stadium_seat_id`, `seat_category`, etc.). Without it, SB may route LiveFootball through the StubHub `ticket_groups` adapter instead.
