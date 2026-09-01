@@ -148,7 +148,7 @@ class Xs2InventorySynchronizationTest extends TestCase
         $this->assertSame(1, $summary['tickets_created']);
         $this->assertSame(1, $summary['tickets_ready']);
         $this->assertSame('ready_to_publish', $ticket->mappingState->mapping_status);
-        Queue::assertPushed(PushXs2TicketToSellerApi::class, fn ($job): bool => $job->ticketId === $ticket->id);
+        Queue::assertNotPushed(PushXs2TicketToSellerApi::class);
     }
 
     public function test_full_inventory_sync_stores_tickets_but_does_not_publish_for_a_pending_mapping(): void
@@ -218,7 +218,7 @@ class Xs2InventorySynchronizationTest extends TestCase
         $this->assertSame(1, $summary['tickets_pending']);
         $this->assertSame('pending_event_mapping', $ticket->mappingState->mapping_status);
         Queue::assertNotPushed(PushXs2TicketToSellerApi::class);
-        Queue::assertPushed(DisableXs2SellerListing::class, fn ($job): bool => $job->ticketId === $ticket->id);
+        Queue::assertNotPushed(DisableXs2SellerListing::class);
     }
 
     public function test_successful_empty_full_inventory_sync_disables_previously_available_tickets(): void

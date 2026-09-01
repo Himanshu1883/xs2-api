@@ -23,6 +23,7 @@ use App\Services\Mapping\CountryResolver;
 use App\Services\Mapping\MappingTextNormalizer;
 use App\Services\Mapping\StadiumCategoryMappingService;
 use App\Services\Mapping\StadiumMappingService;
+use App\Services\Xs2\MappedListingPublishService;
 use App\Services\SellerApi\SellerApiClient;
 use App\Services\Xs2\ListingPublishValidator;
 use App\Services\Xs2\Xs2SellerListingTransformer;
@@ -775,6 +776,7 @@ class Xs2InventoryMappingTest extends TestCase
         (new ResolvePendingXs2Listings('category', $categoryMapping->id))->handle(
             app(Xs2TicketMappingStatusService::class),
             app(StadiumCategoryMappingService::class),
+            app(MappedListingPublishService::class),
         );
 
         $this->assertSame('pending_category_mapping', $ticket->fresh()->mappingState->mapping_status);
@@ -902,6 +904,7 @@ class Xs2InventoryMappingTest extends TestCase
         (new ResolvePendingXs2Listings('stadium', $stadium->id))->handle(
             app(Xs2TicketMappingStatusService::class),
             app(StadiumCategoryMappingService::class),
+            app(MappedListingPublishService::class),
         );
 
         $categoryMapping = $categoryMapping->fresh();
@@ -976,6 +979,7 @@ class Xs2InventoryMappingTest extends TestCase
         (new ResolvePendingXs2Listings('stadium', $stadium->id))->handle(
             app(Xs2TicketMappingStatusService::class),
             app(StadiumCategoryMappingService::class),
+            app(MappedListingPublishService::class),
         );
 
         $categoryMapping = $categoryMapping->fresh();
@@ -983,8 +987,9 @@ class Xs2InventoryMappingTest extends TestCase
         $this->assertSame(600, (int) $categoryMapping->stadium_id);
         $this->assertCount(0, $categoryMapping->details);
         $this->assertFalse($categoryMapping->manually_confirmed);
-        $this->assertSame('pending_category_mapping', $ticket->fresh()->mappingState->mapping_status);
-        Queue::assertPushed(DisableSellerListing::class, fn (DisableSellerListing $job): bool => $job->ticketId === $ticket->id);
+        // Published snapshot is preserved while an SB listing id exists — no delete churn.
+        $this->assertSame('published', $ticket->fresh()->mappingState->mapping_status);
+        Queue::assertNotPushed(DisableSellerListing::class);
         Queue::assertNotPushed(PushXs2TicketToSellerApi::class);
     }
 

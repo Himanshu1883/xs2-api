@@ -6,7 +6,10 @@ use App\Models\Xs2Category;
 use App\Models\Xs2CategoryMapping;
 use App\Models\Xs2StadiumMapping;
 use App\Models\Xs2Ticket;
+use App\Models\Xs2TicketMappingState;
 use App\Services\Mapping\StadiumCategoryMappingService;
+use App\Services\SellerApi\SbNewListingPublishService;
+use App\Services\Xs2\ListingPublishReadinessService;
 use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
@@ -87,7 +90,12 @@ class ResolvePendingXs2Listings implements ShouldBeUniqueUntilProcessing, Should
         Xs2TicketMappingStatusService $states,
         StadiumCategoryMappingService $categories,
         MappedListingPublishService $publisher,
+        ?ListingPublishReadinessService $readiness = null,
+        ?SbNewListingPublishService $sbPublish = null,
     ): void {
+        $readiness ??= app(ListingPublishReadinessService::class);
+        $sbPublish ??= app(SbNewListingPublishService::class);
+
         $tickets = match ($this->mappingType) {
             'stadium' => $this->ticketsForStadium($categories),
             'category' => $this->ticketsForCategory(),
@@ -95,22 +103,76 @@ class ResolvePendingXs2Listings implements ShouldBeUniqueUntilProcessing, Should
         };
 
         foreach ($tickets as $ticket) {
-            $state = $states->resolve($ticket);
-            $canPublish = in_array($state->mapping_status, ['ready_to_publish', 'published'], true);
-            $isAvailable = $ticket->ticket_status === 'available'
-                && (int) $ticket->stock > 0
-                && $ticket->xs2Event?->isSellable();
+            $this->reconcileTicket($ticket, $states, $publisher, $readiness, $sbPublish);
+        }
+    }
 
-            if ($canPublish && $isAvailable) {
-                $publisher->publishTicket($ticket->id);
-            } else {
-                // This job also runs after a mapping is ignored or replaced.
-                // A listing may already be active even though the ticket itself
-                // is still available, so availability alone cannot decide
-                // whether it should remain published.
+    private function reconcileTicket(
+        Xs2Ticket $ticket,
+        Xs2TicketMappingStatusService $states,
+        MappedListingPublishService $publisher,
+        ListingPublishReadinessService $readiness,
+        SbNewListingPublishService $sbPublish,
+    ): void {
+        $state = $states->resolve($ticket);
+        $eventSellable = $ticket->xs2Event?->isSellable() ?? false;
+        $available = $ticket->ticket_status === 'available'
+            && (int) $ticket->stock > 0
+            && $eventSellable;
+
+        if (! $eventSellable || ! $available) {
+            if ($sbPublish->isPublishedOnSb($ticket)) {
                 DisableSellerListing::dispatch($ticket->id);
             }
+
+            return;
         }
+
+        if ($this->shouldRetireListing($ticket, $state)) {
+            if ($sbPublish->isPublishedOnSb($ticket)) {
+                DisableSellerListing::dispatch($ticket->id);
+            }
+
+            return;
+        }
+
+        if (! in_array($state->mapping_status, ['ready_to_publish', 'published'], true)) {
+            return;
+        }
+
+        $assessment = $readiness->assess($ticket);
+        if ($assessment['ready']) {
+            $publisher->publishTicket($ticket->id);
+        }
+    }
+
+    private function shouldRetireListing(Xs2Ticket $ticket, Xs2TicketMappingState $state): bool
+    {
+        if ($state->mapping_status === 'unsupported_category') {
+            return true;
+        }
+
+        $state->loadMissing('categoryMapping');
+        if ($state->categoryMapping?->status === 'ignored') {
+            return true;
+        }
+
+        $liveCategoryMapping = Xs2CategoryMapping::query()
+            ->whereHas('category', function ($query) use ($ticket): void {
+                $query->where('xs2_event_id', $ticket->xs2_event_id)
+                    ->where('external_category_id', (string) ($ticket->category_id ?? ''));
+            })
+            ->first();
+        if ($liveCategoryMapping?->status === 'ignored') {
+            return true;
+        }
+
+        $ticket->loadMissing('xs2Event.venue.stadiumMapping');
+        if ($ticket->xs2Event?->venue?->stadiumMapping?->status === 'ignored') {
+            return true;
+        }
+
+        return false;
     }
 
     /**

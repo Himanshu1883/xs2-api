@@ -94,6 +94,7 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
             $this->abortPublish(
                 $ticket,
                 'This event is no longer sellable, so the listing cannot be published.',
+                retireListing: true,
             );
 
             return;
@@ -104,7 +105,7 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
             // against current event/stadium/category state instead of trusting
             // a previously "published" snapshot.
             $mappingState = app(Xs2TicketMappingStatusService::class)
-                ->resolve($ticket)
+                ->resolveIfStale($ticket)
                 ->loadMissing('categoryMapping.details');
         }
         $mappingStatusService = app(Xs2TicketMappingStatusService::class);
@@ -246,13 +247,20 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
         throw $exception;
     }
 
-    private function abortPublish(Xs2Ticket $ticket, string $message): void
+    private function abortPublish(Xs2Ticket $ticket, string $message, bool $retireListing = false): void
     {
         if ($this->strictPublish) {
             throw new ListingTransformationException($message);
         }
 
-        DisableSellerListing::dispatch($ticket->id);
+        $ticket->update([
+            'sync_status' => 'pending',
+            'sync_error' => mb_substr($message, 0, 5000),
+        ]);
+
+        if ($retireListing) {
+            DisableSellerListing::dispatch($ticket->id);
+        }
     }
 
     /** @return array{quantity?: int, pairs_only?: bool}|null */

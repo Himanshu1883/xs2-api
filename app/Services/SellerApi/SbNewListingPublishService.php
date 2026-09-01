@@ -5,6 +5,7 @@ namespace App\Services\SellerApi;
 use App\Models\ExternalListingMapping;
 use App\Models\Xs2SyncState;
 use App\Models\Xs2Ticket;
+use App\Services\Xs2\ListingPublishReadinessService;
 use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Database\Eloquent\Builder;
@@ -22,6 +23,7 @@ class SbNewListingPublishService
     public function __construct(
         private readonly MappedListingPublishService $publisher,
         private readonly Xs2TicketMappingStatusService $mappingStatuses,
+        private readonly ListingPublishReadinessService $readiness,
     ) {}
 
     /**
@@ -69,6 +71,13 @@ class SbNewListingPublishService
                 }
 
                 if ($this->isPublishedOnSb($ticket)) {
+                    $summary['skipped']++;
+
+                    continue;
+                }
+
+                $assessment = $this->readiness->assess($ticket);
+                if (! $assessment['ready']) {
                     $summary['skipped']++;
 
                     continue;
@@ -129,7 +138,10 @@ class SbNewListingPublishService
             }
 
             if (! $this->isPublishedOnSb($ticket)) {
-                $pendingPublish++;
+                $assessment = $this->readiness->assess($ticket);
+                if ($assessment['ready']) {
+                    $pendingPublish++;
+                }
             }
         }
 

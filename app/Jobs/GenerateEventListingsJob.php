@@ -10,8 +10,6 @@ use App\Models\Xs2Ticket;
 use App\Services\Pipeline\InventorySchedulerService;
 use App\Services\Pipeline\PipelineJobStepService;
 use App\Services\SellerApi\SbNewListingPublishService;
-use App\Services\Xs2\MappedListingPublishService;
-use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -42,8 +40,6 @@ class GenerateEventListingsJob implements ShouldBeUnique, ShouldQueue
     }
 
     public function handle(
-        MappedListingPublishService $publisher,
-        Xs2TicketMappingStatusService $mappingStates,
         SbNewListingPublishService $sbPublish,
         PipelineJobStepService $steps,
         InventorySchedulerService $scheduler,
@@ -76,7 +72,7 @@ class GenerateEventListingsJob implements ShouldBeUnique, ShouldQueue
             $event = Xs2Event::query()->with('tickets.listingMapping')->findOrFail($this->xs2EventId);
 
             foreach ($event->tickets as $ticket) {
-                $this->processTicket($ticket, $event, $mappingStates, $publisher, $sbPublish, $summary);
+                $this->processTicket($ticket, $event, $sbPublish, $summary);
             }
 
             $scheduler->scheduleReconciliation($this->xs2EventId, $this->pipelineRunId, $this->correlationId);
@@ -103,34 +99,22 @@ class GenerateEventListingsJob implements ShouldBeUnique, ShouldQueue
     private function processTicket(
         Xs2Ticket $ticket,
         Xs2Event $event,
-        Xs2TicketMappingStatusService $mappingStates,
-        MappedListingPublishService $publisher,
         SbNewListingPublishService $sbPublish,
         array &$summary,
     ): void {
-        // Match publish cron: resolveIfStale avoids downgrading tickets that already have SB listings.
-        $mappingState = $mappingStates->resolveIfStale($ticket);
-        $canPublish = $mappingStates->canAutoPublish($ticket, $mappingState->mapping_status);
         $available = $event->isSellable()
             && $ticket->ticket_status === 'available'
             && (int) $ticket->stock > 0;
 
         try {
-            if ($canPublish && $available) {
-                $publisher->publishTicket($ticket->id, strictPublish: false, sync: false);
-                $summary['published']++;
-
-                return;
-            }
-
-            // Mapping-only failures: skip (do not publish, do not delete). Same gate as publish cron.
+            // Listing generation never creates SB listings — only the dedicated publish cron
+            // runs after full validation. Here we only retire listings for unavailable tickets.
             if ($available) {
                 $summary['skipped']++;
 
                 return;
             }
 
-            // Unavailable (stock 0, cancelled, etc.): remove existing SB listings only.
             if (! $sbPublish->isPublishedOnSb($ticket)) {
                 $summary['skipped']++;
 

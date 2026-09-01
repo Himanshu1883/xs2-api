@@ -153,14 +153,14 @@ class Xs2VenueSynchronizationTest extends TestCase
         $normalizer = \Mockery::mock(Xs2TicketNormalizer::class);
         $mappingStates = \Mockery::mock(Xs2TicketMappingStatusService::class);
         $awayTeamContext = \Mockery::mock(\App\Services\Xs2\Xs2AwayTeamContextService::class);
-        $publisher = \Mockery::mock(\App\Services\Xs2\MappedListingPublishService::class);
+        $sbPublish = \Mockery::mock(\App\Services\SellerApi\SbNewListingPublishService::class);
         $venues->shouldReceive('syncForEvent')
             ->once()
             ->withArgs(fn (Xs2Event $syncedEvent): bool => $syncedEvent->is($event))
             ->andThrow(new Xs2RateLimitException(47));
         $categories->shouldNotReceive('sync');
         $client->shouldNotReceive('getTicketsForEvent');
-        $publisher->shouldNotReceive('publishTicket');
+        $sbPublish->shouldNotReceive('isPublishedOnSb');
 
         $service = new Xs2EventInventorySyncService(
             $client,
@@ -169,7 +169,7 @@ class Xs2VenueSynchronizationTest extends TestCase
             $normalizer,
             $mappingStates,
             $awayTeamContext,
-            $publisher,
+            $sbPublish,
         );
 
         try {

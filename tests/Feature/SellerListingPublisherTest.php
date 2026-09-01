@@ -182,7 +182,7 @@ class SellerListingPublisherTest extends TestCase
         $this->assertSame(1, ExternalListingMapping::query()->count());
     }
 
-    public function test_stale_publish_job_queues_disable_when_the_event_mapping_is_no_longer_publishable(): void
+    public function test_stale_publish_job_skips_without_disabling_when_event_mapping_is_no_longer_publishable(): void
     {
         $ticket = $this->ticket();
         $ticket->xs2Event->mapping->update(['status' => 'pending', 'm_id' => null]);
@@ -203,9 +203,11 @@ class SellerListingPublisherTest extends TestCase
 
         (new PushXs2TicketToSellerApi($ticket->id))->handle($client, $transformer, app(ListingPublishValidator::class));
 
-        Queue::assertPushed(
-            DisableSellerListing::class,
-            fn (DisableSellerListing $job): bool => $job->ticketId === $ticket->id,
+        Queue::assertNotPushed(DisableSellerListing::class);
+        $this->assertSame('pending', $ticket->fresh()->sync_status);
+        $this->assertSame(
+            'A confirmed local event mapping is required before publishing.',
+            $ticket->fresh()->sync_error,
         );
     }
 

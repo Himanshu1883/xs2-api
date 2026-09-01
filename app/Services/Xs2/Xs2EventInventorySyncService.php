@@ -11,6 +11,7 @@ use App\Models\EventMapping;
 use App\Models\Xs2Event;
 use App\Models\Xs2EventInventorySyncState;
 use App\Models\Xs2Ticket;
+use App\Services\SellerApi\SbNewListingPublishService;
 use Illuminate\Support\Facades\Log;
 
 class Xs2EventInventorySyncService
@@ -22,7 +23,7 @@ class Xs2EventInventorySyncService
         private readonly Xs2TicketNormalizer $normalizer,
         private readonly Xs2TicketMappingStatusService $mappingStates,
         private readonly Xs2AwayTeamContextService $awayTeamContext,
-        private readonly MappedListingPublishService $publisher,
+        private readonly SbNewListingPublishService $sbPublish,
     ) {}
 
     /** @return array<string,int|string|array<int,string>|null> */
@@ -366,27 +367,26 @@ class Xs2EventInventorySyncService
     }
 
     /**
-     * Under a synchronous queue connection, dispatch() runs the job inline
-     * and its exceptions land here. One ticket's Seller API failure must not
-     * abort the rest of this event's ticket loop or the whole scheduled sync.
+     * Inventory sync must not create new SB listings. Only reconcile split masters
+     * that are already published; initial publish runs via xs2:publish-new-sb-listings.
      *
      * @param array<string,mixed> &$summary
      */
     private function dispatchListingJob(Xs2Ticket $ticket, Xs2Event $event, string $mode, array &$summary): bool
     {
+        if (! $ticket->split_enabled || ! $this->sbPublish->isPublishedOnSb($ticket)) {
+            return false;
+        }
+
         try {
-            if ($ticket->split_enabled) {
-                SyncSplitListings::dispatch($ticket->id);
-            } else {
-                $this->publisher->publishTicket($ticket->id, strictPublish: false, sync: false);
-            }
+            SyncSplitListings::dispatch($ticket->id);
 
             return true;
         } catch (Xs2RateLimitException $exception) {
             throw $exception;
         } catch (\Throwable $exception) {
             $summary['errors'][] = 'listing:'.$ticket->external_ticket_id.': '.$this->safeMessage($exception);
-            Log::channel(config('xs2.log_channel', 'stack'))->warning('XS2 ticket listing publish could not be completed.', [
+            Log::channel(config('xs2.log_channel', 'stack'))->warning('XS2 split listing sync could not be queued.', [
                 'provider' => 'xs2event',
                 'external_event_id' => $event->external_event_id,
                 'external_ticket_id' => $ticket->external_ticket_id,

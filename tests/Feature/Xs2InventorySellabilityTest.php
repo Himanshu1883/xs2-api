@@ -123,6 +123,26 @@ class Xs2InventorySellabilityTest extends TestCase
         $past = $this->mapping('past', now()->subMinute(), 'notstarted', 202);
         $cancelledTicket = $this->ticket($cancelled, 'cancelled-ticket');
         $pastTicket = $this->ticket($past, 'past-ticket');
+        ExternalListingMapping::query()->create([
+            'provider' => 'xs2event',
+            'xs2_ticket_id' => $cancelledTicket->id,
+            'local_event_id' => $cancelled->m_id,
+            'event_mapping_id' => $cancelled->id,
+            'seller_listing_id' => 'seller-cancelled-ticket',
+            'seller_reference' => 'XS2-cancelled-ticket',
+            'status' => 'active',
+            'last_pushed_quantity' => 2,
+        ]);
+        ExternalListingMapping::query()->create([
+            'provider' => 'xs2event',
+            'xs2_ticket_id' => $pastTicket->id,
+            'local_event_id' => $past->m_id,
+            'event_mapping_id' => $past->id,
+            'seller_listing_id' => 'seller-past-ticket',
+            'seller_reference' => 'XS2-past-ticket',
+            'status' => 'active',
+            'last_pushed_quantity' => 2,
+        ]);
         Queue::fake();
 
         $mappingStates = app(Xs2TicketMappingStatusService::class);
@@ -165,6 +185,17 @@ class Xs2InventorySellabilityTest extends TestCase
             ->andReturn(new Xs2TicketMappingState(['mapping_status' => 'ready_to_publish']));
         $categories = Mockery::mock(StadiumCategoryMappingService::class);
         Queue::fake();
+
+        ExternalListingMapping::query()->create([
+            'provider' => 'xs2event',
+            'xs2_ticket_id' => $ticket->id,
+            'local_event_id' => $mapping->m_id,
+            'event_mapping_id' => $mapping->id,
+            'seller_listing_id' => 'seller-cancelled',
+            'seller_reference' => 'XS2-cancelled-resolution-ticket',
+            'status' => 'active',
+            'last_pushed_quantity' => 2,
+        ]);
 
         (new ResolvePendingXs2Listings('category', $categoryMapping->id))->handle(
             $states,
