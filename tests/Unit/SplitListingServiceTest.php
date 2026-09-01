@@ -449,6 +449,96 @@ class SplitListingServiceTest extends TestCase
         $this->assertSame([3, 3], ListingSplit::query()->where('status', 'active')->orderBy('split_order')->pluck('quantity')->all());
     }
 
+    public function test_stock_at_two_syncs_without_deleting_when_unpublish_disabled(): void
+    {
+        config()->set('xs2.split_listings.unpublish_stock_max', 0);
+
+        $publisher = Mockery::mock(MarketplaceListingPublisher::class);
+        $publisher->shouldReceive('disable')->never();
+        $publisher->shouldReceive('delete')->never();
+        $publisher->shouldReceive('update')->never();
+        $publisher->shouldReceive('create')->never();
+
+        $service = new SplitListingService(
+            $publisher,
+            Mockery::mock(Xs2SellerListingTransformer::class),
+            Mockery::mock(SellerApiClient::class),
+            Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
+        );
+
+        $ticket = $this->ticket([
+            'stock' => 2,
+            'net_rate' => 10000,
+            'split_enabled' => true,
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5,
+        ]);
+
+        ListingSplit::query()->create([
+            'master_listing_id' => $ticket->id,
+            'seatsbroker_listing_id' => 'sb-1',
+            'seller_reference' => 'XS2-t1-S1',
+            'quantity' => 2,
+            'price' => 100,
+            'split_order' => 1,
+            'status' => 'active',
+            'sync_status' => 'synced',
+            'last_payload_hash' => 'stale',
+        ]);
+
+        $result = $service->syncListings($ticket->fresh());
+
+        $this->assertSame('synced', $result['action']);
+        $this->assertSame(1, ListingSplit::query()->where('status', 'active')->count());
+    }
+
+    public function test_unavailable_stock_disables_splits_without_deleting(): void
+    {
+        $publisher = Mockery::mock(MarketplaceListingPublisher::class);
+        $publisher->shouldReceive('disable')->once()->andReturn(['response' => ['ok' => true]]);
+        $publisher->shouldReceive('delete')->never();
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('sellerId')->andReturn(1);
+
+        $service = new SplitListingService(
+            $publisher,
+            Mockery::mock(Xs2SellerListingTransformer::class),
+            $client,
+            Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
+        );
+
+        $ticket = $this->ticket([
+            'stock' => 0,
+            'net_rate' => 10000,
+            'split_enabled' => true,
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5,
+        ]);
+
+        ListingSplit::query()->create([
+            'master_listing_id' => $ticket->id,
+            'seatsbroker_listing_id' => 'sb-1',
+            'seller_reference' => 'XS2-t1-S1',
+            'quantity' => 2,
+            'price' => 100,
+            'split_order' => 1,
+            'status' => 'active',
+            'sync_status' => 'synced',
+        ]);
+
+        $result = $service->syncListings($ticket->fresh());
+
+        $this->assertSame('disabled_all', $result['action']);
+        $this->assertSame(1, $result['disabled']);
+        $this->assertTrue($ticket->fresh()->split_enabled);
+        $this->assertSame(1, ListingSplit::query()->where('status', 'active')->count());
+    }
+
     /** @param  array<string, mixed>  $attrs */
     private function ticket(array $attrs = []): Xs2Ticket
     {

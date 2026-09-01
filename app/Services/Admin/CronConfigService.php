@@ -490,7 +490,7 @@ class CronConfigService
                         'does_not_do' => 'Does not update quantities or remove splits for listings that already exist on SB. Use Seats Broker existing listing qty sync when stock changes on published listings.',
                         'algorithm' => [
                             'Find available XS2 tickets with stock on events mapped to a local match (status mapped/created, m_id set).',
-                            'Resolve ticket mapping status; auto-publish when ready_to_publish, published, or pending_category_mapping with an XS2 category name.',
+                            'Resolve ticket mapping status; auto-publish only when ready_to_publish or published (full validation via ListingPublishReadinessService).',
                             'Skip tickets that already have an active SB master listing id or active split listing ids.',
                             'Apply listing publish rules (single vs split mode, qty caps, pairs-only) and queue Seller API create jobs.',
                             'Typical triggers: admin maps an event; XS2 inventory sync imports a new category/ticket row; category mapping becomes confirmed.',
@@ -530,7 +530,7 @@ class CronConfigService
             && $this->sellerApiListingConfigured();
         $telemetry = app(SbListingInventorySyncService::class)->telemetry();
         $interval = max(1, min(59, (int) config('xs2.sb_listing_inventory.sync_interval_minutes', 30)));
-        $unpublishMax = max(0, (int) config('xs2.split_listings.unpublish_stock_max', 2));
+        $unpublishMax = max(0, (int) config('xs2.split_listings.unpublish_stock_max', 0));
         $state = $this->syncStatesByResource()[SbListingInventorySyncService::SYNC_RESOURCE] ?? null;
 
         return [
@@ -556,7 +556,9 @@ class CronConfigService
                             'Compare XS2 stock (minus SB sold qty) to last pushed SB quantity.',
                             'Master (1:1): PushXs2TicketToSellerApi updates qty on the existing SB listing id, or disable when unavailable.',
                             'Split: recalculate plan from current stock using the ticket split_size from listing publish rules; update surviving splits; delete trailing splits when stock drops; create extra splits when stock increases.',
-                            'Stock ≤ '.$unpublishMax.' or ticket/event unavailable → disable/delete all SB split listings for that master.',
+                            ($unpublishMax > 0
+                                ? 'Stock in (0..'.$unpublishMax.'] or ticket/event unavailable → disable all SB split listings (soft, local rows kept).'
+                                : 'Stock 0 or ticket/event unavailable → disable all SB split listings (soft, local rows kept).'),
                         ],
                         'examples' => [
                             'Tribuna already on SB as 4× qty 2 splits; XS2 stock 8 → 6 → cron deletes 1 split, keeps 3× qty 2 (per publish rule split_size=2).',

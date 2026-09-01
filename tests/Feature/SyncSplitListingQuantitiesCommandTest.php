@@ -127,6 +127,29 @@ class SyncSplitListingQuantitiesCommandTest extends TestCase
         Queue::assertPushed(SyncSplitListings::class, fn ($job): bool => $job->ticketId === $ticket->id);
     }
 
+    public function test_command_skips_low_stock_when_unpublish_threshold_disabled(): void
+    {
+        Queue::fake();
+        config()->set('xs2.split_listings.unpublish_stock_max', 0);
+
+        $ticket = $this->publishedSplitTicket(stock: 2, splitQuantity: 2);
+        ListingSplit::query()->create([
+            'master_listing_id' => $ticket->id,
+            'split_order' => 1,
+            'seller_reference' => 'XS2-TEST-S1',
+            'quantity' => 2,
+            'price' => 100,
+            'seatsbroker_listing_id' => '906610',
+            'status' => 'active',
+            'sync_status' => 'synced',
+        ]);
+
+        $this->artisan('xs2:sync-split-listing-quantities')
+            ->assertSuccessful();
+
+        Queue::assertNothingPushed();
+    }
+
     public function test_cron_config_includes_split_listing_quantity_task(): void
     {
         $user = User::factory()->create(['user_type' => 6]);

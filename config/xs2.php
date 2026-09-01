@@ -131,8 +131,9 @@ return [
     ],
 
     'split_listings' => [
-        // When master stock is at or below this value, all split listings are removed from Seats Broker.
-        'unpublish_stock_max' => max(0, (int) env('XS2_SPLIT_LISTING_UNPUBLISH_STOCK_MAX', 2)),
+        // When > 0 and master stock is in (0..unpublish_stock_max], split listings are
+        // disabled on Seats Broker (not deleted). Default 0 = no low-stock unpublish.
+        'unpublish_stock_max' => max(0, (int) env('XS2_SPLIT_LISTING_UNPUBLISH_STOCK_MAX', 0)),
     ],
 
     'sb_listing_inventory' => [
@@ -153,6 +154,8 @@ return [
             1,
         ))),
         'dispatch_interval_seconds' => max(1, (int) env('XS2_SB_NEW_LISTING_PUBLISH_DISPATCH_INTERVAL_SECONDS', 2)),
+        // Minutes to defer new-listing publish after Cron Control → Start All.
+        'start_all_defer_minutes' => max(5, (int) env('XS2_SB_NEW_LISTING_PUBLISH_START_ALL_DEFER_MINUTES', 15)),
     ],
 
     /*

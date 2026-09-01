@@ -103,7 +103,7 @@ class ReconcileSellerListingsForMapping implements ShouldBeUniqueUntilProcessing
             return;
         }
 
-        if (! $mappingStates->canAutoPublish($ticket, $state->mapping_status)) {
+        if (! $mappingStates->isAutoPublishable($state->mapping_status)) {
             return;
         }
 

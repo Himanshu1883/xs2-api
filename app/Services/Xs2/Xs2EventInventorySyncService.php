@@ -3,7 +3,7 @@
 namespace App\Services\Xs2;
 
 use App\Exceptions\Integrations\Xs2RateLimitException;
-use App\Jobs\DeleteSplitListings;
+use App\Jobs\DisableSellerListing;
 use App\Jobs\DisableXs2SellerListing;
 use App\Jobs\SyncXs2TicketGuestRequirements;
 use App\Jobs\SyncSplitListings;
@@ -404,7 +404,7 @@ class Xs2EventInventorySyncService
     {
         try {
             if ($ticket->split_enabled) {
-                DeleteSplitListings::dispatch($ticket->id);
+                DisableSellerListing::dispatch($ticket->id);
             } else {
                 DisableXs2SellerListing::dispatch($ticket->id);
             }

@@ -119,9 +119,14 @@ class SplitListingQuantitySyncService
             return false;
         }
 
-        $unpublishStockMax = max(0, (int) config('xs2.split_listings.unpublish_stock_max', 2));
-        if ($ticket->stock <= $unpublishStockMax
-            || $ticket->stock <= 0
+        $unpublishStockMax = max(0, (int) config('xs2.split_listings.unpublish_stock_max', 0));
+        if ($unpublishStockMax > 0
+            && $ticket->stock > 0
+            && $ticket->stock <= $unpublishStockMax) {
+            return true;
+        }
+
+        if ($ticket->stock <= 0
             || $ticket->ticket_status !== 'available'
             || ! ($ticket->xs2Event?->isSellable() ?? false)) {
             return true;

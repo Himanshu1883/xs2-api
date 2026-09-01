@@ -36,7 +36,7 @@ class PublishNewSbListingsCommandTest extends TestCase
         Xs2TicketMappingState::query()->create([
             'xs2_ticket_id' => $ticket->id,
             'event_mapping_id' => $ticket->xs2Event->mapping->id,
-            'mapping_status' => 'pending_category_mapping',
+            'mapping_status' => 'ready_to_publish',
         ]);
 
         $this->artisan('xs2:publish-new-sb-listings')
@@ -44,6 +44,23 @@ class PublishNewSbListingsCommandTest extends TestCase
 
         Queue::assertPushed(PublishSplitListings::class, fn ($job): bool => $job->ticketId === $ticket->id);
         Queue::assertNotPushed(PushXs2TicketToSellerApi::class);
+    }
+
+    public function test_command_skips_pending_category_mapping_without_ready_status(): void
+    {
+        Queue::fake();
+
+        $ticket = $this->mappedTicket(stock: 8);
+        Xs2TicketMappingState::query()->create([
+            'xs2_ticket_id' => $ticket->id,
+            'event_mapping_id' => $ticket->xs2Event->mapping->id,
+            'mapping_status' => 'pending_category_mapping',
+        ]);
+
+        $this->artisan('xs2:publish-new-sb-listings')
+            ->assertSuccessful();
+
+        Queue::assertNothingPushed();
     }
 
     public function test_command_skips_ticket_already_on_sb(): void

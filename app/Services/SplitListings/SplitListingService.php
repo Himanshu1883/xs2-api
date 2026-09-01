@@ -22,7 +22,7 @@ use Illuminate\Validation\ValidationException;
  *
  * Sync rules (called from inventory sync when split_enabled):
  * - Stock decrease → delete trailing active splits from marketplace + mark deleted
- * - Stock 0 / unpublish / event cancel → deleteAllListings
+ * - Stock 0 / unpublish / event cancel → disableAllSplitListings (soft)
  * - Stock increase → create only missing trailing splits
  * - Base price or increment change → recalculate prices + updateExistingListings
  * - Split quantity change → rebuildListings (delete extras / create missing / update rest)
@@ -265,7 +265,7 @@ class SplitListingService
      *
      * Sync rules:
      * - Stock decrease → delete trailing listings
-     * - Stock 0 / unpublish / event cancel → deleteAllListings
+     * - Stock 0 / unpublish / event cancel → disableAllSplitListings (soft)
      * - Stock increase → create only missing
      * - Base price or increment change → update existing prices
      * - Split quantity change → rebuild (delete extras + create missing + update)
@@ -275,21 +275,23 @@ class SplitListingService
         $ticket->refresh();
 
         if (! $ticket->split_enabled) {
-            return ['action' => 'skipped', 'reason' => 'split_disabled', 'created' => 0, 'updated' => 0, 'deleted' => 0];
+            return ['action' => 'skipped', 'reason' => 'split_disabled', 'created' => 0, 'updated' => 0, 'deleted' => 0, 'disabled' => 0];
         }
 
-        $unpublishStockMax = max(0, (int) config('xs2.split_listings.unpublish_stock_max', 2));
+        $unpublishStockMax = max(0, (int) config('xs2.split_listings.unpublish_stock_max', 0));
 
-        if ($ticket->stock <= $unpublishStockMax
-            || $ticket->stock <= 0
+        if ($ticket->stock <= 0
             || $ticket->ticket_status !== 'available'
             || ! ($ticket->xs2Event?->isSellable() ?? false)) {
-            $reason = $ticket->stock <= $unpublishStockMax && $ticket->stock > 0
-                ? 'low_stock'
-                : 'unavailable';
-            $result = $this->deleteAllListings($ticket);
+            $result = $this->disableAllSplitListings($ticket);
 
-            return ['action' => 'deleted_all', 'reason' => $reason, ...$result];
+            return ['action' => 'disabled_all', 'reason' => 'unavailable', ...$result];
+        }
+
+        if ($unpublishStockMax > 0 && $ticket->stock <= $unpublishStockMax) {
+            $result = $this->disableAllSplitListings($ticket);
+
+            return ['action' => 'disabled_all', 'reason' => 'low_stock', ...$result];
         }
 
         $desired = $this->preview($ticket)['listings'];
@@ -406,6 +408,64 @@ class SplitListingService
         ]);
 
         return $this->deleteAllListings($ticket);
+    }
+
+    /**
+     * Soft-disable every active split on Seats Broker without removing local rows.
+     * Used when stock hits zero, the ticket becomes unavailable, or low-stock unpublish applies.
+     *
+     * @return array{created: int, updated: int, deleted: int, disabled: int}
+     */
+    public function disableAllSplitListings(Xs2Ticket $ticket): array
+    {
+        $disabled = 0;
+        $locked = Xs2Ticket::query()->whereKey($ticket->id)->firstOrFail();
+
+        foreach ($this->activeSplits($locked) as $split) {
+            if (! $split->seatsbroker_listing_id) {
+                continue;
+            }
+
+            try {
+                $payload = [
+                    'ticket_id' => $split->seatsbroker_listing_id,
+                    'match_id' => $ticket->xs2Event?->mapping?->m_id,
+                    'seller_id' => $this->sellerApi->sellerId(),
+                ];
+                $result = $this->publisher->disable($split->seatsbroker_listing_id, $payload);
+                $split->update([
+                    'last_request' => $payload,
+                    'last_response' => $result['response'],
+                    'last_error' => null,
+                    'sync_status' => 'synced',
+                    'last_synced_at' => now(),
+                ]);
+                $disabled++;
+                $this->logActivity($locked, $split, 'disable', 'Split listing disabled.');
+            } catch (\Throwable $e) {
+                $split->update(['last_error' => mb_substr($e->getMessage(), 0, 5000)]);
+                $this->logActivity($locked, $split, 'disable_fail', $this->formatFailureMessage($e), [
+                    'exception' => get_class($e),
+                ]);
+                Log::channel(config('services.seller_api.log_channel', 'stack'))->warning(
+                    'Split listing disable failed.',
+                    ['listing_split_id' => $split->id, 'error' => $e->getMessage()]
+                );
+            }
+        }
+
+        $locked->update([
+            'split_sync_status' => 'completed',
+            'split_sync_error' => null,
+            'sync_status' => 'synced',
+            'sync_error' => null,
+        ]);
+
+        $this->logActivity($locked, null, 'disable_all', 'All split listings disabled.', [
+            'disabled' => $disabled,
+        ]);
+
+        return ['created' => 0, 'updated' => 0, 'deleted' => 0, 'disabled' => $disabled];
     }
 
     public function deleteAllListings(Xs2Ticket $ticket): array

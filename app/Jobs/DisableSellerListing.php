@@ -5,6 +5,7 @@ namespace App\Jobs;
 use App\Models\ExternalListingMapping;
 use App\Models\Xs2Ticket;
 use App\Services\SellerApi\SellerApiClient;
+use App\Services\SplitListings\SplitListingService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
@@ -39,7 +40,7 @@ class DisableSellerListing implements ShouldQueue
         $ticket = Xs2Ticket::findOrFail($this->ticketId);
 
         if ($ticket->split_enabled && $ticket->listingSplits()->where('status', 'active')->exists()) {
-            DeleteSplitListings::dispatchSync($ticket->id);
+            app(SplitListingService::class)->disableAllSplitListings($ticket);
 
             return;
         }

@@ -13,6 +13,7 @@ use App\Jobs\PushXs2TicketToSellerApi;
 use App\Jobs\SyncXs2EventInventory;
 use App\Models\EventMapping;
 use App\Models\ExternalListingMapping;
+use App\Models\ListingSplit;
 use App\Models\Xs2Category;
 use App\Models\Xs2Ticket;
 use App\Services\SellerApi\ListingSalesService;
@@ -27,6 +28,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class Xs2InventoryController extends Controller
@@ -427,6 +429,29 @@ class Xs2InventoryController extends Controller
             })
             ->count();
 
+        $masterSbListings = (clone $scoped)
+            ->where('split_enabled', false)
+            ->whereHas(
+                'listingMapping',
+                fn ($mapping) => $mapping
+                    ->where('provider', 'xs2event')
+                    ->where('status', 'active')
+                    ->whereNotNull('seller_listing_id'),
+            )
+            ->count();
+
+        $splitSbListings = 0;
+        if (Schema::hasTable('listing_splits')) {
+            $scopedTicketIds = (clone $scoped)->select('xs2_tickets.id');
+            $splitSbListings = ListingSplit::query()
+                ->where('status', 'active')
+                ->whereNotNull('seatsbroker_listing_id')
+                ->whereIn('master_listing_id', $scopedTicketIds)
+                ->count();
+        }
+
+        $sbActiveListings = $masterSbListings + $splitSbListings;
+
         return response()->json([
             'data' => [
                 'total' => $total,
@@ -437,6 +462,9 @@ class Xs2InventoryController extends Controller
                 'low_stock' => $lowStock,
                 'errors' => $errors,
                 'low_stock_max' => $lowStockMax,
+                'sb_active_listings' => $sbActiveListings,
+                'sb_master_listings' => $masterSbListings,
+                'sb_split_listings' => $splitSbListings,
             ],
         ]);
     }

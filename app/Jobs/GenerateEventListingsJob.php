@@ -3,6 +3,8 @@
 namespace App\Jobs;
 
 use App\Exceptions\Integrations\Xs2RateLimitException;
+use App\Jobs\DisableSellerListing;
+use App\Jobs\DisableXs2SellerListing;
 use App\Models\PipelineJobStep;
 use App\Models\PipelineRun;
 use App\Models\Xs2Event;
@@ -122,7 +124,7 @@ class GenerateEventListingsJob implements ShouldBeUnique, ShouldQueue
             }
 
             if ($ticket->split_enabled) {
-                DeleteSplitListings::dispatch($ticket->id);
+                DisableSellerListing::dispatch($ticket->id);
             } else {
                 DisableXs2SellerListing::dispatch($ticket->id);
             }
