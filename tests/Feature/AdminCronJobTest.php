@@ -8,6 +8,7 @@ use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 class AdminCronJobTest extends TestCase
@@ -100,6 +101,11 @@ class AdminCronJobTest extends TestCase
             ->assertJsonPath('data.logs.0.command', 'xs2:sync-inventory --mode=incremental')
             ->assertJsonPath('data.logs.0.summary.dispatched', 12)
             ->assertJsonCount(1, 'data.logs.0.api_requests');
+    }
+
+    public function test_cron_execution_logs_has_an_index_for_job_history_queries(): void
+    {
+        $this->assertTrue(Schema::hasIndex('cron_execution_logs', 'cron_execution_logs_job_started_at_idx'));
     }
 
     public function test_admin_can_view_single_cron_execution_log(): void
