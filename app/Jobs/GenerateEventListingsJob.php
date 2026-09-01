@@ -9,6 +9,7 @@ use App\Models\Xs2Event;
 use App\Models\Xs2Ticket;
 use App\Services\Pipeline\InventorySchedulerService;
 use App\Services\Pipeline\PipelineJobStepService;
+use App\Services\SellerApi\SbNewListingPublishService;
 use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
@@ -43,6 +44,7 @@ class GenerateEventListingsJob implements ShouldBeUnique, ShouldQueue
     public function handle(
         MappedListingPublishService $publisher,
         Xs2TicketMappingStatusService $mappingStates,
+        SbNewListingPublishService $sbPublish,
         PipelineJobStepService $steps,
         InventorySchedulerService $scheduler,
     ): void {
@@ -74,7 +76,7 @@ class GenerateEventListingsJob implements ShouldBeUnique, ShouldQueue
             $event = Xs2Event::query()->with('tickets.listingMapping')->findOrFail($this->xs2EventId);
 
             foreach ($event->tickets as $ticket) {
-                $this->processTicket($ticket, $event, $mappingStates, $publisher, $summary);
+                $this->processTicket($ticket, $event, $mappingStates, $publisher, $sbPublish, $summary);
             }
 
             $scheduler->scheduleReconciliation($this->xs2EventId, $this->pipelineRunId, $this->correlationId);
@@ -103,9 +105,11 @@ class GenerateEventListingsJob implements ShouldBeUnique, ShouldQueue
         Xs2Event $event,
         Xs2TicketMappingStatusService $mappingStates,
         MappedListingPublishService $publisher,
+        SbNewListingPublishService $sbPublish,
         array &$summary,
     ): void {
-        $mappingState = $mappingStates->resolve($ticket);
+        // Match publish cron: resolveIfStale avoids downgrading tickets that already have SB listings.
+        $mappingState = $mappingStates->resolveIfStale($ticket);
         $canPublish = $mappingStates->canAutoPublish($ticket, $mappingState->mapping_status);
         $available = $event->isSellable()
             && $ticket->ticket_status === 'available'
@@ -115,16 +119,30 @@ class GenerateEventListingsJob implements ShouldBeUnique, ShouldQueue
             if ($canPublish && $available) {
                 $publisher->publishTicket($ticket->id, strictPublish: false, sync: false);
                 $summary['published']++;
-            } elseif (! $available || ! $canPublish) {
-                if ($ticket->split_enabled) {
-                    DeleteSplitListings::dispatch($ticket->id);
-                } else {
-                    DisableXs2SellerListing::dispatch($ticket->id);
-                }
-                $summary['disabled']++;
-            } else {
-                $summary['skipped']++;
+
+                return;
             }
+
+            // Mapping-only failures: skip (do not publish, do not delete). Same gate as publish cron.
+            if ($available) {
+                $summary['skipped']++;
+
+                return;
+            }
+
+            // Unavailable (stock 0, cancelled, etc.): remove existing SB listings only.
+            if (! $sbPublish->isPublishedOnSb($ticket)) {
+                $summary['skipped']++;
+
+                return;
+            }
+
+            if ($ticket->split_enabled) {
+                DeleteSplitListings::dispatch($ticket->id);
+            } else {
+                DisableXs2SellerListing::dispatch($ticket->id);
+            }
+            $summary['disabled']++;
         } catch (Xs2RateLimitException $exception) {
             throw $exception;
         } catch (\Throwable $exception) {

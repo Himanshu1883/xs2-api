@@ -159,11 +159,8 @@ class Xs2EventInventorySyncService
                         $summary['tickets_disabled']++;
                     }
                 } else {
+                    // Pending mapping alone must not disable SB listings — same gate as publish cron.
                     $summary['tickets_pending']++;
-                    if (! $this->pipelineStrict()) {
-                        $this->dispatchDisableJob($result['ticket'], $event, $mode, $summary);
-                    }
-                    $summary['tickets_disabled']++;
                 }
             }
 
