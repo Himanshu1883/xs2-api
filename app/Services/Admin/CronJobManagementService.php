@@ -19,12 +19,19 @@ class CronJobManagementService
     public function listJobs(): array
     {
         $snapshot = $this->cronConfig->snapshot();
+        $executionLogsAvailable = $this->executionLogs->isAvailable();
+        $executionLogCounts = $this->executionLogs->countsForJobs(array_map(
+            static fn (array $task): string => (string) ($task['id'] ?? ''),
+            $snapshot['tasks'],
+        ));
+
         $tasks = collect($snapshot['tasks'])
-            ->map(function (array $task): array {
+            ->map(function (array $task) use ($executionLogsAvailable, $executionLogCounts): array {
+                $taskId = (string) $task['id'];
                 $task['description'] = $this->descriptionForTask($task);
-                $task['supports_run_now'] = $this->supportsRunNow((string) $task['id']);
-                $task['execution_logs_available'] = $this->executionLogs->isAvailable();
-                $task['execution_log_count'] = $this->executionLogs->countForJob((string) $task['id']);
+                $task['supports_run_now'] = $this->supportsRunNow($taskId);
+                $task['execution_logs_available'] = $executionLogsAvailable;
+                $task['execution_log_count'] = (int) ($executionLogCounts[$taskId] ?? 0);
 
                 return $task;
             })
@@ -44,7 +51,7 @@ class CronJobManagementService
                 'schedule_health' => (string) ($health['status'] ?? 'healthy'),
                 'queue_pending' => (int) ($queueStats['pending'] ?? 0),
                 'queue_running' => (int) ($queueStats['running'] ?? 0),
-                'execution_logs_available' => $this->executionLogs->isAvailable(),
+                'execution_logs_available' => $executionLogsAvailable,
             ],
             'scheduler' => $snapshot['scheduler'],
             'jobs' => $tasks,

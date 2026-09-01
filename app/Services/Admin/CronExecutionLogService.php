@@ -267,6 +267,30 @@ class CronExecutionLogService
         return (int) CronExecutionLog::query()->where('cron_job_id', $cronJobId)->count();
     }
 
+    /**
+     * Fetch execution-log counts for a dashboard in one query rather than one
+     * query per task. The cron dashboard is polled while work is active.
+     *
+     * @param  list<string>  $cronJobIds
+     * @return array<string, int>
+     */
+    public function countsForJobs(array $cronJobIds): array
+    {
+        $cronJobIds = array_values(array_unique(array_filter($cronJobIds, 'filled')));
+
+        if ($cronJobIds === [] || ! $this->isAvailable()) {
+            return [];
+        }
+
+        return CronExecutionLog::query()
+            ->whereIn('cron_job_id', $cronJobIds)
+            ->selectRaw('cron_job_id, COUNT(*) as execution_log_count')
+            ->groupBy('cron_job_id')
+            ->pluck('execution_log_count', 'cron_job_id')
+            ->map(static fn (mixed $count): int => (int) $count)
+            ->all();
+    }
+
     /** @return list<array<string, mixed>> */
     public function recentGlobal(int $limit = 10): array
     {
