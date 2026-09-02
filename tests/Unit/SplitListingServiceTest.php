@@ -255,6 +255,65 @@ class SplitListingServiceTest extends TestCase
         $this->assertFalse($ticket->fresh()->split_enabled);
     }
 
+    public function test_stock_decrease_from_ten_to_eight_deletes_trailing_split_only(): void
+    {
+        $publisher = Mockery::mock(MarketplaceListingPublisher::class);
+        $publisher->shouldReceive('delete')->once()->with('sb-5', Mockery::type('array'))
+            ->andReturn(['response' => ['ok' => true]]);
+        $publisher->shouldReceive('update')->never();
+        $publisher->shouldReceive('create')->never();
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('sellerId')->andReturn(1);
+
+        $service = new SplitListingService(
+            $publisher,
+            Mockery::mock(Xs2SellerListingTransformer::class),
+            $client,
+            Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
+        );
+
+        $ticket = $this->ticket([
+            'stock' => 10,
+            'net_rate' => 10000,
+            'split_enabled' => true,
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5,
+        ]);
+
+        foreach ([1, 2, 3, 4, 5] as $order) {
+            ListingSplit::query()->create([
+                'master_listing_id' => $ticket->id,
+                'seatsbroker_listing_id' => 'sb-'.$order,
+                'seller_reference' => 'XS2-t1-S'.$order,
+                'quantity' => 2,
+                'price' => 100 + (($order - 1) * 5),
+                'split_order' => $order,
+                'status' => 'active',
+                'sync_status' => 'synced',
+                'last_payload_hash' => 'stale',
+            ]);
+        }
+
+        $ticket->update(['stock' => 8]);
+        $ticket->xs2Event->forceFill([
+            'event_status' => 'available',
+            'date_start_local' => now()->addWeek(),
+        ])->save();
+
+        $result = $service->syncListings($ticket->fresh());
+
+        $this->assertSame('synced', $result['action']);
+        $this->assertSame(0, $result['created']);
+        $this->assertSame(1, $result['deleted']);
+        $this->assertSame(0, $result['updated']);
+        $this->assertSame(4, ListingSplit::query()->where('status', 'active')->count());
+        $this->assertSame(1, ListingSplit::query()->where('status', 'deleted')->count());
+        $this->assertNull(ListingSplit::query()->where('split_order', 5)->where('status', 'active')->first());
+    }
+
     public function test_stock_decrease_deletes_trailing_listings(): void
     {
         $publisher = Mockery::mock(MarketplaceListingPublisher::class);

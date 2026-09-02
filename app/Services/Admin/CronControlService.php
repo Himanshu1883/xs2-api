@@ -176,10 +176,6 @@ class CronControlService
         $this->integrationSettings->set(IntegrationSettingService::APP_SCHEDULER_ENABLED, 'true');
         config(['app.scheduler_enabled' => true]);
 
-        // xs2-sb-order-sync is manually controlled only — never re-enabled by Start All.
-        $this->integrationSettings->set(IntegrationSettingService::SB_BOOKINGS_SYNC_ENABLED, 'false');
-        config(['xs2.sb_bookings_sync.enabled' => false]);
-
         $restoredLowLoadMode = $previousState !== null
             ? (bool) ($previousState['app.low_load_mode'] ?? false)
             : false;

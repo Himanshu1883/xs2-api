@@ -108,6 +108,27 @@ class AdminCronConfigTest extends TestCase
             ]);
     }
 
+    public function test_cron_config_shows_next_run_when_scheduler_stopped_via_integration_settings(): void
+    {
+        config()->set('app.scheduler_enabled', false);
+        config()->set('xs2.enabled', true);
+
+        $settings = app(\App\Services\Admin\IntegrationSettingService::class);
+        $settings->set(\App\Services\Admin\IntegrationSettingService::APP_SCHEDULER_ENABLED, 'false');
+
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('cron-next-run-stopped-test')->plainTextToken;
+
+        $response = $this->withToken($token)
+            ->getJson('/api/admin/cron-config')
+            ->assertOk();
+
+        $inventoryIncremental = collect($response->json('data.tasks'))->firstWhere('id', 'xs2-inventory-incremental');
+        $this->assertNotNull($inventoryIncremental);
+        $this->assertNotNull($inventoryIncremental['next_run_at'], 'next_run_at should be computed even when scheduler is stopped');
+        $this->assertFalse($response->json('data.scheduler.scheduler_enabled'));
+    }
+
     public function test_admin_can_stop_all_crons(): void
     {
         config()->set('app.scheduler_enabled', true);

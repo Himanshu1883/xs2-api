@@ -18,6 +18,7 @@ class BootstrapCronsAfterStartJob implements ShouldQueue
         ['id' => 'xs2-inventory-full', 'delay_seconds' => 0],
         ['id' => 'xs2-sb-new-listing-publish', 'delay_seconds' => 120],
         ['id' => 'xs2-sb-listing-inventory', 'delay_seconds' => 300],
+        ['id' => 'xs2-sb-order-sync', 'delay_seconds' => 330],
         ['id' => 'xs2-sb-order-guest-data-sync', 'delay_seconds' => 360],
     ];
 
@@ -56,6 +57,8 @@ class BootstrapCronsAfterStartJob implements ShouldQueue
                 && (bool) config('xs2.sb_new_listing_publish.enabled', true),
             'xs2-sb-listing-inventory' => (bool) config('services.seller_api.enabled', true)
                 && (bool) config('xs2.sb_listing_inventory.enabled', true),
+            'xs2-sb-order-sync' => (bool) config('services.seller_api.enabled', true)
+                && (bool) config('xs2.sb_bookings_sync.enabled', true),
             'xs2-sb-order-guest-data-sync' => (bool) config('xs2.sb_order_guest_data_sync.enabled', true),
             default => false,
         };

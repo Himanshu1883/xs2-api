@@ -45,6 +45,8 @@ Also required for production:
 
 Do **not** commit `.env` or real passwords to git.
 
+See also [cron-automation.md](./cron-automation.md) for Start All pipeline, split qty sync behaviour, and the production testing checklist.
+
 ### xs2-web service (Vercel dashboard)
 
 | Variable | Example |
