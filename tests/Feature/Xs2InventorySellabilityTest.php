@@ -146,10 +146,9 @@ class Xs2InventorySellabilityTest extends TestCase
         Queue::fake();
 
         $mappingStates = app(Xs2TicketMappingStatusService::class);
-        $publisher = app(MappedListingPublishService::class);
 
-        (new ReconcileSellerListingsForMapping($cancelled->id))->handle($mappingStates, $publisher);
-        (new ReconcileSellerListingsForMapping($past->id))->handle($mappingStates, $publisher);
+        (new ReconcileSellerListingsForMapping($cancelled->id))->handle($mappingStates);
+        (new ReconcileSellerListingsForMapping($past->id))->handle($mappingStates);
 
         Queue::assertPushed(
             DisableSellerListing::class,
@@ -200,7 +199,6 @@ class Xs2InventorySellabilityTest extends TestCase
         (new ResolvePendingXs2Listings('category', $categoryMapping->id))->handle(
             $states,
             $categories,
-            app(MappedListingPublishService::class),
         );
 
         Queue::assertPushed(

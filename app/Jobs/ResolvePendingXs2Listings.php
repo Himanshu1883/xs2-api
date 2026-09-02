@@ -9,8 +9,6 @@ use App\Models\Xs2Ticket;
 use App\Models\Xs2TicketMappingState;
 use App\Services\Mapping\StadiumCategoryMappingService;
 use App\Services\SellerApi\SbNewListingPublishService;
-use App\Services\Xs2\ListingPublishReadinessService;
-use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -89,11 +87,8 @@ class ResolvePendingXs2Listings implements ShouldBeUniqueUntilProcessing, Should
     public function handle(
         Xs2TicketMappingStatusService $states,
         StadiumCategoryMappingService $categories,
-        MappedListingPublishService $publisher,
-        ?ListingPublishReadinessService $readiness = null,
         ?SbNewListingPublishService $sbPublish = null,
     ): void {
-        $readiness ??= app(ListingPublishReadinessService::class);
         $sbPublish ??= app(SbNewListingPublishService::class);
 
         $tickets = match ($this->mappingType) {
@@ -103,15 +98,13 @@ class ResolvePendingXs2Listings implements ShouldBeUniqueUntilProcessing, Should
         };
 
         foreach ($tickets as $ticket) {
-            $this->reconcileTicket($ticket, $states, $publisher, $readiness, $sbPublish);
+            $this->reconcileTicket($ticket, $states, $sbPublish);
         }
     }
 
     private function reconcileTicket(
         Xs2Ticket $ticket,
         Xs2TicketMappingStatusService $states,
-        MappedListingPublishService $publisher,
-        ListingPublishReadinessService $readiness,
         SbNewListingPublishService $sbPublish,
     ): void {
         $state = $states->resolve($ticket);
@@ -136,14 +129,8 @@ class ResolvePendingXs2Listings implements ShouldBeUniqueUntilProcessing, Should
             return;
         }
 
-        if (! in_array($state->mapping_status, ['ready_to_publish', 'published'], true)) {
-            return;
-        }
-
-        $assessment = $readiness->assess($ticket);
-        if ($assessment['ready']) {
-            $publisher->publishTicket($ticket->id);
-        }
+        // Mapping resolution only updates local state — never auto-publishes or
+        // retires listings for pending stadium/category mapping alone.
     }
 
     private function shouldRetireListing(Xs2Ticket $ticket, Xs2TicketMappingState $state): bool

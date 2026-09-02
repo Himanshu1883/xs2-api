@@ -12,7 +12,6 @@ use App\Models\Xs2Event;
 use App\Models\Xs2Ticket;
 use App\Services\SellerApi\SellerApiClient;
 use App\Services\Xs2\EventMappingService;
-use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use App\Services\Xs2\ListingPublishValidator;
 use App\Services\Xs2\Xs2SellerListingTransformer;
@@ -140,7 +139,6 @@ class SellerListingPublisherTest extends TestCase
 
         (new ReconcileSellerListingsForMapping($ticket->xs2Event->mapping->id))->handle(
             app(Xs2TicketMappingStatusService::class),
-            app(MappedListingPublishService::class),
         );
 
         Queue::assertPushed(DisableSellerListing::class, fn ($job): bool => $job->ticketId === $ticket->id);

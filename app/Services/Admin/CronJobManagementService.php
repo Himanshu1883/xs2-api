@@ -141,9 +141,9 @@ class CronJobManagementService
     /**
      * @return array<string, mixed>
      */
-    public function executeRun(string $cronJobId, bool $force = false): array
+    public function executeRun(string $cronJobId, bool $force = false, string $trigger = 'scheduled'): array
     {
-        return $this->dispatchRun($cronJobId, $force);
+        return $this->dispatchRun($cronJobId, $force, $trigger);
     }
 
     public function supportsRunNow(string $cronJobId): bool
@@ -178,7 +178,7 @@ class CronJobManagementService
     }
 
     /** @return array<string, mixed> */
-    private function dispatchRun(string $cronJobId, bool $force = false): array
+    private function dispatchRun(string $cronJobId, bool $force = false, string $trigger = 'scheduled'): array
     {
         if ($cronJobId === 'xs2-inventory-incremental') {
             $params = ['--mode' => 'incremental'];
@@ -232,7 +232,13 @@ class CronJobManagementService
         }
 
         if ($cronJobId === 'xs2-sb-new-listing-publish') {
-            $params = $force ? ['--force' => true] : [];
+            $params = [];
+            if ($force) {
+                $params['--force'] = true;
+            }
+            if ($trigger === 'manual') {
+                $params['--manual'] = true;
+            }
             $exitCode = Artisan::call('xs2:publish-new-sb-listings', $params);
             if ($exitCode !== 0) {
                 throw new \RuntimeException(trim(Artisan::output()) ?: 'Seats Broker new listing publish failed.');

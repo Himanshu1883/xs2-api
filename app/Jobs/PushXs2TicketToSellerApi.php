@@ -112,7 +112,7 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
         $canPublish = $mappingState && (
             $this->strictPublish
                 ? $mappingStatusService->isManualPublishable($mappingState->mapping_status)
-                : $mappingStatusService->canAutoPublish($ticket, $mappingState->mapping_status)
+                : $mappingStatusService->isAutoPublishable($mappingState->mapping_status)
         );
         if (Schema::hasTable('xs2_ticket_mapping_states') && ! $canPublish) {
             $this->abortPublish(

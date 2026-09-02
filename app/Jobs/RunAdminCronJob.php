@@ -37,7 +37,7 @@ class RunAdminCronJob implements ShouldQueue
         }
 
         try {
-            $result = $cronJobs->executeRun($this->cronJobId, $this->force);
+            $result = $cronJobs->executeRun($this->cronJobId, $this->force, $this->trigger);
 
             if ($this->executionLogId > 0) {
                 $executionLogs->finish(

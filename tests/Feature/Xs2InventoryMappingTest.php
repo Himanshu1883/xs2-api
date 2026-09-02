@@ -776,7 +776,6 @@ class Xs2InventoryMappingTest extends TestCase
         (new ResolvePendingXs2Listings('category', $categoryMapping->id))->handle(
             app(Xs2TicketMappingStatusService::class),
             app(StadiumCategoryMappingService::class),
-            app(MappedListingPublishService::class),
         );
 
         $this->assertSame('pending_category_mapping', $ticket->fresh()->mappingState->mapping_status);
@@ -904,7 +903,6 @@ class Xs2InventoryMappingTest extends TestCase
         (new ResolvePendingXs2Listings('stadium', $stadium->id))->handle(
             app(Xs2TicketMappingStatusService::class),
             app(StadiumCategoryMappingService::class),
-            app(MappedListingPublishService::class),
         );
 
         $categoryMapping = $categoryMapping->fresh();
@@ -979,7 +977,6 @@ class Xs2InventoryMappingTest extends TestCase
         (new ResolvePendingXs2Listings('stadium', $stadium->id))->handle(
             app(Xs2TicketMappingStatusService::class),
             app(StadiumCategoryMappingService::class),
-            app(MappedListingPublishService::class),
         );
 
         $categoryMapping = $categoryMapping->fresh();

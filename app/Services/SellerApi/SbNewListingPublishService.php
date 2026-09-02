@@ -5,6 +5,7 @@ namespace App\Services\SellerApi;
 use App\Models\ExternalListingMapping;
 use App\Models\Xs2SyncState;
 use App\Models\Xs2Ticket;
+use App\Services\Xs2\ListingPublishReadinessService;
 use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Database\Eloquent\Builder;
@@ -22,6 +23,7 @@ class SbNewListingPublishService
     public function __construct(
         private readonly MappedListingPublishService $publisher,
         private readonly Xs2TicketMappingStatusService $mappingStatuses,
+        private readonly ListingPublishReadinessService $readiness,
     ) {}
 
     /**
@@ -32,6 +34,7 @@ class SbNewListingPublishService
         ?int $ticketId = null,
         bool $dryRun = false,
         ?int $maxDispatch = null,
+        bool $manualPublish = false,
     ): array {
         if (Schema::hasTable('xs2_sync_states')) {
             Xs2SyncState::query()->firstOrCreate(['resource' => self::SYNC_RESOURCE])->update([
@@ -51,6 +54,7 @@ class SbNewListingPublishService
             'skip_reasons' => [
                 'event_not_sellable' => 0,
                 'mapping_not_ready' => 0,
+                'validation_failed' => 0,
                 'already_published_on_sb' => 0,
             ],
             'dry_run' => $dryRun,
@@ -77,11 +81,22 @@ class SbNewListingPublishService
                     ? $this->mappingStatuses->resolveIfStale($ticket)
                     : null;
 
-                // Match pre-churn-fix behavior: pending stadium/category mapping can still
-                // publish when the ticket has an XS2 category_name (canAutoPublish).
-                if (! $this->mappingStatuses->canAutoPublish($ticket, $state?->mapping_status)) {
+                $mappingStatus = $state?->mapping_status;
+                $mappingAllowed = $manualPublish
+                    ? $this->mappingStatuses->canAutoPublish($ticket, $mappingStatus)
+                    : $this->mappingStatuses->isAutoPublishable($mappingStatus);
+
+                if (! $mappingAllowed) {
                     $summary['skipped']++;
                     $summary['skip_reasons']['mapping_not_ready']++;
+
+                    continue;
+                }
+
+                $readiness = $this->readiness->assess($ticket, strictPublish: $manualPublish);
+                if (! $readiness['ready']) {
+                    $summary['skipped']++;
+                    $summary['skip_reasons']['validation_failed']++;
 
                     continue;
                 }
@@ -159,7 +174,12 @@ class SbNewListingPublishService
                 ? $this->mappingStatuses->resolveIfStale($ticket)
                 : null;
 
-            if (! $this->mappingStatuses->canAutoPublish($ticket, $state?->mapping_status)) {
+            if (! $this->mappingStatuses->isAutoPublishable($state?->mapping_status)) {
+                continue;
+            }
+
+            $readiness = $this->readiness->assess($ticket);
+            if (! $readiness['ready']) {
                 continue;
             }
 

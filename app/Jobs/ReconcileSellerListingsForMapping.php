@@ -7,8 +7,6 @@ use App\Models\Xs2CategoryMapping;
 use App\Models\Xs2Ticket;
 use App\Models\Xs2TicketMappingState;
 use App\Services\SellerApi\SbNewListingPublishService;
-use App\Services\Xs2\ListingPublishReadinessService;
-use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -36,11 +34,8 @@ class ReconcileSellerListingsForMapping implements ShouldBeUniqueUntilProcessing
 
     public function handle(
         Xs2TicketMappingStatusService $mappingStates,
-        MappedListingPublishService $publisher,
-        ?ListingPublishReadinessService $readiness = null,
         ?SbNewListingPublishService $sbPublish = null,
     ): void {
-        $readiness ??= app(ListingPublishReadinessService::class);
         $sbPublish ??= app(SbNewListingPublishService::class);
 
         $mapping = EventMapping::with('xs2Event.tickets')->find($this->mappingId);
@@ -49,43 +44,26 @@ class ReconcileSellerListingsForMapping implements ShouldBeUniqueUntilProcessing
         }
 
         $eventSellable = $mapping->xs2Event->isSellable();
-        $eventMappingReady = in_array($mapping->status, ['mapped', 'created'], true) && $mapping->m_id;
 
         foreach ($mapping->xs2Event->tickets as $ticket) {
             $this->reconcileTicket(
                 $ticket,
-                $mapping,
                 $mappingStates,
-                $publisher,
-                $readiness,
                 $sbPublish,
                 $eventSellable,
-                $eventMappingReady,
             );
         }
     }
 
     private function reconcileTicket(
         Xs2Ticket $ticket,
-        EventMapping $mapping,
         Xs2TicketMappingStatusService $mappingStates,
-        MappedListingPublishService $publisher,
-        ListingPublishReadinessService $readiness,
         SbNewListingPublishService $sbPublish,
         bool $eventSellable,
-        bool $eventMappingReady,
     ): void {
         $available = $this->isAvailable($ticket) && $eventSellable;
 
         if (! $eventSellable || ! $available) {
-            if ($sbPublish->isPublishedOnSb($ticket)) {
-                DisableSellerListing::dispatch($ticket->id);
-            }
-
-            return;
-        }
-
-        if (! $eventMappingReady) {
             if ($sbPublish->isPublishedOnSb($ticket)) {
                 DisableSellerListing::dispatch($ticket->id);
             }
@@ -103,14 +81,8 @@ class ReconcileSellerListingsForMapping implements ShouldBeUniqueUntilProcessing
             return;
         }
 
-        if (! $mappingStates->isAutoPublishable($state->mapping_status)) {
-            return;
-        }
-
-        $assessment = $readiness->assess($ticket);
-        if ($assessment['ready']) {
-            $publisher->publishTicket($ticket->id);
-        }
+        // Pending stadium/category mapping alone must not publish or retire listings.
+        // First-time publish is handled only by xs2:publish-new-sb-listings.
     }
 
     private function shouldRetireListing(Xs2Ticket $ticket, Xs2TicketMappingState $state): bool

@@ -14,7 +14,8 @@ class PublishNewSbListingsCommand extends Command
                             {--sync : Run publish jobs inline instead of queueing}
                             {--ticket= : Limit to one XS2 ticket id}
                             {--dry-run : Show eligible unpublished tickets without publishing}
-                            {--force : Dispatch even when queue backpressure is active}';
+                            {--force : Dispatch even when queue backpressure is active}
+                            {--manual : Allow pending mapping with category_name bypass (admin Run now)}';
 
     protected $description = 'Publish new XS2 inventory on mapped events to Seats Broker (skips tickets already listed on SB).';
 
@@ -49,6 +50,7 @@ class PublishNewSbListingsCommand extends Command
             ticketId: $ticketId,
             dryRun: (bool) $this->option('dry-run'),
             maxDispatch: $maxDispatch,
+            manualPublish: (bool) $this->option('manual'),
         );
 
         if (($summary['deferred'] ?? 0) > 0) {
