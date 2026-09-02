@@ -54,6 +54,9 @@ return [
     // Guest-data fetches share the XS2 rate limit but should not block inventory
     // sync jobs on xs2-sync during large catch-up imports.
     'guest_queue' => env('XS2_GUEST_QUEUE', 'xs2-guest'),
+    // Admin "Run now" / Start All crons — listened to before default so manual runs
+    // are not starved behind xs2-sync backlogs on the shared default queue.
+    'admin_cron_queue' => env('ADMIN_CRON_QUEUE', 'admin-cron'),
     // Mapping reconciliation should not wait behind inventory sync. Workers
     // should listen to this queue before xs2-sync, e.g.
     // queue:work --queue=xs2-mapping,xs2-sync,seller-api,default

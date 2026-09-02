@@ -197,7 +197,7 @@ class CronControlService
 
         $this->queues->clearWorkerRestartSignal();
 
-        BootstrapCronsAfterStartJob::dispatch();
+        BootstrapCronsAfterStartJob::dispatch()->afterResponse();
 
         return [
             'action' => 'start',

@@ -206,6 +206,26 @@ class AdminCronJobTest extends TestCase
         ]);
     }
 
+    public function test_admin_can_trigger_xs2_inventory_full_run(): void
+    {
+        Queue::fake();
+
+        $token = $this->adminToken();
+
+        $this->withToken($token)
+            ->postJson('/api/admin/queue/cron-jobs/xs2-inventory-full/run')
+            ->assertAccepted()
+            ->assertJsonPath('data.cron_job_id', 'xs2-inventory-full')
+            ->assertJsonPath('data.status', 'queued')
+            ->assertJsonPath('data.action', 'queued');
+
+        Queue::assertPushed(\App\Jobs\RunAdminCronJob::class, function (\App\Jobs\RunAdminCronJob $job): bool {
+            return $job->cronJobId === 'xs2-inventory-full'
+                && $job->force === true
+                && $job->trigger === 'manual';
+        });
+    }
+
     public function test_admin_can_run_xs2_events_sync_for_all_sports(): void
     {
         Queue::fake();

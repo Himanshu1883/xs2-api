@@ -41,7 +41,7 @@ Also required for production:
 | `APP_URL` | Public xs2-api URL, e.g. `https://<service>.up.railway.app` |
 | `SESSION_DRIVER` | `file` (default in Dockerfile; no Redis required) |
 | `CACHE_STORE` | `file` (default in Dockerfile) |
-| `QUEUE_CONNECTION` | `sync` for web-only deploy; use `database` + a worker service for queues |
+| `QUEUE_CONNECTION` | `database` (Dockerfile default; `docker-entrypoint.sh` runs workers). Use `sync` only for local one-off debugging — it makes Run now block HTTP until the cron finishes. |
 
 Do **not** commit `.env` or real passwords to git.
 

@@ -62,7 +62,8 @@ start_worker_loop() {
     echo "Started ${label} queue worker (queues=${queues})"
 }
 
-GENERAL_QUEUES="${XS2_MAPPING_QUEUE},${XS2_RECONCILE_QUEUE},${XS2_LISTING_GEN_QUEUE},${XS2_QUEUE},${XS2_GUEST_QUEUE},default"
+ADMIN_CRON_QUEUE="${ADMIN_CRON_QUEUE:-admin-cron}"
+GENERAL_QUEUES="${ADMIN_CRON_QUEUE},${XS2_MAPPING_QUEUE},${XS2_RECONCILE_QUEUE},${XS2_LISTING_GEN_QUEUE},${XS2_QUEUE},${XS2_GUEST_QUEUE},default"
 
 # Dedicated seller-api worker so SB publish jobs are never starved behind xs2-sync backlogs
 # or long-running default-queue admin crons (RunAdminCronJob timeout up to 900s).

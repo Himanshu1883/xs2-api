@@ -109,17 +109,11 @@ class CronJobManagementService
     /** @return array<string, mixed> */
     public function runNow(string $cronJobId): array
     {
-        $task = $this->findTask($cronJobId);
-        if ($task === null) {
-            throw ValidationException::withMessages([
-                'cron_job_id' => ["Unknown cron job “{$cronJobId}”."],
-            ]);
-        }
-
         // Manual "Run now" is always allowed regardless of enabled/disabled state.
         // This lets users test individual crons while the scheduler is stopped.
-
         if (! $this->supportsRunNow($cronJobId)) {
+            $this->assertKnownJob($cronJobId);
+
             throw ValidationException::withMessages([
                 'cron_job_id' => ['This cron job cannot be triggered manually from the admin console.'],
             ]);
@@ -127,7 +121,8 @@ class CronJobManagementService
 
         $logId = $this->executionLogs->start($cronJobId, 'manual');
 
-        RunAdminCronJob::dispatch($cronJobId, $logId, force: true, trigger: 'manual');
+        RunAdminCronJob::dispatch($cronJobId, $logId, force: true, trigger: 'manual')
+            ->afterResponse();
 
         return [
             'cron_job_id' => $cronJobId,
