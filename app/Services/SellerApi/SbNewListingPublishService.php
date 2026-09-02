@@ -126,12 +126,12 @@ class SbNewListingPublishService
                         : $firstDispatchAt->copy()->addSeconds($queueIndex * $dispatchSpacingSeconds);
 
                     if ($inline) {
-                        $this->publisher->publishTicket($ticket->id, strictPublish: false, sync: true);
+                        $this->publisher->publishTicket($ticket->id, strictPublish: $manualPublish, sync: true);
                         $summary['published_inline']++;
                     } else {
                         $this->publisher->publishTicket(
                             $ticket->id,
-                            strictPublish: false,
+                            strictPublish: $manualPublish,
                             sync: false,
                             delayUntil: $delayUntil,
                         );
