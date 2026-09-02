@@ -9,6 +9,7 @@ When XS2 stock changes for a **split-enabled** ticket that already has Seats Bro
 | Stock **10 → 8** (split qty 2) | **DELETE** trailing split (S5 only) | S5 → `deleted`; S1–S4 stay `active` |
 | Stock **10 → 5** with remainder | **DELETE** trailing splits; **UPDATE** last kept split if qty changes | Trailing rows deleted; remainder split updated |
 | Stock **→ 0** | **DELETE** each split individually | All splits `deleted`; `split_enabled` cleared |
+| Stock **0 → >0** (restock) | **CREATE** full split plan again | `PublishSplitListings` queued; `split_enabled` set on publish |
 | Low stock (≤ `XS2_SPLIT_UNPUBLISH_STOCK_MAX`) | **DELETE** each split | Same as zero stock |
 | Ticket/event unavailable (stock > 0) | **DISABLE** each split (soft) | Splits stay `active` locally |
 | Stock increase | **CREATE** missing trailing splits only | New `listing_splits` rows |
@@ -41,6 +42,8 @@ Bootstrap sequence (when each cron flag is enabled):
 | 360s | `xs2-sb-order-guest-data-sync` | `xs2:sync-order-guest-data` |
 
 After bootstrap, the OS scheduler (`php artisan schedule:run` every minute) continues each job on its configured interval. Schedule definitions always register in `routes/console.php`; runtime `->when()` gates honour Stop/Start without restarting PHP workers.
+
+**Manual-only crons** (never in Start All bootstrap): `xs2-events-sync`, `sb-events-sync`.
 
 ## 502 prevention
 

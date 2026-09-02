@@ -13,6 +13,7 @@ use App\Models\Xs2Event;
 use App\Models\Xs2EventInventorySyncState;
 use App\Models\Xs2Ticket;
 use App\Services\SellerApi\SbNewListingPublishService;
+use App\Services\SplitListings\SplitListingRestockService;
 use Illuminate\Support\Facades\Log;
 
 class Xs2EventInventorySyncService
@@ -25,6 +26,7 @@ class Xs2EventInventorySyncService
         private readonly Xs2TicketMappingStatusService $mappingStates,
         private readonly Xs2AwayTeamContextService $awayTeamContext,
         private readonly SbNewListingPublishService $sbPublish,
+        private readonly SplitListingRestockService $splitRestock,
     ) {}
 
     /** @return array<string,int|string|array<int,string>|null> */
@@ -153,7 +155,12 @@ class Xs2EventInventorySyncService
                         $summary['tickets_ready']++;
                     }
                     if ($this->isAvailable($result['ticket'], $event)) {
-                        if ($this->dispatchListingJob($result['ticket'], $event, $mode, $summary)) {
+                        $previousStock = (int) ($result['previous_stock'] ?? 0);
+                        $currentStock = (int) $result['ticket']->stock;
+                        if ($this->splitRestock->isRestockFromZero($previousStock, $currentStock)
+                            && $this->dispatchRestockSplitRepublish($result['ticket'], $event, $mode, $summary)) {
+                            $summary['listing_jobs_dispatched']++;
+                        } elseif ($this->dispatchListingJob($result['ticket'], $event, $mode, $summary)) {
                             $summary['listing_jobs_dispatched']++;
                         }
                     } else {
@@ -208,6 +215,7 @@ class Xs2EventInventorySyncService
         }
 
         $changed = $created || $ticket->payload_hash !== $hash;
+        $previousStock = $ticket->exists ? (int) $ticket->stock : 0;
         $ticket->fill(array_merge($attributes, [
             'xs2_event_id' => $event->id,
             'last_seen_at' => $seenAt,
@@ -225,6 +233,7 @@ class Xs2EventInventorySyncService
         return [
             'ticket' => $ticket,
             'action' => $created ? 'tickets_created' : ($changed ? 'tickets_updated' : 'tickets_unchanged'),
+            'previous_stock' => $previousStock,
         ];
     }
 
@@ -365,6 +374,36 @@ class Xs2EventInventorySyncService
     private function safeMessage(\Throwable $exception): string
     {
         return mb_substr($exception->getMessage(), 0, 1000);
+    }
+
+    /**
+     * After stock returns from zero, rebuild split listings when config or publish rules apply.
+     *
+     * @param array<string,mixed> &$summary
+     */
+    private function dispatchRestockSplitRepublish(Xs2Ticket $ticket, Xs2Event $event, string $mode, array &$summary): bool
+    {
+        if (! $this->splitRestock->canRepublishAfterRestock($ticket)) {
+            return false;
+        }
+
+        try {
+            return $this->splitRestock->queueRepublish($ticket);
+        } catch (Xs2RateLimitException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            $summary['errors'][] = 'restock-split:'.$ticket->external_ticket_id.': '.$this->safeMessage($exception);
+            Log::channel(config('xs2.log_channel', 'stack'))->warning('XS2 split restock republish could not be queued.', [
+                'provider' => 'xs2event',
+                'external_event_id' => $event->external_event_id,
+                'external_ticket_id' => $ticket->external_ticket_id,
+                'sync_mode' => $mode,
+                'error_class' => $exception::class,
+                'error_message' => $this->safeMessage($exception),
+            ]);
+
+            return false;
+        }
     }
 
     /**

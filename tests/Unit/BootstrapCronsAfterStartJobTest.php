@@ -32,6 +32,26 @@ class BootstrapCronsAfterStartJobTest extends TestCase
         Queue::assertPushed(RunAdminCronJob::class, fn (RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-sb-listing-inventory');
     }
 
+    public function test_bootstrap_never_queues_manual_event_sync_crons(): void
+    {
+        config()->set('xs2.enabled', true);
+        config()->set('services.seller_api.enabled', true);
+        config()->set('xs2.sb_bookings_sync.enabled', true);
+        config()->set('xs2.sb_new_listing_publish.enabled', true);
+        config()->set('xs2.sb_listing_inventory.enabled', true);
+        config()->set('xs2.sb_order_guest_data_sync.enabled', true);
+
+        Queue::fake();
+
+        (new BootstrapCronsAfterStartJob())->handle(
+            app(CronExecutionLogService::class),
+            app(CronToggleService::class),
+        );
+
+        Queue::assertNotPushed(RunAdminCronJob::class, fn (RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-events-sync');
+        Queue::assertNotPushed(RunAdminCronJob::class, fn (RunAdminCronJob $job): bool => str_contains($job->cronJobId, 'sb-events'));
+    }
+
     public function test_bootstrap_skips_order_sync_when_disabled(): void
     {
         config()->set('xs2.enabled', true);

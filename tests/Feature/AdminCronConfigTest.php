@@ -388,6 +388,33 @@ class AdminCronConfigTest extends TestCase
             ->assertJsonValidationErrors(['cron_job_id']);
     }
 
+    public function test_start_all_restores_order_sync_flag_from_stop_snapshot(): void
+    {
+        Queue::fake();
+        config()->set('app.scheduler_enabled', true);
+        config()->set('xs2.enabled', true);
+        config()->set('services.seller_api.enabled', true);
+        config()->set('xs2.sb_bookings_sync.enabled', true);
+
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('cron-order-sync-restore-test')->plainTextToken;
+
+        $this->withToken($token)
+            ->postJson('/api/admin/cron-config/stop-all', ['stop_queues' => false])
+            ->assertOk();
+
+        $this->assertFalse((bool) config('xs2.sb_bookings_sync.enabled'));
+
+        $this->withToken($token)
+            ->postJson('/api/admin/cron-config/start-all')
+            ->assertOk();
+
+        $this->assertTrue((bool) config('xs2.sb_bookings_sync.enabled'));
+        $this->assertSame('true', app(\App\Services\Admin\IntegrationSettingService::class)->value(
+            \App\Services\Admin\IntegrationSettingService::SB_BOOKINGS_SYNC_ENABLED,
+        ));
+    }
+
     public function test_admin_can_toggle_start_all_and_individual_crons(): void
     {
         config()->set('app.scheduler_enabled', true);

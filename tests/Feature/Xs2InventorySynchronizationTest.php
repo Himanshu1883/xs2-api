@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Jobs\DeleteSplitListings;
 use App\Jobs\DeleteXs2SellerListing;
 use App\Jobs\DisableXs2SellerListing;
+use App\Jobs\PublishSplitListings;
 use App\Jobs\PushXs2TicketToSellerApi;
 use App\Jobs\SyncSplitListings;
 use App\Jobs\SyncXs2CategoriesForEvent;
@@ -410,6 +411,105 @@ class Xs2InventorySynchronizationTest extends TestCase
         Queue::assertPushed(SyncSplitListings::class, fn ($job): bool => $job->ticketId === $ticket->id);
         Queue::assertNotPushed(DeleteSplitListings::class);
         Queue::assertNotPushed(DisableXs2SellerListing::class);
+    }
+
+    public function test_inventory_sync_queues_split_republish_after_stock_returns_from_zero(): void
+    {
+        Artisan::call('migrate:fresh', ['--force' => true]);
+        $this->createSharedUsersTable();
+        $this->createMasterData();
+        config()->set('services.xs2.base_url', 'https://xs2.test');
+        config()->set('services.xs2.api_key', 'test-key');
+        config()->set('services.xs2.categories_endpoint', '/categories');
+        config()->set('services.xs2.tickets_endpoint', '/tickets');
+        config()->set('xs2.mapping.stadium_auto_map_threshold', 95);
+        config()->set('xs2.mapping.category_auto_map_threshold', 95);
+        Queue::fake();
+
+        $event = Xs2Event::create([
+            'external_event_id' => 'event-split-restock',
+            'event_name' => 'Fixture',
+            'venue_id' => 'venue-1',
+            'event_status' => 'available',
+            'date_start_local' => now()->addWeek(),
+            'raw_payload' => [
+                'venue_id' => 'venue-1',
+                'venue' => [
+                    'venue_id' => 'venue-1',
+                    'venue_name' => 'Old Ground',
+                    'city' => 'Springfield',
+                    'country_name' => 'United States',
+                    'country_code' => 'US',
+                ],
+            ],
+        ]);
+        $mapping = EventMapping::create(['xs2_event_id' => $event->id, 'm_id' => 123, 'status' => 'mapped']);
+        $ticket = Xs2Ticket::create([
+            'xs2_event_id' => $event->id,
+            'external_ticket_id' => 'ticket-split-restock',
+            'external_event_id' => $event->external_event_id,
+            'category_id' => 'category-102',
+            'ticket_status' => 'available',
+            'stock' => 0,
+            'net_rate' => 10000,
+            'split_enabled' => false,
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5,
+            'raw_payload' => [],
+            'sync_status' => 'synced',
+        ]);
+        Xs2TicketMappingState::create([
+            'xs2_ticket_id' => $ticket->id,
+            'mapping_status' => 'published',
+        ]);
+        ListingSplit::create([
+            'master_listing_id' => $ticket->id,
+            'seatsbroker_listing_id' => '906601',
+            'seller_reference' => 'XS2-ticket-split-restock-S1',
+            'quantity' => 2,
+            'price' => 100,
+            'split_order' => 1,
+            'status' => 'deleted',
+            'sync_status' => 'synced',
+        ]);
+
+        Http::fake([
+            'https://xs2.test/categories*' => Http::response([
+                'categories' => [[
+                    'category_id' => 'category-102',
+                    'event_id' => 'event-split-restock',
+                    'venue_id' => 'venue-1',
+                    'category_name' => 'Longside Upper Block 102',
+                    'category_type' => 'grandstand',
+                ]],
+                'pagination' => [],
+            ]),
+            'https://xs2.test/tickets*' => Http::response([
+                'tickets' => [[
+                    'ticket_id' => 'ticket-split-restock',
+                    'event_id' => 'event-split-restock',
+                    'venue_id' => 'venue-1',
+                    'category_id' => 'category-102',
+                    'category_name' => 'Longside Upper Block 102',
+                    'ticket_status' => 'available',
+                    'stock' => 6,
+                    'min_order' => 1,
+                    'net_rate' => 10000,
+                    'currency_code' => 'EUR',
+                    'type_ticket' => 'eticket',
+                ]],
+                'pagination' => [],
+            ]),
+        ]);
+
+        $summary = app(Xs2EventInventorySyncService::class)->sync($mapping, 'full');
+
+        $this->assertSame(1, $summary['listing_jobs_dispatched']);
+        $this->assertSame(6, $ticket->fresh()->stock);
+        Queue::assertPushed(PublishSplitListings::class, fn (PublishSplitListings $job): bool => $job->ticketId === $ticket->id
+            && $job->config['split_quantity'] === 2);
+        Queue::assertNotPushed(SyncSplitListings::class);
     }
 
     public function test_tickets_only_scope_skips_venue_and_category_api_calls(): void
