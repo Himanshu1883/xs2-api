@@ -387,4 +387,78 @@ class AdminCronConfigTest extends TestCase
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['cron_job_id']);
     }
+
+    public function test_admin_can_toggle_start_all_and_individual_crons(): void
+    {
+        config()->set('app.scheduler_enabled', true);
+        config()->set('xs2.enabled', true);
+        config()->set('services.seller_api.enabled', true);
+
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('cron-toggle-test')->plainTextToken;
+
+        $this->withToken($token)
+            ->postJson('/api/admin/cron-config/set-start-all', ['enabled' => true])
+            ->assertOk()
+            ->assertJsonPath('data.start_all_enabled', true);
+
+        $this->withToken($token)
+            ->postJson('/api/admin/cron-config/toggle-cron', [
+                'cron_job_id' => 'xs2-sb-order-sync',
+                'enabled' => false,
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.enabled', false);
+
+        $this->withToken($token)
+            ->postJson('/api/admin/cron-config/set-start-all', ['enabled' => false])
+            ->assertOk()
+            ->assertJsonPath('data.start_all_enabled', false);
+
+        $response = $this->withToken($token)
+            ->postJson('/api/admin/cron-config/toggle-cron', [
+                'cron_job_id' => 'xs2-sb-listing-inventory',
+                'enabled' => true,
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.enabled', true);
+
+        $tasks = collect($response->json('data.snapshot.tasks'));
+        $listingInventory = $tasks->firstWhere('id', 'xs2-sb-listing-inventory');
+        $orderSync = $tasks->firstWhere('id', 'xs2-sb-order-sync');
+        $inventoryFull = $tasks->firstWhere('id', 'xs2-inventory-full');
+
+        $this->assertTrue($listingInventory['will_run']);
+        $this->assertFalse($orderSync['will_run']);
+        $this->assertFalse($inventoryFull['will_run']);
+        $this->assertNull($inventoryFull['next_run_at']);
+    }
+
+    public function test_cron_config_exposes_start_all_and_toggle_fields(): void
+    {
+        $user = User::factory()->create(['user_type' => 6]);
+        $token = $user->createToken('cron-toggle-fields-test')->plainTextToken;
+
+        $this->withToken($token)
+            ->getJson('/api/admin/cron-config')
+            ->assertOk()
+            ->assertJsonStructure([
+                'data' => [
+                    'scheduler' => [
+                        'start_all_enabled',
+                        'cron_control' => [
+                            'start_all_enabled',
+                            'cron_toggles',
+                        ],
+                    ],
+                    'tasks' => [
+                        '*' => [
+                            'toggle_enabled',
+                            'toggleable',
+                            'will_run',
+                        ],
+                    ],
+                ],
+            ]);
+    }
 }

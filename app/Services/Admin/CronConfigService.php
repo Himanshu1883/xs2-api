@@ -28,6 +28,7 @@ class CronConfigService
     public function __construct(
         private readonly QueueManagementService $queues,
         private readonly CronIntervalService $intervals,
+        private readonly CronToggleService $cronToggles,
     ) {}
 
     /** @return array{scheduler: array<string, mixed>, tasks: list<array<string, mixed>>} */
@@ -110,6 +111,7 @@ class CronConfigService
                 'xs2_configured' => $xs2Configured,
                 'xs2_base_url' => $this->effectiveXs2BaseUrl(),
                 'scheduler_enabled' => app(CronControlService::class)->schedulerEnabled(),
+                'start_all_enabled' => $this->cronToggles->startAllEnabled(),
                 'low_load_mode' => app(CronControlService::class)->lowLoadModeEnabled(),
                 'cron_control' => app(CronControlService::class)->status(),
                 'aws_emergency_steps' => AwsEmergencyStopGuide::steps(),
@@ -1081,8 +1083,21 @@ class CronConfigService
         }
 
         $rawStatus = $statusOverride ?? (string) ($task['status'] ?? 'never_run');
-        $enabled = (bool) ($task['enabled'] ?? true);
+        $configEnabled = (bool) ($task['enabled'] ?? true);
+        $taskId = (string) ($task['id'] ?? '');
+        $toggleEnabled = $this->cronToggles->isCronEnabled($taskId);
+        $willRun = $this->cronToggles->shouldRun($taskId, $configEnabled);
+        $enabled = $configEnabled && $toggleEnabled;
         $isRunning = (bool) ($task['is_running'] ?? false);
+
+        if (! $willRun && $scheduleMeta !== null) {
+            $task['next_run_at'] = null;
+        }
+
+        $task['toggle_enabled'] = $toggleEnabled;
+        $task['toggleable'] = $this->cronToggles->isToggleable($taskId);
+        $task['will_run'] = $willRun;
+        $task['enabled'] = $enabled;
 
         $task['last_result'] = $this->lastResult(
             rawStatus: $rawStatus,

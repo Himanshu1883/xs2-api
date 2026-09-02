@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use App\Jobs\BootstrapCronsAfterStartJob;
 use App\Jobs\RunAdminCronJob;
 use App\Services\Admin\CronExecutionLogService;
+use App\Services\Admin\CronToggleService;
 use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
@@ -21,7 +22,10 @@ class BootstrapCronsAfterStartJobTest extends TestCase
 
         Queue::fake();
 
-        (new BootstrapCronsAfterStartJob())->handle(app(CronExecutionLogService::class));
+        (new BootstrapCronsAfterStartJob())->handle(
+            app(CronExecutionLogService::class),
+            app(CronToggleService::class),
+        );
 
         Queue::assertPushed(RunAdminCronJob::class, fn (RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-sb-order-sync');
         Queue::assertPushed(RunAdminCronJob::class, fn (RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-inventory-full');
@@ -39,7 +43,10 @@ class BootstrapCronsAfterStartJobTest extends TestCase
 
         Queue::fake();
 
-        (new BootstrapCronsAfterStartJob())->handle(app(CronExecutionLogService::class));
+        (new BootstrapCronsAfterStartJob())->handle(
+            app(CronExecutionLogService::class),
+            app(CronToggleService::class),
+        );
 
         Queue::assertPushed(RunAdminCronJob::class, fn (RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-inventory-full');
         Queue::assertNotPushed(RunAdminCronJob::class, fn (RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-sb-order-sync');

@@ -27,6 +27,7 @@ class CronControlService
         private readonly IntegrationSettingService $integrationSettings,
         private readonly QueueManagementService $queues,
         private readonly QueueProfileService $queueProfiles,
+        private readonly CronToggleService $cronToggles,
     ) {}
 
     public function schedulerEnabled(): bool
@@ -61,11 +62,13 @@ class CronControlService
 
         return [
             'scheduler_enabled' => $this->schedulerEnabled(),
+            'start_all_enabled' => $this->cronToggles->startAllEnabled(),
             'low_load_mode' => $this->lowLoadModeEnabled(),
             'has_restore_snapshot' => filled(
                 $this->integrationSettings->value(IntegrationSettingService::CRON_CONTROL_SNAPSHOT),
             ),
             'overrides' => $overrides,
+            'cron_toggles' => $this->cronToggles->toggleSnapshot(),
             'aws_emergency_steps' => AwsEmergencyStopGuide::steps(),
         ];
     }
@@ -109,6 +112,9 @@ class CronControlService
             config([$configKey => $value === 'true']);
         }
 
+        $this->cronToggles->setStartAllEnabled(false);
+        $this->cronToggles->clearAllExplicitToggles();
+
         $mutexesCleared = $this->clearScheduleMutexes();
         $stuckStatesReset = $this->resetStuckRunningSyncStates();
 
@@ -132,6 +138,7 @@ class CronControlService
         return [
             'action' => 'stop',
             'scheduler_enabled' => false,
+            'start_all_enabled' => false,
             'low_load_mode' => true,
             'previous_state' => $previousState,
             'mutexes_cleared' => $mutexesCleared,
@@ -175,6 +182,7 @@ class CronControlService
         // .env has APP_SCHEDULER_ENABLED=false or the pre-stop snapshot had it disabled.
         $this->integrationSettings->set(IntegrationSettingService::APP_SCHEDULER_ENABLED, 'true');
         config(['app.scheduler_enabled' => true]);
+        $this->cronToggles->setStartAllEnabled(true);
 
         $restoredLowLoadMode = $previousState !== null
             ? (bool) ($previousState['app.low_load_mode'] ?? false)
@@ -198,11 +206,73 @@ class CronControlService
         return [
             'action' => 'start',
             'scheduler_enabled' => $this->schedulerEnabled(),
+            'start_all_enabled' => true,
             'low_load_mode' => $this->lowLoadModeEnabled(),
             'restored_state' => $previousState,
             'queue_profile' => $profileResult,
             'bootstrap_queued' => true,
             'started_at' => now()->toIso8601String(),
+        ];
+    }
+
+    /**
+     * Soft toggle for the Start All master switch (distinct from emergency stopAll).
+     *
+     * @return array<string, mixed>
+     */
+    public function setStartAllEnabled(bool $enabled): array
+    {
+        $this->assertIntegrationSettingsAvailable();
+
+        $this->cronToggles->setStartAllEnabled($enabled);
+
+        if ($enabled) {
+            $this->integrationSettings->set(IntegrationSettingService::APP_SCHEDULER_ENABLED, 'true');
+            config(['app.scheduler_enabled' => true]);
+            $this->queues->clearWorkerRestartSignal();
+            BootstrapCronsAfterStartJob::dispatch()->afterResponse();
+
+            return [
+                'action' => 'start_all_on',
+                'start_all_enabled' => true,
+                'scheduler_enabled' => true,
+                'bootstrap_queued' => true,
+            ];
+        }
+
+        if ($this->cronToggles->hasIndividuallyEnabledCrons()) {
+            $this->integrationSettings->set(IntegrationSettingService::APP_SCHEDULER_ENABLED, 'true');
+            config(['app.scheduler_enabled' => true]);
+        }
+
+        return [
+            'action' => 'start_all_off',
+            'start_all_enabled' => false,
+            'scheduler_enabled' => $this->schedulerEnabled(),
+            'bootstrap_queued' => false,
+        ];
+    }
+
+    /**
+     * Toggle an individual cron on/off (allowlist when Start All off, blocklist when on).
+     *
+     * @return array<string, mixed>
+     */
+    public function setCronEnabled(string $cronJobId, bool $enabled): array
+    {
+        $this->assertIntegrationSettingsAvailable();
+        $this->cronToggles->setCronEnabled($cronJobId, $enabled);
+
+        if (! $this->cronToggles->startAllEnabled() && $this->cronToggles->hasIndividuallyEnabledCrons()) {
+            $this->integrationSettings->set(IntegrationSettingService::APP_SCHEDULER_ENABLED, 'true');
+            config(['app.scheduler_enabled' => true]);
+        }
+
+        return [
+            'cron_job_id' => $cronJobId,
+            'enabled' => $this->cronToggles->isCronEnabled($cronJobId),
+            'start_all_enabled' => $this->cronToggles->startAllEnabled(),
+            'scheduler_enabled' => $this->schedulerEnabled(),
         ];
     }
 

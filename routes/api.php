@@ -86,6 +86,8 @@ Route::middleware(['auth:sanctum', 'admin'])->prefix('admin')->group(function ()
     Route::get('cron-config/logs', [AdminCronConfigController::class, 'logs']);
     Route::post('cron-config/stop-all', [AdminCronConfigController::class, 'stopAll']);
     Route::post('cron-config/start-all', [AdminCronConfigController::class, 'startAll']);
+    Route::post('cron-config/set-start-all', [AdminCronConfigController::class, 'setStartAll']);
+    Route::post('cron-config/toggle-cron', [AdminCronConfigController::class, 'toggleCron']);
     Route::post('cron-config/toggle-sb-order-sync', [AdminCronConfigController::class, 'toggleSbOrderSync']);
     Route::get('queue/cron-jobs', [AdminCronJobController::class, 'index']);
     Route::get('queue/cron-jobs/{cronJobId}/logs', [AdminCronJobController::class, 'logs']);

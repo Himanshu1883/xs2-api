@@ -106,16 +106,89 @@ class AdminCronConfigController extends Controller
             'enabled' => ['required', 'boolean'],
         ]);
 
-        $enabled = (bool) $validated['enabled'];
-        $settings = app(\App\Services\Admin\IntegrationSettingService::class);
-        $settings->set(\App\Services\Admin\IntegrationSettingService::SB_BOOKINGS_SYNC_ENABLED, $enabled ? 'true' : 'false');
-        config(['xs2.sb_bookings_sync.enabled' => $enabled]);
+        try {
+            $result = $this->cronControl->setCronEnabled('xs2-sb-order-sync', (bool) $validated['enabled']);
+        } catch (\InvalidArgumentException $exception) {
+            throw ValidationException::withMessages([
+                'cron_job_id' => [$exception->getMessage()],
+            ]);
+        } catch (\RuntimeException $exception) {
+            throw ValidationException::withMessages([
+                'cron' => [$exception->getMessage()],
+            ]);
+        }
+
+        $enabled = (bool) $result['enabled'];
 
         return response()->json([
             'message' => $enabled
                 ? 'SB order sync enabled.'
                 : 'SB order sync disabled.',
-            'data' => ['enabled' => $enabled],
+            'data' => $result,
+        ]);
+    }
+
+    public function setStartAll(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $validated = $request->validate([
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        try {
+            $result = $this->cronControl->setStartAllEnabled((bool) $validated['enabled']);
+        } catch (\RuntimeException $exception) {
+            throw ValidationException::withMessages([
+                'cron' => [$exception->getMessage()],
+            ]);
+        }
+
+        return response()->json([
+            'message' => $validated['enabled']
+                ? 'Start All enabled. The safe startup pipeline was queued.'
+                : 'Start All disabled. Only individually enabled crons will run.',
+            'data' => [
+                ...$result,
+                'snapshot' => $this->cronConfig->snapshot(),
+            ],
+        ]);
+    }
+
+    public function toggleCron(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $validated = $request->validate([
+            'cron_job_id' => ['required', 'string', 'max:128'],
+            'enabled' => ['required', 'boolean'],
+        ]);
+
+        try {
+            $result = $this->cronControl->setCronEnabled(
+                (string) $validated['cron_job_id'],
+                (bool) $validated['enabled'],
+            );
+        } catch (\InvalidArgumentException $exception) {
+            throw ValidationException::withMessages([
+                'cron_job_id' => [$exception->getMessage()],
+            ]);
+        } catch (\RuntimeException $exception) {
+            throw ValidationException::withMessages([
+                'cron' => [$exception->getMessage()],
+            ]);
+        }
+
+        $enabled = (bool) $result['enabled'];
+
+        return response()->json([
+            'message' => $enabled
+                ? "Cron {$validated['cron_job_id']} enabled."
+                : "Cron {$validated['cron_job_id']} disabled.",
+            'data' => [
+                ...$result,
+                'snapshot' => $this->cronConfig->snapshot(),
+            ],
         ]);
     }
 

@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Services\Admin\CronExecutionLogService;
+use App\Services\Admin\CronToggleService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 
@@ -27,11 +28,11 @@ class BootstrapCronsAfterStartJob implements ShouldQueue
         $this->onQueue(config('xs2.admin_cron_queue', 'default'));
     }
 
-    public function handle(CronExecutionLogService $executionLogs): void
+    public function handle(CronExecutionLogService $executionLogs, CronToggleService $toggles): void
     {
         foreach (self::SEQUENCE as $step) {
             $cronJobId = (string) $step['id'];
-            if (! $this->isEnabled($cronJobId)) {
+            if (! $this->isEnabled($cronJobId, $toggles)) {
                 continue;
             }
 
@@ -45,13 +46,13 @@ class BootstrapCronsAfterStartJob implements ShouldQueue
         }
     }
 
-    private function isEnabled(string $cronJobId): bool
+    private function isEnabled(string $cronJobId, CronToggleService $toggles): bool
     {
         if (! (bool) config('xs2.enabled', true)) {
             return false;
         }
 
-        return match ($cronJobId) {
+        $configEnabled = match ($cronJobId) {
             'xs2-inventory-full' => true,
             'xs2-sb-new-listing-publish' => (bool) config('services.seller_api.enabled', true)
                 && (bool) config('xs2.sb_new_listing_publish.enabled', true),
@@ -62,5 +63,7 @@ class BootstrapCronsAfterStartJob implements ShouldQueue
             'xs2-sb-order-guest-data-sync' => (bool) config('xs2.sb_order_guest_data_sync.enabled', true),
             default => false,
         };
+
+        return $toggles->shouldRun($cronJobId, $configEnabled);
     }
 }
