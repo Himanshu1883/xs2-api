@@ -3,7 +3,6 @@
 namespace App\Services\Admin;
 
 use App\Jobs\SyncXs2EventsJob;
-use App\Jobs\RunManagedCronJob;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Validation\ValidationException;
 use Throwable;
@@ -126,31 +125,6 @@ class CronJobManagementService
             ]);
         }
 
-        RunManagedCronJob::dispatch($cronJobId)
-            ->onQueue((string) ($task['queue'] ?? config('xs2.queue', 'xs2-sync')));
-
-        return [
-            'cron_job_id' => $cronJobId,
-            'status' => 'queued',
-            'log_id' => null,
-            'action' => 'queued_job',
-            'message' => 'Cron run queued. Execution history will update when the worker starts it.',
-        ];
-    }
-
-    /**
-     * Execute a manually requested cron run in a queue worker, never in the
-     * API request that initiated it.
-     *
-     * @return array<string, mixed>
-     */
-    public function runQueued(string $cronJobId): array
-    {
-        $task = $this->findTask($cronJobId);
-        if ($task === null || ! $this->supportsRunNow($cronJobId)) {
-            throw new \RuntimeException("No run handler registered for {$cronJobId}.");
-        }
-
         $logId = $this->executionLogs->start($cronJobId, 'manual');
         if ($logId > 0) {
             app(CronExecutionContext::class)->set($logId, $cronJobId);
@@ -185,7 +159,9 @@ class CronJobManagementService
                 );
             }
 
-            throw $exception;
+            throw ValidationException::withMessages([
+                'run' => [$exception->getMessage()],
+            ]);
         } finally {
             app(CronExecutionContext::class)->clear();
         }

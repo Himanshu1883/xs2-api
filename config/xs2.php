@@ -154,8 +154,6 @@ return [
             1,
         ))),
         'dispatch_interval_seconds' => max(1, (int) env('XS2_SB_NEW_LISTING_PUBLISH_DISPATCH_INTERVAL_SECONDS', 2)),
-        // Minutes to defer new-listing publish after Cron Control → Start All.
-        'start_all_defer_minutes' => max(5, (int) env('XS2_SB_NEW_LISTING_PUBLISH_START_ALL_DEFER_MINUTES', 15)),
     ],
 
     /*

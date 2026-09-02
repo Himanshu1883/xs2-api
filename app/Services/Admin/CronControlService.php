@@ -2,7 +2,6 @@
 
 namespace App\Services\Admin;
 
-use App\Jobs\EnableSbNewListingPublishJob;
 use App\Models\Xs2EventInventorySyncState;
 use App\Models\Xs2SyncState;
 use App\Support\AwsEmergencyStopGuide;
@@ -180,15 +179,6 @@ class CronControlService
         $this->integrationSettings->set(IntegrationSettingService::SB_BOOKINGS_SYNC_ENABLED, 'false');
         config(['xs2.sb_bookings_sync.enabled' => false]);
 
-        // Let inventory sync run before new-listing publish to avoid publish/delete races on Start All.
-        $deferredPublishMinutes = max(5, (int) config('xs2.sb_new_listing_publish.start_all_defer_minutes', 15));
-        $publishWasEnabled = (bool) config('xs2.sb_new_listing_publish.enabled', true);
-        if ($publishWasEnabled) {
-            $this->integrationSettings->set(IntegrationSettingService::XS2_SB_NEW_LISTING_PUBLISH_ENABLED, 'false');
-            config(['xs2.sb_new_listing_publish.enabled' => false]);
-            EnableSbNewListingPublishJob::dispatch()->delay(now()->addMinutes($deferredPublishMinutes));
-        }
-
         $restoredLowLoadMode = $previousState !== null
             ? (bool) ($previousState['app.low_load_mode'] ?? false)
             : false;
@@ -210,7 +200,6 @@ class CronControlService
             'low_load_mode' => $this->lowLoadModeEnabled(),
             'restored_state' => $previousState,
             'queue_profile' => $profileResult,
-            'deferred_sb_publish_minutes' => $publishWasEnabled ? $deferredPublishMinutes : null,
             'started_at' => now()->toIso8601String(),
         ];
     }
