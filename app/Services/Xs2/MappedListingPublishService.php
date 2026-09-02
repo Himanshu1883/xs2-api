@@ -17,10 +17,14 @@ class MappedListingPublishService
     /**
      * Publish a mapped ticket to Seats Broker, applying configured rules when enabled.
      */
-    public function publishTicket(int $ticketId, bool $strictPublish = false, bool $sync = false): void
-    {
+    public function publishTicket(
+        int $ticketId,
+        bool $strictPublish = false,
+        bool $sync = false,
+        ?\DateTimeInterface $delayUntil = null,
+    ): void {
         if (! $this->rules->rulesEnabled()) {
-            $this->dispatchSingle($ticketId, $strictPublish, $sync);
+            $this->dispatchSingle($ticketId, $strictPublish, $sync, $delayUntil);
 
             return;
         }
@@ -29,33 +33,45 @@ class MappedListingPublishService
         $plan = $this->rules->buildPlan($ticket);
 
         if ($plan === null) {
-            $this->dispatchSingle($ticketId, $strictPublish, $sync);
+            $this->dispatchSingle($ticketId, $strictPublish, $sync, $delayUntil);
 
             return;
         }
 
         if (($plan['mode'] ?? '') === 'split') {
-            $this->publishSplit($ticket, $plan, $sync);
+            $this->publishSplit($ticket, $plan, $sync, $delayUntil);
 
             return;
         }
 
-        $this->publishSingle($ticket, $plan, $strictPublish, $sync);
+        $this->publishSingle($ticket, $plan, $strictPublish, $sync, $delayUntil);
     }
 
     /** @param  array<string, mixed>  $plan */
-    private function publishSplit(Xs2Ticket $ticket, array $plan, bool $sync): void
-    {
+    private function publishSplit(
+        Xs2Ticket $ticket,
+        array $plan,
+        bool $sync,
+        ?\DateTimeInterface $delayUntil = null,
+    ): void {
         if ($sync) {
             PublishSplitListings::dispatchSync($ticket->id, $plan['split_config']);
         } else {
-            PublishSplitListings::dispatch($ticket->id, $plan['split_config']);
+            $pending = PublishSplitListings::dispatch($ticket->id, $plan['split_config']);
+            if ($delayUntil !== null) {
+                $pending->delay($delayUntil);
+            }
         }
     }
 
     /** @param  array<string, mixed>  $plan */
-    private function publishSingle(Xs2Ticket $ticket, array $plan, bool $strictPublish, bool $sync): void
-    {
+    private function publishSingle(
+        Xs2Ticket $ticket,
+        array $plan,
+        bool $strictPublish,
+        bool $sync,
+        ?\DateTimeInterface $delayUntil = null,
+    ): void {
         if ($ticket->split_enabled) {
             $this->splitListings->deleteAllListings($ticket);
             $ticket->refresh();
@@ -67,16 +83,26 @@ class MappedListingPublishService
         if ($sync) {
             PushXs2TicketToSellerApi::dispatchSync($ticket->id, $strictPublish, $quantity, $pairsOnly);
         } else {
-            PushXs2TicketToSellerApi::dispatch($ticket->id, $strictPublish, $quantity, $pairsOnly);
+            $pending = PushXs2TicketToSellerApi::dispatch($ticket->id, $strictPublish, $quantity, $pairsOnly);
+            if ($delayUntil !== null) {
+                $pending->delay($delayUntil);
+            }
         }
     }
 
-    private function dispatchSingle(int $ticketId, bool $strictPublish, bool $sync): void
-    {
+    private function dispatchSingle(
+        int $ticketId,
+        bool $strictPublish,
+        bool $sync,
+        ?\DateTimeInterface $delayUntil = null,
+    ): void {
         if ($sync) {
             PushXs2TicketToSellerApi::dispatchSync($ticketId, $strictPublish);
         } else {
-            PushXs2TicketToSellerApi::dispatch($ticketId, $strictPublish);
+            $pending = PushXs2TicketToSellerApi::dispatch($ticketId, $strictPublish);
+            if ($delayUntil !== null) {
+                $pending->delay($delayUntil);
+            }
         }
     }
 }

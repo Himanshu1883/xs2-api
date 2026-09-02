@@ -2,11 +2,14 @@
 
 namespace App\Console\Commands;
 
+use App\Console\Concerns\RespectsQueueBackpressure;
 use App\Services\SellerApi\SbListingInventorySyncService;
 use Illuminate\Console\Command;
 
 class SyncSbListingInventoryCommand extends Command
 {
+    use RespectsQueueBackpressure;
+
     protected $signature = 'xs2:sync-sb-listing-inventory
                             {--sync : Run Seller API jobs inline instead of queueing}
                             {--ticket= : Limit to one XS2 ticket id}
@@ -29,14 +32,32 @@ class SyncSbListingInventoryCommand extends Command
         }
 
         $ticketId = filled($this->option('ticket')) ? (int) $this->option('ticket') : null;
+        $forceDispatch = (bool) $this->option('force');
+
+        if ($ticketId === null && ! (bool) $this->option('sync') && ! $forceDispatch && $this->skipIfQueueBackpressureActive()) {
+            return self::SUCCESS;
+        }
+
+        $maxDispatch = $ticketId !== null || $forceDispatch || ! $this->respectsQueueBackpressure()
+            ? null
+            : $this->queueDispatchBudget();
 
         $this->info('Scanning published XS2 listings on Seats Broker for quantity drift...');
 
         $summary = $sync->run(
             inline: (bool) $this->option('sync'),
             ticketId: $ticketId,
-            force: (bool) $this->option('force'),
+            force: $forceDispatch,
+            maxDispatch: $maxDispatch,
         );
+
+        $deferred = (int) ($summary['deferred'] ?? 0);
+        if ($deferred > 0) {
+            $this->warn(sprintf(
+                'Deferred %d tickets — dispatch budget reached. Remaining tickets will sync on the next run.',
+                $deferred,
+            ));
+        }
 
         $this->table(
             ['Metric', 'Value'],

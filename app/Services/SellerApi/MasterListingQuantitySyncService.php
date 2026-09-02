@@ -32,6 +32,7 @@ class MasterListingQuantitySyncService
         ?int $ticketId = null,
         bool $force = false,
         bool $manageState = true,
+        ?int $maxDispatch = null,
     ): array {
         if (! Schema::hasTable('external_listing_mappings')) {
             return $this->finalizeRun([
@@ -59,6 +60,7 @@ class MasterListingQuantitySyncService
             'queued' => 0,
             'synced_inline' => 0,
             'skipped' => 0,
+            'deferred' => 0,
             'errors' => [],
         ];
 
@@ -78,6 +80,12 @@ class MasterListingQuantitySyncService
                 }
 
                 $summary['needs_sync']++;
+
+                if (! $inline && $maxDispatch !== null && $summary['queued'] >= $maxDispatch) {
+                    $summary['deferred']++;
+
+                    continue;
+                }
 
                 try {
                     if ($inline) {

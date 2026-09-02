@@ -5,7 +5,6 @@ namespace App\Services\SellerApi;
 use App\Models\ExternalListingMapping;
 use App\Models\Xs2SyncState;
 use App\Models\Xs2Ticket;
-use App\Services\Xs2\ListingPublishReadinessService;
 use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Database\Eloquent\Builder;
@@ -23,14 +22,17 @@ class SbNewListingPublishService
     public function __construct(
         private readonly MappedListingPublishService $publisher,
         private readonly Xs2TicketMappingStatusService $mappingStatuses,
-        private readonly ListingPublishReadinessService $readiness,
     ) {}
 
     /**
      * @return array<string, mixed>
      */
-    public function run(bool $inline = false, ?int $ticketId = null, bool $dryRun = false): array
-    {
+    public function run(
+        bool $inline = false,
+        ?int $ticketId = null,
+        bool $dryRun = false,
+        ?int $maxDispatch = null,
+    ): array {
         if (Schema::hasTable('xs2_sync_states')) {
             Xs2SyncState::query()->firstOrCreate(['resource' => self::SYNC_RESOURCE])->update([
                 'status' => 'running',
@@ -43,8 +45,14 @@ class SbNewListingPublishService
             'eligible_tickets' => 0,
             'needs_publish' => 0,
             'queued' => 0,
+            'deferred' => 0,
             'published_inline' => 0,
             'skipped' => 0,
+            'skip_reasons' => [
+                'event_not_sellable' => 0,
+                'mapping_not_ready' => 0,
+                'already_published_on_sb' => 0,
+            ],
             'dry_run' => $dryRun,
             'errors' => [],
         ];
@@ -53,9 +61,14 @@ class SbNewListingPublishService
             $tickets = $this->eligibleTickets($ticketId)->get();
             $summary['eligible_tickets'] = $tickets->count();
 
+            $dispatchSpacingSeconds = max(1, (int) config('xs2.sb_new_listing_publish.dispatch_interval_seconds', 2));
+            $firstDispatchAt = now();
+            $queueIndex = 0;
+
             foreach ($tickets as $ticket) {
                 if (! ($ticket->xs2Event?->isSellable() ?? false)) {
                     $summary['skipped']++;
+                    $summary['skip_reasons']['event_not_sellable']++;
 
                     continue;
                 }
@@ -64,21 +77,18 @@ class SbNewListingPublishService
                     ? $this->mappingStatuses->resolveIfStale($ticket)
                     : null;
 
-                if (! $this->mappingStatuses->isAutoPublishable($state?->mapping_status)) {
+                // Match pre-churn-fix behavior: pending stadium/category mapping can still
+                // publish when the ticket has an XS2 category_name (canAutoPublish).
+                if (! $this->mappingStatuses->canAutoPublish($ticket, $state?->mapping_status)) {
                     $summary['skipped']++;
+                    $summary['skip_reasons']['mapping_not_ready']++;
 
                     continue;
                 }
 
                 if ($this->isPublishedOnSb($ticket)) {
                     $summary['skipped']++;
-
-                    continue;
-                }
-
-                $assessment = $this->readiness->assess($ticket);
-                if (! $assessment['ready']) {
-                    $summary['skipped']++;
+                    $summary['skip_reasons']['already_published_on_sb']++;
 
                     continue;
                 }
@@ -89,13 +99,29 @@ class SbNewListingPublishService
                     continue;
                 }
 
+                if (! $inline && $maxDispatch !== null && $summary['queued'] >= $maxDispatch) {
+                    $summary['deferred']++;
+
+                    continue;
+                }
+
                 try {
+                    $delayUntil = $inline
+                        ? null
+                        : $firstDispatchAt->copy()->addSeconds($queueIndex * $dispatchSpacingSeconds);
+
                     if ($inline) {
                         $this->publisher->publishTicket($ticket->id, strictPublish: false, sync: true);
                         $summary['published_inline']++;
                     } else {
-                        $this->publisher->publishTicket($ticket->id, strictPublish: false, sync: false);
+                        $this->publisher->publishTicket(
+                            $ticket->id,
+                            strictPublish: false,
+                            sync: false,
+                            delayUntil: $delayUntil,
+                        );
                         $summary['queued']++;
+                        $queueIndex++;
                     }
                 } catch (Throwable $exception) {
                     $summary['errors'][] = $ticket->external_ticket_id.': '.$this->safeMessage($exception);
@@ -133,15 +159,12 @@ class SbNewListingPublishService
                 ? $this->mappingStatuses->resolveIfStale($ticket)
                 : null;
 
-            if (! $this->mappingStatuses->isAutoPublishable($state?->mapping_status)) {
+            if (! $this->mappingStatuses->canAutoPublish($ticket, $state?->mapping_status)) {
                 continue;
             }
 
             if (! $this->isPublishedOnSb($ticket)) {
-                $assessment = $this->readiness->assess($ticket);
-                if ($assessment['ready']) {
-                    $pendingPublish++;
-                }
+                $pendingPublish++;
             }
         }
 
@@ -223,8 +246,12 @@ class SbNewListingPublishService
                     'eligible_tickets' => (int) ($summary['eligible_tickets'] ?? 0),
                     'needs_publish' => (int) ($summary['needs_publish'] ?? 0),
                     'queued' => (int) ($summary['queued'] ?? 0),
+                    'deferred' => (int) ($summary['deferred'] ?? 0),
                     'published_inline' => (int) ($summary['published_inline'] ?? 0),
                     'skipped' => (int) ($summary['skipped'] ?? 0),
+                    'skip_reasons' => is_array($summary['skip_reasons'] ?? null)
+                        ? $summary['skip_reasons']
+                        : [],
                     'errors' => count($errors),
                 ],
             ]);

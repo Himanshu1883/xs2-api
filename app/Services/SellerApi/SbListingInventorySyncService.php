@@ -22,8 +22,12 @@ class SbListingInventorySyncService
     /**
      * @return array<string, mixed>
      */
-    public function run(bool $inline = false, ?int $ticketId = null, bool $force = false): array
-    {
+    public function run(
+        bool $inline = false,
+        ?int $ticketId = null,
+        bool $force = false,
+        ?int $maxDispatch = null,
+    ): array {
         if (Schema::hasTable('xs2_sync_states')) {
             Xs2SyncState::query()->firstOrCreate(['resource' => self::SYNC_RESOURCE])->update([
                 'status' => 'running',
@@ -40,27 +44,34 @@ class SbListingInventorySyncService
             'queued' => 0,
             'synced_inline' => 0,
             'skipped' => 0,
+            'deferred' => 0,
             'errors' => [],
         ];
 
         try {
+            $remainingBudget = $maxDispatch;
             $masterSummary = $this->masters->run(
                 inline: $inline,
                 ticketId: $ticketId,
                 force: $force,
                 manageState: false,
+                maxDispatch: $remainingBudget,
             );
+            if ($remainingBudget !== null) {
+                $remainingBudget = max(0, $remainingBudget - (int) ($masterSummary['queued'] ?? 0));
+            }
             $splitSummary = $this->splits->run(
                 inline: $inline,
                 ticketId: $ticketId,
                 force: $force,
                 manageState: false,
+                maxDispatch: $remainingBudget,
             );
 
             $summary['masters'] = $masterSummary;
             $summary['splits'] = $splitSummary;
 
-            foreach (['eligible_tickets', 'needs_sync', 'queued', 'synced_inline', 'skipped'] as $metric) {
+            foreach (['eligible_tickets', 'needs_sync', 'queued', 'synced_inline', 'skipped', 'deferred'] as $metric) {
                 $summary[$metric] = (int) ($masterSummary[$metric] ?? 0) + (int) ($splitSummary[$metric] ?? 0);
             }
 

@@ -21,9 +21,22 @@ php artisan cache:forget illuminate:queue:restart 2>/dev/null || true
 # Clear any stale pending jobs from previous deploys
 php artisan queue:clear --force 2>/dev/null || true
 
-# Start queue worker in background — restart loop so it survives max-jobs/max-time exits
+# Allow concurrent HTTP requests (default artisan serve is single-threaded without this).
+export PHP_CLI_SERVER_WORKERS="${PHP_CLI_SERVER_WORKERS:-4}"
+
+QUEUE_WORKER_SLEEP="${QUEUE_WORKER_SLEEP:-3}"
+QUEUE_WORKER_MAX_JOBS="${QUEUE_WORKER_MAX_JOBS:-100}"
+
+# Start queue worker in background — restart loop so it survives max-jobs/max-time exits.
+# seller-api is last so mapping/inventory jobs drain before SB API bursts.
 (while true; do
-  php artisan queue:work --queue=xs2-mapping,xs2-reconcile,xs2-listing-gen,xs2-sync,seller-api,xs2-guest,default --tries=3 --timeout=300 --sleep=3 --max-jobs=500 --max-time=3600
+  php artisan queue:work \
+    --queue=xs2-mapping,xs2-reconcile,xs2-listing-gen,xs2-sync,xs2-guest,seller-api,default \
+    --tries=3 \
+    --timeout=300 \
+    --sleep="$QUEUE_WORKER_SLEEP" \
+    --max-jobs="$QUEUE_WORKER_MAX_JOBS" \
+    --max-time=3600
   echo "Queue worker exited, restarting in 2s..."
   sleep 2
 done) &
