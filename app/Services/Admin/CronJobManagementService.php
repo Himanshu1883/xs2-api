@@ -2,10 +2,10 @@
 
 namespace App\Services\Admin;
 
+use App\Jobs\RunAdminCronJob;
 use App\Jobs\SyncXs2EventsJob;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Validation\ValidationException;
-use Throwable;
 
 class CronJobManagementService
 {
@@ -126,45 +126,24 @@ class CronJobManagementService
         }
 
         $logId = $this->executionLogs->start($cronJobId, 'manual');
-        if ($logId > 0) {
-            app(CronExecutionContext::class)->set($logId, $cronJobId);
-        }
 
-        try {
-            $result = $this->dispatchRun($cronJobId);
-            if ($logId > 0) {
-                $this->executionLogs->finish(
-                    $logId,
-                    'success',
-                    message: (string) ($result['message'] ?? 'Manual run completed.'),
-                    metadata: [
-                        'summary' => $result,
-                        ...$result,
-                    ],
-                );
-            }
+        RunAdminCronJob::dispatch($cronJobId, $logId, force: true, trigger: 'manual');
 
-            return [
-                'cron_job_id' => $cronJobId,
-                'status' => 'success',
-                'log_id' => $logId > 0 ? $logId : null,
-                ...$result,
-            ];
-        } catch (Throwable $exception) {
-            if ($logId > 0) {
-                $this->executionLogs->finish(
-                    $logId,
-                    'failed',
-                    errorMessage: $exception->getMessage(),
-                );
-            }
+        return [
+            'cron_job_id' => $cronJobId,
+            'status' => 'queued',
+            'log_id' => $logId > 0 ? $logId : null,
+            'action' => 'queued',
+            'message' => 'Cron job queued. Track progress in execution logs — the dashboard stays responsive while it runs.',
+        ];
+    }
 
-            throw ValidationException::withMessages([
-                'run' => [$exception->getMessage()],
-            ]);
-        } finally {
-            app(CronExecutionContext::class)->clear();
-        }
+    /**
+     * @return array<string, mixed>
+     */
+    public function executeRun(string $cronJobId, bool $force = false): array
+    {
+        return $this->dispatchRun($cronJobId, $force);
     }
 
     public function supportsRunNow(string $cronJobId): bool
@@ -199,10 +178,14 @@ class CronJobManagementService
     }
 
     /** @return array<string, mixed> */
-    private function dispatchRun(string $cronJobId): array
+    private function dispatchRun(string $cronJobId, bool $force = false): array
     {
         if ($cronJobId === 'xs2-inventory-incremental') {
-            $exitCode = Artisan::call('xs2:sync-inventory', ['--mode' => 'incremental']);
+            $params = ['--mode' => 'incremental'];
+            if ($force) {
+                $params['--force'] = true;
+            }
+            $exitCode = Artisan::call('xs2:sync-inventory', $params);
             if ($exitCode !== 0) {
                 throw new \RuntimeException(trim(Artisan::output()) ?: 'Incremental inventory sync command failed.');
             }
@@ -216,7 +199,11 @@ class CronJobManagementService
         }
 
         if ($cronJobId === 'xs2-inventory-full') {
-            $exitCode = Artisan::call('xs2:sync-inventory', ['--mode' => 'full']);
+            $params = ['--mode' => 'full'];
+            if ($force) {
+                $params['--force'] = true;
+            }
+            $exitCode = Artisan::call('xs2:sync-inventory', $params);
             if ($exitCode !== 0) {
                 throw new \RuntimeException(trim(Artisan::output()) ?: 'Full inventory sync command failed.');
             }
@@ -230,7 +217,8 @@ class CronJobManagementService
         }
 
         if ($cronJobId === 'xs2-events-sync') {
-            $exitCode = Artisan::call('xs2:sync-events');
+            $params = $force ? ['--force' => true] : [];
+            $exitCode = Artisan::call('xs2:sync-events', $params);
             if ($exitCode !== 0) {
                 throw new \RuntimeException(trim(Artisan::output()) ?: 'XS2 events sync command failed.');
             }
@@ -244,7 +232,8 @@ class CronJobManagementService
         }
 
         if ($cronJobId === 'xs2-sb-new-listing-publish') {
-            $exitCode = Artisan::call('xs2:publish-new-sb-listings');
+            $params = $force ? ['--force' => true] : [];
+            $exitCode = Artisan::call('xs2:publish-new-sb-listings', $params);
             if ($exitCode !== 0) {
                 throw new \RuntimeException(trim(Artisan::output()) ?: 'Seats Broker new listing publish failed.');
             }
@@ -258,7 +247,8 @@ class CronJobManagementService
         }
 
         if ($cronJobId === 'xs2-sb-listing-inventory') {
-            $exitCode = Artisan::call('xs2:sync-sb-listing-inventory');
+            $params = $force ? ['--force' => true] : [];
+            $exitCode = Artisan::call('xs2:sync-sb-listing-inventory', $params);
             if ($exitCode !== 0) {
                 throw new \RuntimeException(trim(Artisan::output()) ?: 'Seats Broker listing inventory sync failed.');
             }

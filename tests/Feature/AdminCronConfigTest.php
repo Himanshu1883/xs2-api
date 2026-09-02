@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
@@ -132,6 +133,7 @@ class AdminCronConfigTest extends TestCase
 
     public function test_admin_can_start_all_crons_after_stop(): void
     {
+        Queue::fake();
         config()->set('app.scheduler_enabled', true);
         config()->set('xs2.enabled', true);
 
@@ -147,7 +149,10 @@ class AdminCronConfigTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.action', 'start')
             ->assertJsonPath('data.scheduler_enabled', true)
+            ->assertJsonPath('data.bootstrap_queued', true)
             ->assertJsonPath('data.snapshot.scheduler.scheduler_enabled', true);
+
+        Queue::assertPushed(\App\Jobs\BootstrapCronsAfterStartJob::class);
     }
 
     public function test_start_all_enables_scheduler_even_when_env_default_is_false(): void

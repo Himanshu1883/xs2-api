@@ -2,11 +2,9 @@
 
 namespace Tests\Feature;
 
-use App\Jobs\SyncXs2EventsJob;
-use App\Models\CronExecutionLog;
+use App\Jobs\RunAdminCronJob;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
@@ -188,11 +186,6 @@ class AdminCronJobTest extends TestCase
     public function test_admin_can_trigger_manual_cron_run(): void
     {
         Queue::fake();
-        Artisan::shouldReceive('call')
-            ->once()
-            ->with('xs2:sync-inventory', ['--mode' => 'incremental'])
-            ->andReturn(0);
-        Artisan::shouldReceive('output')->once()->andReturn('Queued 0 inventory sync job(s).');
 
         $token = $this->adminToken();
 
@@ -200,12 +193,16 @@ class AdminCronJobTest extends TestCase
             ->postJson('/api/admin/queue/cron-jobs/xs2-inventory-incremental/run')
             ->assertAccepted()
             ->assertJsonPath('data.cron_job_id', 'xs2-inventory-incremental')
-            ->assertJsonPath('data.status', 'success');
+            ->assertJsonPath('data.status', 'queued');
+
+        Queue::assertPushed(\App\Jobs\RunAdminCronJob::class, function (\App\Jobs\RunAdminCronJob $job): bool {
+            return $job->cronJobId === 'xs2-inventory-incremental' && $job->force === true;
+        });
 
         $this->assertDatabaseHas('cron_execution_logs', [
             'cron_job_id' => 'xs2-inventory-incremental',
             'trigger' => 'manual',
-            'status' => 'success',
+            'status' => 'running',
         ]);
     }
 
@@ -219,9 +216,9 @@ class AdminCronJobTest extends TestCase
             ->postJson('/api/admin/queue/cron-jobs/xs2-events-sync/run')
             ->assertAccepted()
             ->assertJsonPath('data.cron_job_id', 'xs2-events-sync')
-            ->assertJsonPath('data.status', 'success');
+            ->assertJsonPath('data.status', 'queued');
 
-        Queue::assertPushed(SyncXs2EventsJob::class, 2);
+        Queue::assertPushed(\App\Jobs\RunAdminCronJob::class, fn (\App\Jobs\RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-events-sync');
     }
 
     public function test_cron_config_exposes_single_xs2_events_sync_task(): void
@@ -275,11 +272,7 @@ class AdminCronJobTest extends TestCase
 
     public function test_admin_can_run_sb_order_to_xs2_order_sync(): void
     {
-        Artisan::shouldReceive('call')
-            ->once()
-            ->with('seller-api:sync-bookings')
-            ->andReturn(0);
-        Artisan::shouldReceive('output')->once()->andReturn('Synced 0 bookings.');
+        Queue::fake();
 
         $token = $this->adminToken();
 
@@ -287,7 +280,9 @@ class AdminCronJobTest extends TestCase
             ->postJson('/api/admin/queue/cron-jobs/xs2-sb-order-sync/run')
             ->assertAccepted()
             ->assertJsonPath('data.cron_job_id', 'xs2-sb-order-sync')
-            ->assertJsonPath('data.status', 'success');
+            ->assertJsonPath('data.status', 'queued');
+
+        Queue::assertPushed(\App\Jobs\RunAdminCronJob::class, fn (\App\Jobs\RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-sb-order-sync');
     }
 
     private function adminToken(): string

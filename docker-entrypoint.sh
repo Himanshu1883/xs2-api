@@ -31,7 +31,7 @@ QUEUE_WORKER_MAX_JOBS="${QUEUE_WORKER_MAX_JOBS:-100}"
 # seller-api is last so mapping/inventory jobs drain before SB API bursts.
 (while true; do
   php artisan queue:work \
-    --queue=xs2-mapping,xs2-reconcile,xs2-listing-gen,xs2-sync,xs2-guest,seller-api,default \
+    --queue=xs2-mapping,xs2-reconcile,xs2-listing-gen,xs2-sync,xs2-guest,default,seller-api \
     --tries=3 \
     --timeout=300 \
     --sleep="$QUEUE_WORKER_SLEEP" \

@@ -2,6 +2,7 @@
 
 namespace App\Services\Admin;
 
+use App\Jobs\BootstrapCronsAfterStartJob;
 use App\Models\Xs2EventInventorySyncState;
 use App\Models\Xs2SyncState;
 use App\Support\AwsEmergencyStopGuide;
@@ -194,12 +195,15 @@ class CronControlService
         );
         config(['app.low_load_mode' => $restoredLowLoadMode]);
 
+        BootstrapCronsAfterStartJob::dispatch();
+
         return [
             'action' => 'start',
             'scheduler_enabled' => $this->schedulerEnabled(),
             'low_load_mode' => $this->lowLoadModeEnabled(),
             'restored_state' => $previousState,
             'queue_profile' => $profileResult,
+            'bootstrap_queued' => true,
             'started_at' => now()->toIso8601String(),
         ];
     }

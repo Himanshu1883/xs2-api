@@ -133,7 +133,7 @@ class AdminCronConfigController extends Controller
 
         return response()->json([
             'message' => $result['scheduler_enabled']
-                ? 'Scheduled crons re-enabled. Queue workers must be restarted manually if they were stopped.'
+                ? 'Scheduled crons re-enabled and the safe startup pipeline was queued (inventory → publish → SB qty sync). Queue workers process jobs in the background.'
                 : 'Cron settings updated, but the scheduler master switch remains off.',
             'data' => [
                 ...$result,
