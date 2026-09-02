@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\DeleteSplitListings;
+use App\Jobs\DeleteXs2SellerListing;
 use App\Jobs\DisableXs2SellerListing;
 use App\Jobs\PushXs2TicketToSellerApi;
 use App\Jobs\SyncSplitListings;
@@ -279,31 +280,34 @@ class Xs2InventorySynchronizationTest extends TestCase
         $this->assertSame(1, $summary['tickets_disabled']);
         $this->assertSame('unavailable', $ticket->fresh()->ticket_status);
         $this->assertSame(0, $ticket->fresh()->stock);
-        Queue::assertPushed(DisableXs2SellerListing::class, fn ($job): bool => $job->ticketId === $ticket->id);
+        Queue::assertPushed(DeleteXs2SellerListing::class, fn ($job): bool => $job->ticketId === $ticket->id);
 
         $failingClient = Mockery::mock(SellerApiClient::class);
         $failingClient->shouldReceive('sellerId')->once()->andReturn(77);
-        $failingClient->shouldReceive('disableListing')->once()->andThrow(new \RuntimeException('temporary Seller API failure'));
+        $failingClient->shouldReceive('canDeleteListing')->once()->andReturn(true);
+        $failingClient->shouldReceive('deleteListing')->once()->andThrow(new \RuntimeException('temporary Seller API failure'));
         try {
-            (new DisableXs2SellerListing($ticket->id))->handle($failingClient);
-            $this->fail('The first Seller listing disable should fail.');
+            (new DeleteXs2SellerListing($ticket->id))->handle($failingClient, app(\App\Services\SplitListings\SplitListingService::class));
+            $this->fail('The first Seller listing delete should fail.');
         } catch (\RuntimeException) {
             // The next authoritative full snapshot must enqueue a retry.
         }
-        $this->assertSame('failed', $listing->fresh()->status);
+        $this->assertSame('active', $listing->fresh()->status);
 
         Queue::fake();
         $retrySummary = app(Xs2EventInventorySyncService::class)->sync($mapping, 'full');
 
         $this->assertSame(1, $retrySummary['tickets_disabled']);
-        Queue::assertPushed(DisableXs2SellerListing::class, fn ($job): bool => $job->ticketId === $ticket->id);
+        Queue::assertPushed(DeleteXs2SellerListing::class, fn ($job): bool => $job->ticketId === $ticket->id);
 
         $successfulClient = Mockery::mock(SellerApiClient::class);
         $successfulClient->shouldReceive('sellerId')->once()->andReturn(77);
-        $successfulClient->shouldReceive('disableListing')->once()->andReturn(['success' => true]);
-        (new DisableXs2SellerListing($ticket->id))->handle($successfulClient);
+        $successfulClient->shouldReceive('canDeleteListing')->once()->andReturn(true);
+        $successfulClient->shouldReceive('deleteListing')->once()->andReturn(['success' => true]);
+        (new DeleteXs2SellerListing($ticket->id))->handle($successfulClient, app(\App\Services\SplitListings\SplitListingService::class));
 
-        $this->assertSame('inactive', $listing->fresh()->status);
+        $this->assertSame('pending', $listing->fresh()->status);
+        $this->assertNull($listing->fresh()->seller_listing_id);
         $this->assertSame(0, $listing->fresh()->last_pushed_quantity);
     }
 

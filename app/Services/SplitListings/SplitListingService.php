@@ -22,7 +22,8 @@ use Illuminate\Validation\ValidationException;
  *
  * Sync rules (called from inventory sync when split_enabled):
  * - Stock decrease → delete trailing active splits from marketplace + mark deleted
- * - Stock 0 / unpublish / event cancel → disableAllSplitListings (soft)
+ * - Stock 0 / low-stock unpublish → deleteAllListings (hard DELETE on SB)
+ * - Ticket/event unavailable (non-stock) → disableAllSplitListings (soft)
  * - Stock increase → create only missing trailing splits
  * - Base price or increment change → recalculate prices + updateExistingListings
  * - Split quantity change → rebuildListings (delete extras / create missing / update rest)
@@ -265,7 +266,8 @@ class SplitListingService
      *
      * Sync rules:
      * - Stock decrease → delete trailing listings
-     * - Stock 0 / unpublish / event cancel → disableAllSplitListings (soft)
+     * - Stock 0 / low-stock unpublish → deleteAllListings (hard DELETE on SB)
+ * - Ticket/event unavailable (non-stock) → disableAllSplitListings (soft)
      * - Stock increase → create only missing
      * - Base price or increment change → update existing prices
      * - Split quantity change → rebuild (delete extras + create missing + update)
@@ -278,20 +280,23 @@ class SplitListingService
             return ['action' => 'skipped', 'reason' => 'split_disabled', 'created' => 0, 'updated' => 0, 'deleted' => 0, 'disabled' => 0];
         }
 
-        $unpublishStockMax = max(0, (int) config('xs2.split_listings.unpublish_stock_max', 0));
+        if ($ticket->stock <= 0) {
+            $result = $this->deleteAllListings($ticket);
 
-        if ($ticket->stock <= 0
-            || $ticket->ticket_status !== 'available'
+            return ['action' => 'deleted_all', 'reason' => 'zero_stock', ...$result];
+        }
+
+        if ($this->shouldDeleteForLowStock($ticket)) {
+            $result = $this->deleteAllListings($ticket);
+
+            return ['action' => 'deleted_all', 'reason' => 'low_stock', ...$result];
+        }
+
+        if ($ticket->ticket_status !== 'available'
             || ! ($ticket->xs2Event?->isSellable() ?? false)) {
             $result = $this->disableAllSplitListings($ticket);
 
             return ['action' => 'disabled_all', 'reason' => 'unavailable', ...$result];
-        }
-
-        if ($unpublishStockMax > 0 && $ticket->stock <= $unpublishStockMax) {
-            $result = $this->disableAllSplitListings($ticket);
-
-            return ['action' => 'disabled_all', 'reason' => 'low_stock', ...$result];
         }
 
         $desired = $this->preview($ticket)['listings'];
@@ -416,6 +421,15 @@ class SplitListingService
      *
      * @return array{created: int, updated: int, deleted: int, disabled: int}
      */
+    public function shouldDeleteForLowStock(Xs2Ticket $ticket): bool
+    {
+        $unpublishStockMax = max(0, (int) config('xs2.split_listings.unpublish_stock_max', 0));
+
+        return $unpublishStockMax > 0
+            && $ticket->stock > 0
+            && $ticket->stock <= $unpublishStockMax;
+    }
+
     public function disableAllSplitListings(Xs2Ticket $ticket): array
     {
         $disabled = 0;

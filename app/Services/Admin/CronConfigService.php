@@ -554,11 +554,11 @@ class CronConfigService
                             'Eligibility gate: master tickets must have external_listing_mappings.seller_listing_id (active/failed) and mapping_status published; split tickets must have active listing_splits with seatsbroker_listing_id.',
                             'Skip every ticket that has never been published to SB — those are picked up only by xs2:publish-new-sb-listings.',
                             'Compare XS2 stock (minus SB sold qty) to last pushed SB quantity.',
-                            'Master (1:1): PushXs2TicketToSellerApi updates qty on the existing SB listing id, or disable when unavailable.',
+                            'Master (1:1): PushXs2TicketToSellerApi updates qty on the existing SB listing id, or DELETE when stock is 0 (disable when unavailable with stock).',
                             'Split: recalculate plan from current stock using the ticket split_size from listing publish rules; update surviving splits; delete trailing splits when stock drops; create extra splits when stock increases.',
                             ($unpublishMax > 0
-                                ? 'Stock in (0..'.$unpublishMax.'] or ticket/event unavailable → disable all SB split listings (soft, local rows kept).'
-                                : 'Stock 0 or ticket/event unavailable → disable all SB split listings (soft, local rows kept).'),
+                                ? 'Stock in (0..'.$unpublishMax.'] or stock 0 → DELETE all SB split listings. Ticket/event unavailable (with stock) → soft disable.'
+                                : 'Stock 0 → DELETE all SB split listings. Ticket/event unavailable (with stock) → soft disable.'),
                         ],
                         'examples' => [
                             'Tribuna already on SB as 4× qty 2 splits; XS2 stock 8 → 6 → cron deletes 1 split, keeps 3× qty 2 (per publish rule split_size=2).',

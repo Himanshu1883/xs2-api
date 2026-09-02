@@ -135,7 +135,7 @@ return [
 
     'split_listings' => [
         // When > 0 and master stock is in (0..unpublish_stock_max], split listings are
-        // disabled on Seats Broker (not deleted). Default 0 = no low-stock unpublish.
+        // deleted on Seats Broker (hard DELETE). Default 0 = no low-stock unpublish.
         'unpublish_stock_max' => max(0, (int) env('XS2_SPLIT_LISTING_UNPUBLISH_STOCK_MAX', 0)),
     ],
 

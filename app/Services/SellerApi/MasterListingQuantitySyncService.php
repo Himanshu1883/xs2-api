@@ -2,6 +2,7 @@
 
 namespace App\Services\SellerApi;
 
+use App\Jobs\DeleteXs2SellerListing;
 use App\Jobs\DisableXs2SellerListing;
 use App\Jobs\PushXs2TicketToSellerApi;
 use App\Models\ExternalListingMapping;
@@ -226,7 +227,11 @@ class MasterListingQuantitySyncService
     private function dispatchInline(Xs2Ticket $ticket): void
     {
         if ($this->shouldDisableOnMarketplace($ticket, $ticket->listingMapping)) {
-            DisableXs2SellerListing::dispatchSync($ticket->id);
+            if ((int) $ticket->stock <= 0) {
+                DeleteXs2SellerListing::dispatchSync($ticket->id);
+            } else {
+                DisableXs2SellerListing::dispatchSync($ticket->id);
+            }
 
             return;
         }
@@ -237,6 +242,10 @@ class MasterListingQuantitySyncService
     private function dispatchQueued(Xs2Ticket $ticket): PendingDispatch
     {
         if ($this->shouldDisableOnMarketplace($ticket, $ticket->listingMapping)) {
+            if ((int) $ticket->stock <= 0) {
+                return DeleteXs2SellerListing::dispatch($ticket->id);
+            }
+
             return DisableXs2SellerListing::dispatch($ticket->id);
         }
 

@@ -3,6 +3,7 @@
 namespace App\Services\Xs2;
 
 use App\Exceptions\Integrations\Xs2RateLimitException;
+use App\Jobs\DeleteXs2SellerListing;
 use App\Jobs\DisableSellerListing;
 use App\Jobs\DisableXs2SellerListing;
 use App\Jobs\SyncXs2TicketGuestRequirements;
@@ -250,7 +251,7 @@ class Xs2EventInventorySyncService
                 ]);
             }
 
-            DisableXs2SellerListing::dispatch($ticket->id);
+            DeleteXs2SellerListing::dispatch($ticket->id);
             $count++;
         }
 
@@ -403,6 +404,12 @@ class Xs2EventInventorySyncService
     private function dispatchDisableJob(Xs2Ticket $ticket, Xs2Event $event, string $mode, array &$summary): void
     {
         try {
+            if ((int) $ticket->stock <= 0) {
+                DeleteXs2SellerListing::dispatch($ticket->id);
+
+                return;
+            }
+
             if ($ticket->split_enabled) {
                 DisableSellerListing::dispatch($ticket->id);
             } else {

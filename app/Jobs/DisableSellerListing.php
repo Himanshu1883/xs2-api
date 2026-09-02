@@ -40,7 +40,12 @@ class DisableSellerListing implements ShouldQueue
         $ticket = Xs2Ticket::findOrFail($this->ticketId);
 
         if ($ticket->split_enabled && $ticket->listingSplits()->where('status', 'active')->exists()) {
-            app(SplitListingService::class)->disableAllSplitListings($ticket);
+            $splits = app(SplitListingService::class);
+            if ((int) $ticket->stock <= 0) {
+                $splits->deleteAllListings($ticket);
+            } else {
+                $splits->disableAllSplitListings($ticket);
+            }
 
             return;
         }
