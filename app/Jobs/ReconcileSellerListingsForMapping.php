@@ -44,6 +44,7 @@ class ReconcileSellerListingsForMapping implements ShouldBeUniqueUntilProcessing
         }
 
         $eventSellable = $mapping->xs2Event->isSellable();
+        $eventMappingReady = in_array($mapping->status, ['mapped', 'created'], true) && filled($mapping->m_id);
 
         foreach ($mapping->xs2Event->tickets as $ticket) {
             $this->reconcileTicket(
@@ -51,6 +52,7 @@ class ReconcileSellerListingsForMapping implements ShouldBeUniqueUntilProcessing
                 $mappingStates,
                 $sbPublish,
                 $eventSellable,
+                $eventMappingReady,
             );
         }
     }
@@ -60,10 +62,19 @@ class ReconcileSellerListingsForMapping implements ShouldBeUniqueUntilProcessing
         Xs2TicketMappingStatusService $mappingStates,
         SbNewListingPublishService $sbPublish,
         bool $eventSellable,
+        bool $eventMappingReady,
     ): void {
         $available = $this->isAvailable($ticket) && $eventSellable;
 
         if (! $eventSellable || ! $available) {
+            if ($sbPublish->isPublishedOnSb($ticket)) {
+                DisableSellerListing::dispatch($ticket->id);
+            }
+
+            return;
+        }
+
+        if (! $eventMappingReady) {
             if ($sbPublish->isPublishedOnSb($ticket)) {
                 DisableSellerListing::dispatch($ticket->id);
             }
