@@ -24,7 +24,7 @@ if [ "${QUEUE_CLEAR_ON_START:-false}" = "true" ] || [ "${QUEUE_CLEAR_ON_START:-f
 fi
 
 # Allow concurrent HTTP requests (default artisan serve is single-threaded without this).
-export PHP_CLI_SERVER_WORKERS="${PHP_CLI_SERVER_WORKERS:-4}"
+export PHP_CLI_SERVER_WORKERS="${PHP_CLI_SERVER_WORKERS:-8}"
 
 QUEUE_WORKER_SLEEP="${QUEUE_WORKER_SLEEP:-3}"
 QUEUE_WORKER_MAX_JOBS="${QUEUE_WORKER_MAX_JOBS:-100}"

@@ -206,6 +206,20 @@ class AdminCronJobTest extends TestCase
         ]);
     }
 
+    public function test_unknown_cron_job_run_returns_validation_error(): void
+    {
+        Queue::fake();
+
+        $token = $this->adminToken();
+
+        $this->withToken($token)
+            ->postJson('/api/admin/queue/cron-jobs/not-a-real-job/run')
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['cron_job_id']);
+
+        Queue::assertNothingPushed();
+    }
+
     public function test_admin_can_trigger_xs2_inventory_full_run(): void
     {
         Queue::fake();

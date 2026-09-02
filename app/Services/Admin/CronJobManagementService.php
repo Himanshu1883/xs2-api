@@ -9,6 +9,20 @@ use Illuminate\Validation\ValidationException;
 
 class CronJobManagementService
 {
+    /** @var list<string> */
+    private const KNOWN_CRON_JOB_IDS = [
+        'xs2-inventory-incremental',
+        'xs2-inventory-full',
+        'xs2-sb-new-listing-publish',
+        'xs2-sb-listing-inventory',
+        'xs2-sb-order-sync',
+        'xs2-sb-order-guest-data-sync',
+        'xs2-events-sync',
+        'sb-events-sync',
+        'sanctum-prune-expired',
+        'xs2-split-listing-quantities',
+    ];
+
     public function __construct(
         private readonly CronConfigService $cronConfig,
         private readonly CronExecutionLogService $executionLogs,
@@ -351,11 +365,20 @@ class CronJobManagementService
 
     private function assertKnownJob(string $cronJobId): void
     {
-        if ($this->findTask($cronJobId) === null) {
+        if (! $this->isKnownJobId($cronJobId)) {
             throw ValidationException::withMessages([
                 'cron_job_id' => ["Unknown cron job “{$cronJobId}”."],
             ]);
         }
+    }
+
+    private function isKnownJobId(string $cronJobId): bool
+    {
+        if (in_array($cronJobId, self::KNOWN_CRON_JOB_IDS, true)) {
+            return true;
+        }
+
+        return preg_match('/^xs2-events-[a-z0-9_-]+-(incremental|full)$/', $cronJobId) === 1;
     }
 
     /** @return array<string, mixed>|null */
