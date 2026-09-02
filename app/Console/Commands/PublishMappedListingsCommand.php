@@ -3,6 +3,8 @@
 namespace App\Console\Commands;
 
 use App\Models\Xs2Ticket;
+use App\Models\Xs2TicketMappingState;
+use App\Services\Xs2\ListingPublishReadinessService;
 use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Console\Command;
@@ -20,6 +22,7 @@ class PublishMappedListingsCommand extends Command
     public function handle(
         MappedListingPublishService $publisher,
         Xs2TicketMappingStatusService $mappingStatuses,
+        ListingPublishReadinessService $readiness,
     ): int {
         if (! (bool) config('services.seller_api.enabled', true)) {
             $this->warn('Seller API integration is disabled (SELLER_API_ENABLED=false).');
@@ -53,6 +56,7 @@ class PublishMappedListingsCommand extends Command
         $query->orderBy('id')->chunkById(100, function ($tickets) use (
             $publisher,
             $mappingStatuses,
+            $readiness,
             $sync,
             $dryRun,
             &$eligible,
@@ -70,9 +74,14 @@ class PublishMappedListingsCommand extends Command
                     ? $mappingStatuses->resolve($ticket)
                     : null;
 
-                $publishable = $mappingStatuses->canAutoPublish($ticket, $state?->mapping_status);
+                if (! $mappingStatuses->isAutoPublishable($state?->mapping_status)) {
+                    $skipped++;
 
-                if (! $publishable) {
+                    continue;
+                }
+
+                $assessment = $readiness->assess($ticket);
+                if (! $assessment['ready']) {
                     $skipped++;
 
                     continue;

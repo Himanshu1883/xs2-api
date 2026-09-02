@@ -10,6 +10,7 @@ use App\Models\EventMapping;
 use App\Models\ExternalListingMapping;
 use App\Models\Xs2Event;
 use App\Models\Xs2Ticket;
+use App\Models\Xs2TicketMappingState;
 use App\Services\SellerApi\SellerApiClient;
 use App\Services\Xs2\EventMappingService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
@@ -42,6 +43,7 @@ class SellerListingPublisherTest extends TestCase
     public function test_create_without_a_listing_id_fails_permanently(): void
     {
         $ticket = $this->ticket();
+        $this->ensureReadyMappingState($ticket);
         $reference = 'XS2-xs2-ticket-1-event-45';
         Http::fake(['https://seller.test/api/ticket/create' => Http::response(['success' => true])]);
 
@@ -69,6 +71,7 @@ class SellerListingPublisherTest extends TestCase
     public function test_create_persists_the_supplier_listing_id_before_marking_ticket_synced(): void
     {
         $ticket = $this->ticket();
+        $this->ensureReadyMappingState($ticket);
         $reference = 'XS2-xs2-ticket-1-event-45';
         Http::fake(['https://seller.test/api/ticket/create' => Http::response(['ticket_id' => 'seller-123'])]);
 
@@ -87,6 +90,7 @@ class SellerListingPublisherTest extends TestCase
     public function test_remapping_disables_the_previous_listing_before_creating_a_replacement(): void
     {
         $ticket = $this->ticket();
+        $this->ensureReadyMappingState($ticket);
         $ticket->xs2Event->mapping->update(['m_id' => 46]);
         ExternalListingMapping::query()->create([
             'provider' => 'xs2event',
@@ -233,6 +237,21 @@ class SellerListingPublisherTest extends TestCase
         ]);
     }
 
+    private function ensureReadyMappingState(Xs2Ticket $ticket): void
+    {
+        if (! Schema::hasTable('xs2_ticket_mapping_states')) {
+            return;
+        }
+
+        Xs2TicketMappingState::query()->updateOrCreate(
+            ['xs2_ticket_id' => $ticket->id],
+            [
+                'event_mapping_id' => $ticket->xs2Event->mapping->id,
+                'mapping_status' => 'ready_to_publish',
+            ],
+        );
+    }
+
     private function transformer(string $reference, int $matchId = 45): Xs2SellerListingTransformer
     {
         $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
@@ -253,7 +272,7 @@ class SellerListingPublisherTest extends TestCase
 
     private function createTables(): void
     {
-        foreach (['external_listing_mappings', 'xs2_tickets', 'event_mappings', 'xs2_events'] as $table) {
+        foreach (['external_listing_mappings', 'xs2_ticket_mapping_states', 'xs2_tickets', 'event_mappings', 'xs2_events'] as $table) {
             Schema::dropIfExists($table);
         }
 
@@ -285,6 +304,19 @@ class SellerListingPublisherTest extends TestCase
             $table->unsignedBigInteger('net_rate')->nullable();
             $table->string('sync_status')->nullable();
             $table->text('sync_error')->nullable();
+            $table->timestamps();
+        });
+        Schema::create('xs2_ticket_mapping_states', function (Blueprint $table): void {
+            $table->id();
+            $table->unsignedBigInteger('xs2_ticket_id')->unique();
+            $table->unsignedBigInteger('event_mapping_id')->nullable();
+            $table->unsignedBigInteger('xs2_venue_id')->nullable();
+            $table->string('xs2_category_id')->nullable();
+            $table->unsignedBigInteger('xs2_stadium_mapping_id')->nullable();
+            $table->unsignedBigInteger('xs2_category_mapping_id')->nullable();
+            $table->string('mapping_status')->nullable();
+            $table->text('mapping_error')->nullable();
+            $table->timestamp('last_resolved_at')->nullable();
             $table->timestamps();
         });
         Schema::create('external_listing_mappings', function (Blueprint $table): void {

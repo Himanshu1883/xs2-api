@@ -47,7 +47,8 @@ class Xs2TicketSyncService
             $summary[$new ? 'created' : ($changed ? 'updated' : 'unchanged')]++;
             if ($needsSellerSync) {
                 if ($event->isSellable() && $ticket->ticket_status === 'available' && $ticket->stock > 0) {
-                    $this->publisher->publishTicket($ticket->id);
+                    // Inventory sync updates XS2 rows only — publish cron creates SB listings.
+                    $ticket->update(['sync_status' => 'pending', 'sync_error' => null]);
                 } else {
                     DisableSellerListing::dispatch($ticket->id);
                     $summary['disabled']++;

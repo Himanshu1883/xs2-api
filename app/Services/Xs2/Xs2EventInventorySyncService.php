@@ -334,10 +334,10 @@ class Xs2EventInventorySyncService
             && (int) $ticket->stock > 0;
     }
 
-    /** Initial publish (ready_to_publish) and stock/price reconcile (published). */
+    /** Only fully confirmed mappings qualify for split/qty reconcile during inventory sync. */
     private function canPublishListing(?string $mappingStatus, Xs2Ticket $ticket): bool
     {
-        return $this->mappingStates->canAutoPublish($ticket, $mappingStatus);
+        return $this->mappingStates->isAutoPublishable($mappingStatus);
     }
 
     private function nextInterval(Xs2Event $event, bool $full): int
