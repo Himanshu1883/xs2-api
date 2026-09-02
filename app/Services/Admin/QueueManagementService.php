@@ -185,7 +185,11 @@ class QueueManagementService
             'supervisor_config' => $this->profiles->supervisorConfig(),
             'recommended_worker_commands' => $this->recommendedWorkerCommands(),
             'worker_script' => 'bash scripts/run-queue-workers.sh',
-            'promote_delayed_command' => 'php artisan queue:promote-delayed --queue='.(string) config('xs2.queue', 'xs2-sync'),
+            'promote_delayed_command' => 'php artisan queue:promote-delayed (add --queue=xs2-sync or --queue=seller-api)',
+            'promote_delayed_commands' => [
+                'xs2-sync' => 'php artisan queue:promote-delayed --queue='.(string) config('xs2.queue', 'xs2-sync'),
+                'seller-api' => 'php artisan queue:promote-delayed --queue='.(string) config('services.seller_api.queue', 'seller-api'),
+            ],
             'health' => $this->healthMetrics($failedTotal),
             'failed_jobs_summary' => [
                 'available' => $this->failedJobs->available(),
@@ -239,6 +243,10 @@ class QueueManagementService
         } catch (\Throwable) {
             $workersRestarted = false;
         }
+
+        // Railway/docker entrypoint workers respawn in a loop. Clear the restart
+        // signal after signaling so the next spawned worker does not immediately exit.
+        $this->clearWorkerRestartSignal();
 
         $jobsQuery = DB::table($this->jobsTable());
         if ($queue !== null && $queue !== '') {
@@ -398,6 +406,16 @@ class QueueManagementService
             throw new \RuntimeException(
                 'The '.$this->jobsTable().' table is missing. Run php artisan queue:table && php artisan migrate.',
             );
+        }
+    }
+
+    /** Clear queue:restart cache so respawned workers can process jobs immediately. */
+    public function clearWorkerRestartSignal(): void
+    {
+        try {
+            Artisan::call('cache:forget', ['key' => 'illuminate:queue:restart']);
+        } catch (\Throwable) {
+            // Non-fatal — entrypoint also clears this before each worker start.
         }
     }
 }

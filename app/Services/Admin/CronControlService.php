@@ -195,6 +195,8 @@ class CronControlService
         );
         config(['app.low_load_mode' => $restoredLowLoadMode]);
 
+        $this->queues->clearWorkerRestartSignal();
+
         BootstrapCronsAfterStartJob::dispatch();
 
         return [
