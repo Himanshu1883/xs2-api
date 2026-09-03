@@ -8,6 +8,7 @@ use App\Jobs\ResolvePendingXs2Listings;
 use App\Exceptions\Integrations\ListingTransformationException;
 use App\Models\EventMapping;
 use App\Models\ExternalListingMapping;
+use App\Models\ListingSplit;
 use App\Models\User;
 use App\Models\Xs2Category;
 use App\Models\Xs2CategoryContext;
@@ -845,6 +846,78 @@ class Xs2InventoryMappingTest extends TestCase
             ->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.external_ticket_id', 'ticket-manual-published')
             ->assertJsonPath('data.0.seller_listing_id', '912476');
+    }
+
+    public function test_resolve_preserves_published_status_for_split_listings_with_pending_category_mapping(): void
+    {
+        $venue = $this->venue();
+        $stadium = Xs2StadiumMapping::create([
+            'xs2_venue_id' => $venue->id,
+            'stadium_id' => 500,
+            'status' => 'mapped',
+            'manually_confirmed' => true,
+        ]);
+        $event = Xs2Event::create([
+            'external_event_id' => 'event-split-published',
+            'event_name' => 'FC Barcelona vs Levante UD',
+            'venue_id' => $venue->external_venue_id,
+            'date_start_local' => now()->addWeek(),
+        ]);
+        $eventMapping = EventMapping::create(['xs2_event_id' => $event->id, 'm_id' => 9968, 'status' => 'mapped']);
+        $category = Xs2Category::create([
+            'xs2_event_id' => $event->id,
+            'external_category_id' => 'cat-split',
+            'external_event_id' => $event->external_event_id,
+            'category_name' => 'Corner',
+            'raw_payload' => [],
+        ]);
+        Xs2CategoryContext::create([
+            'xs2_category_id' => $category->id,
+            'external_venue_id' => $venue->external_venue_id,
+            'category_type' => 'grandstand',
+        ]);
+        Xs2CategoryMapping::create([
+            'xs2_category_id' => $category->id,
+            'xs2_stadium_mapping_id' => $stadium->id,
+            'stadium_id' => 500,
+            'status' => 'pending_category_mapping',
+            'mapping_method' => 'exact_seat_category',
+            'mapping_error' => 'One or more matched stadium details are already claimed by another category mapping for this stadium.',
+        ]);
+        $ticket = Xs2Ticket::create([
+            'xs2_event_id' => $event->id,
+            'external_ticket_id' => 'ticket-split-published',
+            'category_id' => $category->external_category_id,
+            'category_name' => 'Corner',
+            'ticket_status' => 'available',
+            'stock' => 4,
+            'sync_status' => 'synced',
+        ]);
+        Xs2TicketMappingState::create([
+            'xs2_ticket_id' => $ticket->id,
+            'event_mapping_id' => $eventMapping->id,
+            'mapping_status' => 'ready_to_publish',
+        ]);
+        ListingSplit::create([
+            'master_listing_id' => $ticket->id,
+            'split_order' => 1,
+            'seller_reference' => 'XS2-ticket-split-published-S1',
+            'quantity' => 2,
+            'price' => 100,
+            'status' => 'active',
+            'sync_status' => 'synced',
+            'seatsbroker_listing_id' => '912477',
+        ]);
+
+        app(Xs2TicketMappingStatusService::class)->resolve($ticket);
+
+        $this->assertSame('published', $ticket->fresh()->mappingState->mapping_status);
+
+        $this->withToken($this->adminToken())
+            ->getJson('/api/admin/xs2/tickets?mapping_status=published&search=Levante')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.external_ticket_id', 'ticket-split-published');
     }
 
     public function test_ignoring_a_stadium_mapping_disables_an_already_published_listing(): void
@@ -2589,7 +2662,13 @@ class Xs2InventoryMappingTest extends TestCase
         Schema::create('listing_splits', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('master_listing_id');
+            $table->unsignedInteger('split_order')->default(1);
+            $table->string('seller_reference')->nullable();
+            $table->unsignedInteger('quantity')->default(0);
+            $table->decimal('price', 12, 2)->nullable();
+            $table->string('seatsbroker_listing_id')->nullable();
             $table->string('status')->default('active');
+            $table->string('sync_status')->nullable();
             $table->timestamps();
         });
     }

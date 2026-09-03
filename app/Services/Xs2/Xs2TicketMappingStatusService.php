@@ -7,9 +7,11 @@ use App\Models\ExternalListingMapping;
 use App\Models\Xs2Category;
 use App\Models\Xs2CategoryMapping;
 use App\Models\Xs2StadiumMapping;
+use App\Models\ListingSplit;
 use App\Models\Xs2Ticket;
 use App\Models\Xs2TicketMappingState;
 use App\Models\Xs2Venue;
+use Illuminate\Support\Facades\Schema;
 
 class Xs2TicketMappingStatusService
 {
@@ -187,10 +189,6 @@ class Xs2TicketMappingStatusService
         string $computedStatus,
         ?Xs2CategoryMapping $category,
     ): bool {
-        if ($computedStatus !== 'pending_category_mapping') {
-            return false;
-        }
-
         if ($category?->status === 'ignored') {
             return false;
         }
@@ -200,10 +198,22 @@ class Xs2TicketMappingStatusService
 
     private function hasSellerListing(Xs2Ticket $ticket): bool
     {
-        return ExternalListingMapping::query()
+        if (ExternalListingMapping::query()
             ->where('provider', 'xs2event')
             ->where('xs2_ticket_id', $ticket->id)
             ->whereNotNull('seller_listing_id')
+            ->exists()) {
+            return true;
+        }
+
+        if (! Schema::hasTable('listing_splits')) {
+            return false;
+        }
+
+        return ListingSplit::query()
+            ->where('master_listing_id', $ticket->id)
+            ->where('status', 'active')
+            ->whereNotNull('seatsbroker_listing_id')
             ->exists();
     }
 
