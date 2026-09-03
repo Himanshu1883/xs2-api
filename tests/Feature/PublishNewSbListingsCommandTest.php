@@ -72,7 +72,7 @@ class PublishNewSbListingsCommandTest extends TestCase
         Queue::assertNothingPushed();
     }
 
-    public function test_cron_skips_pending_mapping_even_with_category_name(): void
+    public function test_cron_queues_pending_mapping_with_category_name(): void
     {
         Queue::fake();
 
@@ -84,13 +84,42 @@ class PublishNewSbListingsCommandTest extends TestCase
         ]);
 
         $readiness = Mockery::mock(ListingPublishReadinessService::class);
-        $readiness->shouldNotReceive('assess');
+        $readiness->shouldReceive('assess')
+            ->once()
+            ->withArgs(fn ($assessedTicket, bool $strictPublish): bool => $assessedTicket->is($ticket) && $strictPublish === false)
+            ->andReturn(['ready' => true, 'error' => null]);
         $this->instance(ListingPublishReadinessService::class, $readiness);
 
         $summary = app(SbNewListingPublishService::class)->run();
 
-        $this->assertSame(1, $summary['skip_reasons']['mapping_not_ready']);
-        Queue::assertNothingPushed();
+        $this->assertSame(1, $summary['queued']);
+        $this->assertSame(0, $summary['skip_reasons']['mapping_not_ready']);
+        Queue::assertPushed(PublishSplitListings::class, fn ($job): bool => $job->ticketId === $ticket->id);
+    }
+
+    public function test_cron_queues_pending_stadium_mapping_with_category_name(): void
+    {
+        Queue::fake();
+
+        $ticket = $this->mappedTicket(stock: 8);
+        Xs2TicketMappingState::query()->create([
+            'xs2_ticket_id' => $ticket->id,
+            'event_mapping_id' => $ticket->xs2Event->mapping->id,
+            'mapping_status' => 'pending_stadium_mapping',
+        ]);
+
+        $readiness = Mockery::mock(ListingPublishReadinessService::class);
+        $readiness->shouldReceive('assess')
+            ->once()
+            ->withArgs(fn ($assessedTicket, bool $strictPublish): bool => $assessedTicket->is($ticket) && $strictPublish === false)
+            ->andReturn(['ready' => true, 'error' => null]);
+        $this->instance(ListingPublishReadinessService::class, $readiness);
+
+        $summary = app(SbNewListingPublishService::class)->run();
+
+        $this->assertSame(1, $summary['queued']);
+        $this->assertSame(0, $summary['skip_reasons']['mapping_not_ready']);
+        Queue::assertPushed(PublishSplitListings::class, fn ($job): bool => $job->ticketId === $ticket->id);
     }
 
     public function test_cron_skips_when_validation_not_ready(): void

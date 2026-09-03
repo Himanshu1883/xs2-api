@@ -85,9 +85,7 @@ class SbNewListingPublishService
                     : null;
 
                 $mappingStatus = $state?->mapping_status;
-                $mappingAllowed = $manualPublish
-                    ? $this->mappingStatuses->canAutoPublish($ticket, $mappingStatus)
-                    : $this->mappingStatuses->isAutoPublishable($mappingStatus);
+                $mappingAllowed = $this->mappingStatuses->canAutoPublish($ticket, $mappingStatus);
 
                 if (! $mappingAllowed) {
                     $summary['skipped']++;
@@ -201,7 +199,7 @@ class SbNewListingPublishService
                 ? $this->mappingStatuses->resolveIfStale($ticket)
                 : null;
 
-            if (! $this->mappingStatuses->isAutoPublishable($state?->mapping_status)) {
+            if (! $this->mappingStatuses->canAutoPublish($ticket, $state?->mapping_status)) {
                 continue;
             }
 

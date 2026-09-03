@@ -84,6 +84,30 @@ class CronToggleServiceTest extends TestCase
         $this->assertTrue($service->schedulerShouldBeActive());
     }
 
+    public function test_scheduler_stays_active_when_master_disabled_but_cron_individually_enabled(): void
+    {
+        $settings = app(IntegrationSettingService::class);
+        $settings->set(IntegrationSettingService::APP_SCHEDULER_ENABLED, 'false');
+
+        $service = app(CronToggleService::class);
+        $service->setStartAllEnabled(false);
+        $service->setCronEnabled('xs2-sb-new-listing-publish', true);
+
+        $this->assertTrue($service->schedulerShouldBeActive());
+        $this->assertTrue($service->shouldRun('xs2-sb-new-listing-publish', true));
+    }
+
+    public function test_scheduler_stays_active_when_start_all_on_despite_master_disabled(): void
+    {
+        $settings = app(IntegrationSettingService::class);
+        $settings->set(IntegrationSettingService::APP_SCHEDULER_ENABLED, 'false');
+
+        $service = app(CronToggleService::class);
+        $service->setStartAllEnabled(true);
+
+        $this->assertTrue($service->schedulerShouldBeActive());
+    }
+
     public function test_config_prerequisite_blocks_execution(): void
     {
         $service = app(CronToggleService::class);

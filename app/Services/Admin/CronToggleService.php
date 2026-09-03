@@ -113,19 +113,30 @@ class CronToggleService
 
     /**
      * Scheduler master switch should stay on when Start All is on or any cron is individually enabled.
+     *
+     * Start All / per-cron toggles take precedence over APP_SCHEDULER_ENABLED=false so
+     * schedule ->when() gates and next_run_at stay aligned with admin toggle state.
      */
     public function schedulerShouldBeActive(): bool
     {
+        if ($this->startAllEnabled()) {
+            return true;
+        }
+
+        if ($this->hasIndividuallyEnabledCrons()) {
+            return true;
+        }
+
+        if ($this->readBoolOverride(IntegrationSettingService::START_ALL_ENABLED) === false) {
+            return false;
+        }
+
         $schedulerOverride = $this->readBoolOverride(IntegrationSettingService::APP_SCHEDULER_ENABLED);
         if ($schedulerOverride === false) {
             return false;
         }
 
-        if ($this->startAllEnabled()) {
-            return true;
-        }
-
-        return $this->hasIndividuallyEnabledCrons();
+        return (bool) config('app.scheduler_enabled', true);
     }
 
     /** @return array<string, bool|null> */
