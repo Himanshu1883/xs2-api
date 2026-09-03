@@ -2,9 +2,11 @@
 
 namespace App\Services\SellerApi;
 
+use App\Jobs\PublishSplitListings;
 use App\Models\ExternalListingMapping;
 use App\Models\Xs2SyncState;
 use App\Models\Xs2Ticket;
+use App\Services\SplitListings\SplitListingRestockService;
 use App\Services\Xs2\ListingPublishReadinessService;
 use App\Services\Xs2\MappedListingPublishService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
@@ -24,6 +26,7 @@ class SbNewListingPublishService
         private readonly MappedListingPublishService $publisher,
         private readonly Xs2TicketMappingStatusService $mappingStatuses,
         private readonly ListingPublishReadinessService $readiness,
+        private readonly SplitListingRestockService $splitRestock,
     ) {}
 
     /**
@@ -124,6 +127,30 @@ class SbNewListingPublishService
                     $delayUntil = $inline
                         ? null
                         : $firstDispatchAt->copy()->addSeconds($queueIndex * $dispatchSpacingSeconds);
+
+                    if ($this->splitRestock->canRepublishAfterRestock($ticket)) {
+                        $config = $this->splitRestock->resolveSplitConfig($ticket);
+                        if ($config === null) {
+                            $summary['skipped']++;
+                            $summary['skip_reasons']['validation_failed']++;
+
+                            continue;
+                        }
+
+                        if ($inline) {
+                            PublishSplitListings::dispatchSync($ticket->id, $config);
+                            $summary['published_inline']++;
+                        } else {
+                            $pending = PublishSplitListings::dispatch($ticket->id, $config);
+                            if ($delayUntil !== null) {
+                                $pending->delay($delayUntil);
+                            }
+                            $summary['queued']++;
+                            $queueIndex++;
+                        }
+
+                        continue;
+                    }
 
                     if ($inline) {
                         $this->publisher->publishTicket($ticket->id, strictPublish: $manualPublish, sync: true);

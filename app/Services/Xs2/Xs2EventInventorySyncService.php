@@ -145,6 +145,8 @@ class Xs2EventInventorySyncService
                         }
                         if (! $this->isAvailable($result['ticket'], $event)) {
                             $summary['tickets_disabled']++;
+                        } elseif ($this->maybeDispatchRestockSplitRepublish($result, $event, $mode, $summary)) {
+                            $summary['listing_jobs_dispatched']++;
                         }
                     } else {
                         $summary['tickets_pending']++;
@@ -155,10 +157,7 @@ class Xs2EventInventorySyncService
                         $summary['tickets_ready']++;
                     }
                     if ($this->isAvailable($result['ticket'], $event)) {
-                        $previousStock = (int) ($result['previous_stock'] ?? 0);
-                        $currentStock = (int) $result['ticket']->stock;
-                        if ($this->splitRestock->isRestockFromZero($previousStock, $currentStock)
-                            && $this->dispatchRestockSplitRepublish($result['ticket'], $event, $mode, $summary)) {
+                        if ($this->maybeDispatchRestockSplitRepublish($result, $event, $mode, $summary)) {
                             $summary['listing_jobs_dispatched']++;
                         } elseif ($this->dispatchListingJob($result['ticket'], $event, $mode, $summary)) {
                             $summary['listing_jobs_dispatched']++;
@@ -374,6 +373,22 @@ class Xs2EventInventorySyncService
     private function safeMessage(\Throwable $exception): string
     {
         return mb_substr($exception->getMessage(), 0, 1000);
+    }
+
+    /**
+     * @param  array{ticket: Xs2Ticket, previous_stock?: int}  $result
+     * @param  array<string,mixed>  &$summary
+     */
+    private function maybeDispatchRestockSplitRepublish(array $result, Xs2Event $event, string $mode, array &$summary): bool
+    {
+        $previousStock = (int) ($result['previous_stock'] ?? 0);
+        $currentStock = (int) $result['ticket']->stock;
+
+        if (! $this->splitRestock->isRestockFromZero($previousStock, $currentStock)) {
+            return false;
+        }
+
+        return $this->dispatchRestockSplitRepublish($result['ticket'], $event, $mode, $summary);
     }
 
     /**

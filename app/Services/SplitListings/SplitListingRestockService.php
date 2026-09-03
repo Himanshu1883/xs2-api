@@ -3,8 +3,8 @@
 namespace App\Services\SplitListings;
 
 use App\Jobs\PublishSplitListings;
+use App\Models\ExternalListingMapping;
 use App\Models\Xs2Ticket;
-use App\Services\SellerApi\SbNewListingPublishService;
 use App\Services\Xs2\ListingPublishRuleService;
 
 /**
@@ -16,7 +16,6 @@ use App\Services\Xs2\ListingPublishRuleService;
 class SplitListingRestockService
 {
     public function __construct(
-        private readonly SbNewListingPublishService $sbPublish,
         private readonly ListingPublishRuleService $publishRules,
         private readonly SplitListingService $splitListings,
     ) {}
@@ -28,15 +27,27 @@ class SplitListingRestockService
 
     public function canRepublishAfterRestock(Xs2Ticket $ticket): bool
     {
-        if ($ticket->split_enabled || (int) $ticket->stock <= 0) {
+        if ((int) $ticket->stock <= 0) {
             return false;
         }
 
-        if ($this->sbPublish->isPublishedOnSb($ticket)) {
+        if ($this->resolveSplitConfig($ticket) === null) {
             return false;
         }
 
-        return $this->resolveSplitConfig($ticket) !== null;
+        // Live split rows with SB ids are reconciled via SyncSplitListings.
+        if ($ticket->listingSplits()
+            ->where('status', 'active')
+            ->whereNotNull('seatsbroker_listing_id')
+            ->exists()) {
+            return false;
+        }
+
+        if ($this->isPublishedOnSb($ticket)) {
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -86,5 +97,26 @@ class SplitListingRestockService
         PublishSplitListings::dispatch($ticket->id, $config);
 
         return true;
+    }
+
+    private function isPublishedOnSb(Xs2Ticket $ticket): bool
+    {
+        if (! $ticket->id) {
+            return false;
+        }
+
+        if (ExternalListingMapping::query()
+            ->where('provider', 'xs2event')
+            ->where('xs2_ticket_id', $ticket->id)
+            ->whereNotNull('seller_listing_id')
+            ->where('status', 'active')
+            ->exists()) {
+            return true;
+        }
+
+        return $ticket->listingSplits()
+            ->where('status', 'active')
+            ->whereNotNull('seatsbroker_listing_id')
+            ->exists();
     }
 }

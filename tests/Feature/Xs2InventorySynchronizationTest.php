@@ -424,6 +424,7 @@ class Xs2InventorySynchronizationTest extends TestCase
         config()->set('services.xs2.tickets_endpoint', '/tickets');
         config()->set('xs2.mapping.stadium_auto_map_threshold', 95);
         config()->set('xs2.mapping.category_auto_map_threshold', 95);
+        config()->set('pipeline.strict', true);
         Queue::fake();
 
         $event = Xs2Event::create([

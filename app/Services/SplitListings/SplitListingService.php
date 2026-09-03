@@ -330,7 +330,8 @@ class SplitListingService
         $existing = $this->activeSplits($ticket)->keyBy('split_order');
 
         foreach ($desired as $plan) {
-            if ($existing->has($plan['split_order'])) {
+            $split = $existing->get($plan['split_order']);
+            if ($split && $split->seatsbroker_listing_id) {
                 continue;
             }
             $this->createSplitListing($ticket, $plan);
@@ -372,6 +373,12 @@ class SplitListingService
         foreach ($this->activeSplits($ticket) as $split) {
             $plan = $byOrder->get($split->split_order);
             if (! $plan) {
+                continue;
+            }
+            if (! $split->seatsbroker_listing_id) {
+                $this->createSplitListing($ticket, $plan);
+                $updated++;
+
                 continue;
             }
             if ((int) $split->quantity === (int) $plan['quantity']
@@ -655,6 +662,8 @@ class SplitListingService
                 'quantity' => $plan['quantity'],
                 'price' => $plan['price'],
                 'status' => 'active',
+                'seatsbroker_listing_id' => null,
+                'last_payload_hash' => null,
                 'sync_status' => 'processing',
                 'last_error' => null,
             ]
@@ -780,6 +789,8 @@ class SplitListingService
 
         $split->update([
             'status' => 'deleted',
+            'seatsbroker_listing_id' => null,
+            'last_payload_hash' => null,
             'sync_status' => 'synced',
             'last_synced_at' => now(),
         ]);

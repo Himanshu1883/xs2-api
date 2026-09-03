@@ -598,6 +598,159 @@ class SplitListingServiceTest extends TestCase
         $this->assertFalse($ticket->fresh()->split_enabled);
         $this->assertSame(0, ListingSplit::query()->where('status', 'active')->count());
         $this->assertSame(1, ListingSplit::query()->where('status', 'deleted')->count());
+        $deleted = ListingSplit::query()->where('status', 'deleted')->first();
+        $this->assertNotNull($deleted);
+        $this->assertNull($deleted->seatsbroker_listing_id);
+    }
+
+    public function test_republish_after_zero_stock_creates_new_sb_listings(): void
+    {
+        $publisher = Mockery::mock(MarketplaceListingPublisher::class);
+        $publisher->shouldReceive('create')->times(3)->andReturnUsing(function (array $payload, string $key) {
+            return ['listing_id' => 'new-'.$key, 'response' => ['ticket_id' => 'new-'.$key]];
+        });
+        $publisher->shouldReceive('update')->never();
+        $publisher->shouldReceive('delete')->never();
+
+        $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
+        $transformer->shouldReceive('transform')->andReturn([
+            'seller_reference' => 'XS2-t1',
+            'match_id' => 1,
+            'quantity' => 2,
+            'price' => '100.00',
+            'status' => '1',
+            'seller_id' => 1,
+        ]);
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('sellerId')->andReturn(1);
+
+        $service = new SplitListingService(
+            $publisher,
+            $transformer,
+            $client,
+            Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
+        );
+
+        $ticket = $this->ticket([
+            'stock' => 6,
+            'net_rate' => 10000,
+            'split_enabled' => false,
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5,
+        ]);
+        $ticket->xs2Event->forceFill([
+            'event_status' => 'available',
+            'date_start_local' => now()->addWeek(),
+        ])->save();
+
+        foreach ([1, 2, 3] as $order) {
+            ListingSplit::query()->create([
+                'master_listing_id' => $ticket->id,
+                'seatsbroker_listing_id' => null,
+                'seller_reference' => 'XS2-'.$ticket->external_ticket_id.'-S'.$order,
+                'quantity' => 2,
+                'price' => 100 + (($order - 1) * 5),
+                'split_order' => $order,
+                'status' => 'deleted',
+                'sync_status' => 'synced',
+            ]);
+        }
+
+        $result = $service->publishListings($ticket->fresh(), [
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5,
+        ]);
+
+        $this->assertSame(3, $result['created']);
+        $this->assertSame(0, $result['updated']);
+        $this->assertTrue($ticket->fresh()->split_enabled);
+        $activeIds = ListingSplit::query()
+            ->where('status', 'active')
+            ->orderBy('split_order')
+            ->pluck('seatsbroker_listing_id')
+            ->all();
+        $this->assertSame(['new-XS2-'.$ticket->external_ticket_id.'-S1', 'new-XS2-'.$ticket->external_ticket_id.'-S2', 'new-XS2-'.$ticket->external_ticket_id.'-S3'], $activeIds);
+    }
+
+    public function test_stock_restore_after_trailing_delete_creates_new_sb_listing(): void
+    {
+        $publisher = Mockery::mock(MarketplaceListingPublisher::class);
+        $publisher->shouldReceive('delete')->once()->with('sb-3', Mockery::type('array'))
+            ->andReturn(['response' => ['ok' => true]]);
+        $publisher->shouldReceive('create')->once()->andReturnUsing(function (array $payload, string $key) {
+            return ['listing_id' => 'new-'.$key, 'response' => ['ticket_id' => 'new-'.$key]];
+        });
+        $publisher->shouldReceive('update')->never();
+
+        $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
+        $transformer->shouldReceive('transform')->andReturn([
+            'seller_reference' => 'XS2-t1',
+            'match_id' => 1,
+            'quantity' => 2,
+            'price' => '100.00',
+            'status' => '1',
+            'seller_id' => 1,
+        ]);
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('sellerId')->andReturn(1);
+
+        $service = new SplitListingService(
+            $publisher,
+            $transformer,
+            $client,
+            Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
+        );
+
+        $ticket = $this->ticket([
+            'stock' => 6,
+            'net_rate' => 10000,
+            'split_enabled' => true,
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5,
+        ]);
+        $ticket->xs2Event->forceFill([
+            'event_status' => 'available',
+            'date_start_local' => now()->addWeek(),
+        ])->save();
+
+        foreach ([1, 2, 3] as $order) {
+            ListingSplit::query()->create([
+                'master_listing_id' => $ticket->id,
+                'seatsbroker_listing_id' => 'sb-'.$order,
+                'seller_reference' => 'XS2-t1-S'.$order,
+                'quantity' => 2,
+                'price' => 100 + (($order - 1) * 5),
+                'split_order' => $order,
+                'status' => 'active',
+                'sync_status' => 'synced',
+                'last_payload_hash' => 'stale',
+            ]);
+        }
+
+        $ticket->update(['stock' => 4]);
+        $service->syncListings($ticket->fresh());
+
+        $deleted = ListingSplit::query()->where('split_order', 3)->where('status', 'deleted')->first();
+        $this->assertNotNull($deleted);
+        $this->assertNull($deleted->seatsbroker_listing_id);
+
+        $ticket->update(['stock' => 6]);
+        $result = $service->syncListings($ticket->fresh());
+
+        $this->assertSame('synced', $result['action']);
+        $this->assertSame(1, $result['created']);
+        $this->assertSame(0, $result['updated']);
+        $restored = ListingSplit::query()->where('split_order', 3)->where('status', 'active')->first();
+        $this->assertNotNull($restored);
+        $this->assertStringEndsWith('-S3', (string) $restored->seatsbroker_listing_id);
+        $this->assertStringStartsWith('new-XS2-', (string) $restored->seatsbroker_listing_id);
     }
 
     public function test_low_stock_unpublish_threshold_deletes_splits_on_sb(): void
@@ -791,6 +944,25 @@ class SplitListingServiceTest extends TestCase
             $table->string('action', 50);
             $table->text('message')->nullable();
             $table->json('metadata')->nullable();
+            $table->timestamps();
+        });
+        Schema::create('external_listing_mappings', function (Blueprint $table): void {
+            $table->id();
+            $table->string('provider', 30);
+            $table->unsignedBigInteger('xs2_ticket_id');
+            $table->integer('local_event_id')->nullable();
+            $table->unsignedBigInteger('event_mapping_id')->nullable();
+            $table->string('seller_listing_id')->nullable();
+            $table->string('seller_reference')->unique();
+            $table->string('status', 30)->default('pending');
+            $table->string('last_payload_hash', 64)->nullable();
+            $table->unsignedInteger('last_pushed_quantity')->nullable();
+            $table->unsignedBigInteger('last_pushed_price')->nullable();
+            $table->json('last_request')->nullable();
+            $table->json('last_response')->nullable();
+            $table->text('last_error')->nullable();
+            $table->timestamp('last_pushed_at')->nullable();
+            $table->timestamp('disabled_at')->nullable();
             $table->timestamps();
         });
     }
