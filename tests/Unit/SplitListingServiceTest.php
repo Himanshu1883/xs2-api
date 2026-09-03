@@ -141,10 +141,7 @@ class SplitListingServiceTest extends TestCase
         $publisher->shouldReceive('delete')->twice()->andReturn(['response' => ['ok' => true]]);
         $publisher->shouldReceive('update')->once()->with('sb-3', Mockery::on(function (array $payload): bool {
             return (int) ($payload['quantity'] ?? 0) === 1;
-        }))->andReturnUsing(fn (string $id) => [
-            'listing_id' => $id,
-            'response' => ['ok' => true],
-        ]);
+        }))->andReturn(['response' => ['ok' => true]]);
 
         $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
         $transformer->shouldReceive('transform')->andReturn([
@@ -177,16 +174,20 @@ class SplitListingServiceTest extends TestCase
         ]);
 
         foreach ([1, 2, 3, 4, 5] as $order) {
+            $quantity = 2;
+            $price = 100 + (($order - 1) * 5);
             ListingSplit::query()->create([
                 'master_listing_id' => $ticket->id,
                 'seatsbroker_listing_id' => 'sb-'.$order,
                 'seller_reference' => 'XS2-t1-S'.$order,
-                'quantity' => 2,
-                'price' => 100 + (($order - 1) * 5),
+                'quantity' => $quantity,
+                'price' => $price,
                 'split_order' => $order,
                 'status' => 'active',
                 'sync_status' => 'synced',
-                'last_payload_hash' => 'stale',
+                'last_payload_hash' => $order === 3
+                    ? 'stale'
+                    : $this->syncedSplitPayloadHash('XS2-t1-S'.$order, $this->defaultTransformBase(), $quantity, (float) $price),
             ]);
         }
 
@@ -263,12 +264,18 @@ class SplitListingServiceTest extends TestCase
         $publisher->shouldReceive('update')->never();
         $publisher->shouldReceive('create')->never();
 
+        $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
+        $transformer->shouldReceive('transform')->andReturn([
+            'match_id' => 1,
+            'seller_id' => 1,
+        ]);
+
         $client = Mockery::mock(SellerApiClient::class);
         $client->shouldReceive('sellerId')->andReturn(1);
 
         $service = new SplitListingService(
             $publisher,
-            Mockery::mock(Xs2SellerListingTransformer::class),
+            $transformer,
             $client,
             Mockery::mock(Xs2TicketMappingStatusService::class),
             $this->publishValidatorMock(),
@@ -284,16 +291,23 @@ class SplitListingServiceTest extends TestCase
         ]);
 
         foreach ([1, 2, 3, 4, 5] as $order) {
+            $quantity = 2;
+            $price = 100 + (($order - 1) * 5);
             ListingSplit::query()->create([
                 'master_listing_id' => $ticket->id,
                 'seatsbroker_listing_id' => 'sb-'.$order,
                 'seller_reference' => 'XS2-t1-S'.$order,
-                'quantity' => 2,
-                'price' => 100 + (($order - 1) * 5),
+                'quantity' => $quantity,
+                'price' => $price,
                 'split_order' => $order,
                 'status' => 'active',
                 'sync_status' => 'synced',
-                'last_payload_hash' => 'stale',
+                'last_payload_hash' => $this->syncedSplitPayloadHash(
+                    'XS2-t1-S'.$order,
+                    $this->defaultTransformBase(),
+                    $quantity,
+                    (float) $price,
+                ),
             ]);
         }
 
@@ -321,7 +335,10 @@ class SplitListingServiceTest extends TestCase
         // Remaining listings keep same qty/price → no remote update (minimize API calls).
 
         $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
-        $transformer->shouldReceive('transform')->never();
+        $transformer->shouldReceive('transform')->andReturn([
+            'match_id' => 1,
+            'seller_id' => 1,
+        ]);
 
         $client = Mockery::mock(SellerApiClient::class);
         $client->shouldReceive('sellerId')->andReturn(1);
@@ -345,16 +362,23 @@ class SplitListingServiceTest extends TestCase
 
         // 10/2 → 5 listings already published
         foreach ([1, 2, 3, 4, 5] as $order) {
+            $quantity = 2;
+            $price = 100 + (($order - 1) * 5);
             ListingSplit::query()->create([
                 'master_listing_id' => $ticket->id,
                 'seatsbroker_listing_id' => 'sb-'.$order,
                 'seller_reference' => 'XS2-t1-S'.$order,
-                'quantity' => 2,
-                'price' => 100 + (($order - 1) * 5),
+                'quantity' => $quantity,
+                'price' => $price,
                 'split_order' => $order,
                 'status' => 'active',
                 'sync_status' => 'synced',
-                'last_payload_hash' => 'stale',
+                'last_payload_hash' => $this->syncedSplitPayloadHash(
+                    'XS2-t1-S'.$order,
+                    $this->defaultTransformBase(),
+                    $quantity,
+                    (float) $price,
+                ),
             ]);
         }
 
@@ -415,16 +439,23 @@ class SplitListingServiceTest extends TestCase
         ])->save();
 
         foreach ([1, 2] as $order) {
+            $quantity = 2;
+            $price = 100 + (($order - 1) * 5);
             ListingSplit::query()->create([
                 'master_listing_id' => $ticket->id,
                 'seatsbroker_listing_id' => 'sb-'.$order,
                 'seller_reference' => 'XS2-t1-S'.$order,
-                'quantity' => 2,
-                'price' => 100 + (($order - 1) * 5),
+                'quantity' => $quantity,
+                'price' => $price,
                 'split_order' => $order,
                 'status' => 'active',
                 'sync_status' => 'synced',
-                'last_payload_hash' => 'stale',
+                'last_payload_hash' => $this->syncedSplitPayloadHash(
+                    'XS2-t1-S'.$order,
+                    $this->defaultTransformBase(),
+                    $quantity,
+                    (float) $price,
+                ),
             ]);
         }
 
@@ -515,13 +546,27 @@ class SplitListingServiceTest extends TestCase
         $publisher = Mockery::mock(MarketplaceListingPublisher::class);
         $publisher->shouldReceive('disable')->never();
         $publisher->shouldReceive('delete')->never();
-        $publisher->shouldReceive('update')->never();
+        $publisher->shouldReceive('update')->once()->andReturn(['response' => ['ok' => true]]);
         $publisher->shouldReceive('create')->never();
+
+        $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
+        $transformer->shouldReceive('transform')->twice()->andReturn([
+            'seller_reference' => 'XS2-t1',
+            'match_id' => 99,
+            'quantity' => 2,
+            'price' => '100.00',
+            'home_town' => 'Arsenal',
+            'status' => '1',
+            'seller_id' => 1,
+        ]);
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('sellerId')->andReturn(1);
 
         $service = new SplitListingService(
             $publisher,
-            Mockery::mock(Xs2SellerListingTransformer::class),
-            Mockery::mock(SellerApiClient::class),
+            $transformer,
+            $client,
             Mockery::mock(Xs2TicketMappingStatusService::class),
             $this->publishValidatorMock(),
         );
@@ -545,12 +590,72 @@ class SplitListingServiceTest extends TestCase
             'status' => 'active',
             'sync_status' => 'synced',
             'last_payload_hash' => 'stale',
+            'last_request' => ['home_town' => 0],
         ]);
 
         $result = $service->syncListings($ticket->fresh());
 
         $this->assertSame('synced', $result['action']);
+        $this->assertSame(1, $result['updated']);
         $this->assertSame(1, ListingSplit::query()->where('status', 'active')->count());
+    }
+
+    public function test_sync_pushes_edit_when_only_payload_fields_drift(): void
+    {
+        $publisher = Mockery::mock(MarketplaceListingPublisher::class);
+        $publisher->shouldReceive('update')->once()->with('sb-1', Mockery::on(function (array $payload): bool {
+            return ($payload['home_town'] ?? null) === 'Arsenal';
+        }))->andReturn(['response' => ['ok' => true]]);
+
+        $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
+        $transformer->shouldReceive('transform')->twice()->andReturn([
+            'seller_reference' => 'XS2-t1',
+            'match_id' => 99,
+            'quantity' => 2,
+            'price' => '100.00',
+            'home_town' => 'Arsenal',
+            'status' => '1',
+            'seller_id' => 1,
+        ]);
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('sellerId')->andReturn(1);
+
+        $service = new SplitListingService(
+            $publisher,
+            $transformer,
+            $client,
+            Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
+        );
+
+        $ticket = $this->ticket([
+            'stock' => 2,
+            'net_rate' => 10000,
+            'split_enabled' => true,
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5,
+        ]);
+
+        $split = ListingSplit::query()->create([
+            'master_listing_id' => $ticket->id,
+            'seatsbroker_listing_id' => 'sb-1',
+            'seller_reference' => 'XS2-t1-S1',
+            'quantity' => 2,
+            'price' => 100,
+            'split_order' => 1,
+            'status' => 'active',
+            'sync_status' => 'synced',
+            'last_payload_hash' => 'stale',
+            'last_request' => ['home_town' => 0],
+        ]);
+
+        $result = $service->syncListings($ticket->fresh());
+
+        $this->assertSame('synced', $result['action']);
+        $this->assertSame(1, $result['updated']);
+        $this->assertSame('Arsenal', data_get($split->fresh()->last_request, 'home_town'));
     }
 
     public function test_zero_stock_deletes_splits_on_sb(): void
@@ -721,16 +826,23 @@ class SplitListingServiceTest extends TestCase
         ])->save();
 
         foreach ([1, 2, 3] as $order) {
+            $quantity = 2;
+            $price = 100 + (($order - 1) * 5);
             ListingSplit::query()->create([
                 'master_listing_id' => $ticket->id,
                 'seatsbroker_listing_id' => 'sb-'.$order,
                 'seller_reference' => 'XS2-t1-S'.$order,
-                'quantity' => 2,
-                'price' => 100 + (($order - 1) * 5),
+                'quantity' => $quantity,
+                'price' => $price,
                 'split_order' => $order,
                 'status' => 'active',
                 'sync_status' => 'synced',
-                'last_payload_hash' => 'stale',
+                'last_payload_hash' => $this->syncedSplitPayloadHash(
+                    'XS2-t1-S'.$order,
+                    $this->defaultTransformBase(),
+                    $quantity,
+                    (float) $price,
+                ),
             ]);
         }
 
@@ -847,6 +959,32 @@ class SplitListingServiceTest extends TestCase
     }
 
     /** @param  array<string, mixed>  $attrs */
+    /** @param  array<string, mixed>  $transformBase */
+    private function syncedSplitPayloadHash(
+        string $sellerReference,
+        array $transformBase,
+        int $quantity,
+        float $priceMajor,
+    ): string {
+        $payload = array_merge($transformBase, [
+            'seller_reference' => $sellerReference,
+            'quantity' => $quantity,
+            'price' => number_format($priceMajor, 2, '.', ''),
+            'status' => '1',
+        ]);
+        ksort($payload);
+
+        return hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+    }
+
+    private function defaultTransformBase(): array
+    {
+        return [
+            'match_id' => 1,
+            'seller_id' => 1,
+        ];
+    }
+
     private function ticket(array $attrs = []): Xs2Ticket
     {
         $event = Xs2Event::query()->create([

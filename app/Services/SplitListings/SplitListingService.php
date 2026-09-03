@@ -381,14 +381,12 @@ class SplitListingService
 
                 continue;
             }
-            if ((int) $split->quantity === (int) $plan['quantity']
-                && round((float) $split->price, 2) === round((float) $plan['price'], 2)
-                && $split->seatsbroker_listing_id
-                && $split->sync_status === 'synced') {
+            if ($this->splitMatchesPlan($ticket, $split, $plan)) {
                 continue;
             }
-            $this->updateSplitListing($ticket, $split, $plan);
-            $updated++;
+            if ($this->updateSplitListing($ticket, $split, $plan)) {
+                $updated++;
+            }
         }
 
         return ['created' => 0, 'updated' => $updated, 'deleted' => 0];
@@ -705,7 +703,7 @@ class SplitListingService
     }
 
     /** @param  array{split_order: int, quantity: int, price: float}  $plan */
-    private function updateSplitListing(Xs2Ticket $ticket, ListingSplit $split, array $plan): void
+    private function updateSplitListing(Xs2Ticket $ticket, ListingSplit $split, array $plan): bool
     {
         $reference = $split->seller_reference ?: $this->splitReference($ticket, $plan['split_order']);
         $payload = $this->buildPayload($ticket, $plan, $reference, $split);
@@ -714,7 +712,7 @@ class SplitListingService
         if (! $split->seatsbroker_listing_id) {
             $this->createSplitListing($ticket, $plan);
 
-            return;
+            return true;
         }
 
         if ($split->last_payload_hash === $hash && $split->sync_status === 'synced') {
@@ -723,7 +721,7 @@ class SplitListingService
                 'price' => $plan['price'],
             ]);
 
-            return;
+            return false;
         }
 
         $split->update([
@@ -758,6 +756,8 @@ class SplitListingService
             ]);
             throw $e;
         }
+
+        return true;
     }
 
     private function deleteSplitListing(Xs2Ticket $ticket, ListingSplit $split): void
@@ -876,6 +876,30 @@ class SplitListingService
         $prefix = (string) config('services.seller_api.external_reference_prefix', 'XS2-');
 
         return $prefix.$ticket->external_ticket_id.'-S'.$order;
+    }
+
+    /**
+     * True when qty/price match the plan and the last pushed payload hash is current.
+     *
+     * @param  array{split_order: int, quantity: int, price: float}  $plan
+     */
+    private function splitMatchesPlan(Xs2Ticket $ticket, ListingSplit $split, array $plan): bool
+    {
+        if ((int) $split->quantity !== (int) $plan['quantity']) {
+            return false;
+        }
+        if (round((float) $split->price, 2) !== round((float) $plan['price'], 2)) {
+            return false;
+        }
+        if (! $split->seatsbroker_listing_id || $split->sync_status !== 'synced') {
+            return false;
+        }
+
+        $reference = $split->seller_reference ?: $this->splitReference($ticket, $plan['split_order']);
+        $payload = $this->buildPayload($ticket, $plan, $reference, $split);
+        $hash = $this->payloadHash($payload);
+
+        return $split->last_payload_hash === $hash;
     }
 
     /** @param  array<string, mixed>  $payload */

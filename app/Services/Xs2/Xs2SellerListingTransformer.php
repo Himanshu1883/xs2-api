@@ -10,6 +10,7 @@ use App\Models\Xs2TicketMappingState;
 use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class Xs2SellerListingTransformer
@@ -72,7 +73,7 @@ class Xs2SellerListingTransformer
             'category_name' => $categoryName,
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
             'ticket_row' => (string) data_get($ticket->options, 'ticket_row', ''),
-            'home_town' => 1,
+            'home_town' => $this->homeTown($ticket, $mapping),
             'price_type' => $this->required($ticket->currency_code, 'XS2 ticket currency'),
             'price' => $this->sellerAmount($listingPrice),
             'ticket_details' => $this->ticketDetails($ticket),
@@ -731,5 +732,68 @@ class Xs2SellerListingTransformer
     private function normalise(string $value): string
     {
         return preg_replace('/[^a-z0-9]+/', '', Str::lower(Str::ascii($value))) ?: '';
+    }
+
+    private function homeTown(Xs2Ticket $ticket, EventMapping $mapping): string
+    {
+        $xs2Event = $mapping->xs2Event ?? $ticket->xs2Event;
+
+        foreach ([
+            $xs2Event?->hometeam_name,
+            data_get($xs2Event?->raw_payload, 'hometeam_name'),
+            $xs2Event ? $this->parseHomeTeamFromEventName($xs2Event->event_name) : null,
+            data_get($ticket->raw_payload, 'hometeam_name'),
+            data_get($mapping->match_details, 'local_references.home_team.name'),
+        ] as $candidate) {
+            $name = $this->teamNameOrNull($candidate);
+            if ($name !== null) {
+                return $name;
+            }
+        }
+
+        $localEvent = $mapping->relationLoaded('event') ? $mapping->event : null;
+        if ($localEvent === null && $mapping->m_id && Schema::hasTable('match_info')) {
+            $localEvent = $mapping->event()->first();
+        }
+
+        if ($localEvent !== null) {
+            foreach ([
+                $localEvent->getAttribute('legacy_home_team_name'),
+                $localEvent->getAttribute('team_1'),
+            ] as $candidate) {
+                $name = $this->teamNameOrNull($candidate);
+                if ($name !== null) {
+                    return $name;
+                }
+            }
+        }
+
+        return '';
+    }
+
+    private function teamNameOrNull(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $name = trim($value);
+
+        return $name === '' || ctype_digit($name) ? null : $name;
+    }
+
+    private function parseHomeTeamFromEventName(?string $eventName): ?string
+    {
+        if (! is_string($eventName) || trim($eventName) === '') {
+            return null;
+        }
+
+        if (preg_match('/^(.+?)\s+vs\.?\s+/iu', trim($eventName), $matches) !== 1) {
+            return null;
+        }
+
+        $home = trim($matches[1]);
+
+        return $home !== '' ? $home : null;
     }
 }

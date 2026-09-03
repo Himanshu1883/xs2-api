@@ -28,7 +28,7 @@ Any code path that publishes an XS2 ticket listing to Seats Broker (SB) **must**
 | `facevalue` | number/string | Face value in SB units |
 | `status` | `'0'` \| `'1'` | Active listing flag |
 
-Optional: `ticket_block`, `ticket_row`, `ticket_details`, `home_town`.
+Optional: `ticket_block`, `ticket_row`, `ticket_details`, `home_town` (home team name string, e.g. `"Arsenal"`; empty when unknown).
 
 **Publish payload:** Do not include numeric `ticket_category`; send `category_name` only.
 

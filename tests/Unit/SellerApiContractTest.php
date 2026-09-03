@@ -348,6 +348,8 @@ class SellerApiContractTest extends TestCase
         $mapping->setRelation('xs2Event', new Xs2Event([
             'event_status' => 'notstarted',
             'date_start_local' => '2999-01-01 12:00:00',
+            'hometeam_name' => 'Arsenal',
+            'event_name' => 'Arsenal vs Chelsea',
         ]));
 
         $payload = $this->transformer($client)->transform(
@@ -374,7 +376,7 @@ class SellerApiContractTest extends TestCase
             'category_name' => 'Longside Upper Tier',
             'ticket_block' => '',
             'ticket_row' => '',
-            'home_town' => 1,
+            'home_town' => 'Arsenal',
             'price_type' => 'EUR',
             'price' => '100.00',
             'ticket_details' => '',
@@ -383,6 +385,84 @@ class SellerApiContractTest extends TestCase
             'seller_id' => 77,
             'status' => '1',
         ], $payload);
+    }
+
+    public function test_transformer_parses_home_town_from_event_name_when_hometeam_name_missing(): void
+    {
+        Cache::forget('seller-api:ticket-dropdown:45');
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('ticketDropdown')->once()->with(45)->andReturn([
+            'result' => [
+                'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                'split_type' => [['id' => 1, 'split_name' => 'No Preferences']],
+                'category' => [['id' => 4, 'category_name' => 'Longside Upper Tier']],
+            ],
+        ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
+
+        $mapping = new EventMapping(['m_id' => 45]);
+        $mapping->setRelation('xs2Event', new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => '2999-01-01 12:00:00',
+            'event_name' => 'Arsenal vs Chelsea',
+        ]));
+
+        $payload = $this->transformer($client)->transform(
+            new Xs2Ticket([
+                'external_ticket_id' => 'xs2-ticket-2',
+                'ticket_type' => 'eticket',
+                'ticket_status' => 'available',
+                'stock' => 2,
+                'category_name' => 'Longside Upper Tier',
+                'currency_code' => 'EUR',
+                'net_rate' => 5000,
+                'flags' => [],
+                'options' => [],
+            ]),
+            $mapping,
+            $this->mappedCategoryState(),
+        );
+
+        $this->assertSame('Arsenal', $payload['home_town']);
+    }
+
+    public function test_transformer_returns_empty_home_town_when_team_unknown(): void
+    {
+        Cache::forget('seller-api:ticket-dropdown:45');
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('ticketDropdown')->once()->with(45)->andReturn([
+            'result' => [
+                'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                'split_type' => [['id' => 1, 'split_name' => 'No Preferences']],
+                'category' => [['id' => 4, 'category_name' => 'Longside Upper Tier']],
+            ],
+        ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
+
+        $mapping = new EventMapping(['m_id' => 45]);
+        $mapping->setRelation('xs2Event', new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => '2999-01-01 12:00:00',
+            'event_name' => 'Dutch Grand Prix',
+        ]));
+
+        $payload = $this->transformer($client)->transform(
+            new Xs2Ticket([
+                'external_ticket_id' => 'xs2-ticket-3',
+                'ticket_type' => 'eticket',
+                'ticket_status' => 'available',
+                'stock' => 2,
+                'category_name' => 'Longside Upper Tier',
+                'currency_code' => 'EUR',
+                'net_rate' => 5000,
+                'flags' => [],
+                'options' => [],
+            ]),
+            $mapping,
+            $this->mappedCategoryState(),
+        );
+
+        $this->assertSame('', $payload['home_town']);
     }
 
     #[DataProvider('ticketDetailsRestrictionFlagsProvider')]
