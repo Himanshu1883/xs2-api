@@ -47,6 +47,22 @@ class PublishSplitListings implements ShouldBeUniqueUntilProcessing, ShouldQueue
     public function handle(SplitListingService $splits): void
     {
         $ticket = Xs2Ticket::query()->with('xs2Event.mapping')->findOrFail($this->ticketId);
+        $ticket->refresh();
+
+        // Stock can drop to zero between queue time and job execution (inventory sync,
+        // delayed publish batches, or a fast sell-through). Skip quietly — not a failure.
+        if ((int) $ticket->stock <= 0) {
+            Log::channel(config('services.seller_api.log_channel', 'stack'))->info(
+                'Skipping split publish: ticket has no stock at job run time.',
+                [
+                    'ticket_id' => $this->ticketId,
+                    'external_ticket_id' => $ticket->external_ticket_id,
+                ],
+            );
+
+            return;
+        }
+
         $splits->publishListings($ticket, $this->config);
     }
 
