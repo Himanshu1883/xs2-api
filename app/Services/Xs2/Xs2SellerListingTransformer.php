@@ -72,7 +72,7 @@ class Xs2SellerListingTransformer
             'category_name' => $categoryName,
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
             'ticket_row' => (string) data_get($ticket->options, 'ticket_row', ''),
-            'home_town' => 0,
+            'home_town' => 1,
             'price_type' => $this->required($ticket->currency_code, 'XS2 ticket currency'),
             'price' => $this->sellerAmount($listingPrice),
             'ticket_details' => $this->ticketDetails($ticket),

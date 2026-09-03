@@ -374,7 +374,7 @@ class SellerApiContractTest extends TestCase
             'category_name' => 'Longside Upper Tier',
             'ticket_block' => '',
             'ticket_row' => '',
-            'home_town' => 0,
+            'home_town' => 1,
             'price_type' => 'EUR',
             'price' => '100.00',
             'ticket_details' => '',
