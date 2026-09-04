@@ -45,6 +45,38 @@ Also required for production:
 
 Do **not** commit `.env` or real passwords to git.
 
+#### XS2 sandbox order creation (SB → XS2 bookings)
+
+SB marketplace orders can create matching reservations and bookings on the XS2 **sandbox** API (`testapi.xs2event.com`). Production XS2 order creation is not implemented yet.
+
+**Railway env vars (xs2-api service):**
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `XS2_SANDBOX_API_URL` | Yes | `https://testapi.xs2event.com` (default in `.env.example`) |
+| `XS2_SANDBOX_API_KEY` | Yes | XS2 sandbox API key |
+| `XS2_SANDBOX_AUTO_CREATE_ORDERS_FROM_SB` | No | Defaults to `true`; set `false` to disable auto-creation |
+
+**Create Order API environment** is stored in the database (`integration_settings` key `XS2_ORDERS_ACTIVE_ENVIRONMENT`), not in `.env`. Code defaults to **sandbox** when the row is missing.
+
+**Option A — Admin UI (recommended):**
+
+1. Open the provider web app → **Admin → XS2 → API Configuration** (`/admin/xs2/api-config`).
+2. In **Active API environments**, find **XS2 Create Order API**.
+3. Switch to **Sandbox**, then click **Save environments**.
+
+**Option B — SQL** (if the row exists and is set to `production`):
+
+```sql
+UPDATE integration_settings
+SET value = 'sandbox'
+WHERE `key` = 'XS2_ORDERS_ACTIVE_ENVIRONMENT';
+```
+
+If no row exists, no SQL is needed — the app already treats Create Order API as sandbox.
+
+**Verify:** Admin → XS2 → Orders should show `create_order_environment: sandbox`. Cron config for **SB order → XS2 booking** should list `create_order_api: sandbox`.
+
 See also [cron-automation.md](./cron-automation.md) for Start All pipeline, split qty sync behaviour, and the production testing checklist.
 
 ### xs2-web service (Vercel dashboard)

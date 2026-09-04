@@ -161,12 +161,13 @@ return [
 
     /*
     |--------------------------------------------------------------------------
-    | XS2 sandbox test flow (admin-only, isolated from production sync)
+    | XS2 sandbox API (testapi.xs2event.com)
     |--------------------------------------------------------------------------
     |
     | Uses dedicated sandbox credentials. Configure via Admin → API Config
     | (integration_settings) or XS2_SANDBOX_API_URL / XS2_SANDBOX_API_KEY in .env.
-    | Used when XS2_ACTIVE_ENVIRONMENT=sandbox and by the admin sandbox test flow.
+    | Used by the admin sandbox test flow and SB→XS2 order creation when
+    | XS2_ORDERS_ACTIVE_ENVIRONMENT is sandbox (default when unset).
     |
     */
     'sandbox' => [
