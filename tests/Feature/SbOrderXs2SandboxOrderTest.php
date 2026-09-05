@@ -43,6 +43,11 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         config()->set('xs2.sandbox.bookingorder_detail_endpoint', '/v1/bookingorders/{bookingorder_id}');
         config()->set('xs2.reservations_endpoint', '/v1/reservations');
         config()->set('xs2.sandbox.retry_times', 1);
+
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_SANDBOX,
+        );
     }
 
     public function test_sb_booking_sync_queues_xs2_sandbox_order_for_sandbox_ticket(): void
@@ -234,8 +239,6 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
     public function test_admin_can_manually_create_xs2_order_from_sb_order(): void
     {
-        Queue::fake();
-
         app(IntegrationSettingService::class)->set(
             ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
             ApiEnvironmentService::ENV_SANDBOX,
@@ -281,21 +284,14 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $this->withToken($token)
             ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
-            ->assertStatus(202)
-            ->assertJsonPath('data.queued', true)
-            ->assertJsonPath('data.sb_order.id', $sbOrder->id);
-
-        Queue::assertPushed(CreateXs2SandboxOrderFromSbOrder::class, function (CreateXs2SandboxOrderFromSbOrder $job) use ($sbOrder): bool {
-            return $job->sbOrderId === $sbOrder->id;
-        });
+            ->assertOk()
+            ->assertJsonPath('data.id', $sbOrder->id)
+            ->assertJsonPath('data.xs2_order.xs2_booking_id', self::SANDBOX_BOOKING_ID);
 
         $this->assertDatabaseHas('sb_order_xs2_sync_logs', [
             'sb_order_id' => $sbOrder->id,
-            'status' => 'queued',
+            'status' => 'success',
         ]);
-
-        app(CreateXs2SandboxOrderFromSbOrder::class, ['sbOrderId' => $sbOrder->id])
-            ->handle(app(SbOrderXs2SandboxOrderService::class));
 
         $this->assertDatabaseHas('xs2_orders', [
             'sb_order_id' => $sbOrder->id,
@@ -576,8 +572,6 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
     public function test_admin_can_manually_create_xs2_order_for_past_event_via_event_mapping(): void
     {
-        Queue::fake();
-
         app(IntegrationSettingService::class)->set(
             ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
             ApiEnvironmentService::ENV_PRODUCTION,
@@ -658,16 +652,9 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $this->withToken($token)
             ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
-            ->assertStatus(202)
-            ->assertJsonPath('data.queued', true)
-            ->assertJsonPath('data.sb_order.id', $sbOrder->id);
-
-        Queue::assertPushed(CreateXs2SandboxOrderFromSbOrder::class, function (CreateXs2SandboxOrderFromSbOrder $job) use ($sbOrder): bool {
-            return $job->sbOrderId === $sbOrder->id;
-        });
-
-        app(CreateXs2SandboxOrderFromSbOrder::class, ['sbOrderId' => $sbOrder->id])
-            ->handle(app(SbOrderXs2SandboxOrderService::class));
+            ->assertOk()
+            ->assertJsonPath('data.id', $sbOrder->id)
+            ->assertJsonPath('data.xs2_order.xs2_booking_id', 'production-booking-past_bkn');
 
         $this->assertDatabaseHas('xs2_orders', [
             'sb_order_id' => $sbOrder->id,
@@ -680,8 +667,6 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
     public function test_admin_can_manually_create_xs2_order_when_ticket_missing_net_rate_uses_sb_ticket_amount(): void
     {
-        Queue::fake();
-
         app(IntegrationSettingService::class)->set(
             ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
             ApiEnvironmentService::ENV_PRODUCTION,
@@ -768,11 +753,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $this->withToken($token)
             ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
-            ->assertStatus(202)
-            ->assertJsonPath('data.queued', true);
-
-        app(CreateXs2SandboxOrderFromSbOrder::class, ['sbOrderId' => $sbOrder->id])
-            ->handle(app(SbOrderXs2SandboxOrderService::class));
+            ->assertOk()
+            ->assertJsonPath('data.xs2_order.xs2_booking_id', 'production-booking-roma_bkn');
 
         Http::assertSent(function ($request): bool {
             if ($request->method() !== 'POST' || ! str_contains($request->url(), '/v1/reservations')) {

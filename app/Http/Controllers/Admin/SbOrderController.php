@@ -198,24 +198,47 @@ class SbOrderController extends Controller
         }
 
         $this->xs2SandboxOrders->recordQueueDecision($sbOrder);
-        CreateXs2SandboxOrderFromSbOrder::dispatch($sbOrder->id);
+        CreateXs2SandboxOrderFromSbOrder::dispatchSync($sbOrder->id);
 
+        $sbOrder->refresh();
+        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
+
+        $syncLog = SbOrderXs2SyncLog::query()->where('sb_order_id', $sbOrder->id)->first();
+
+        if ($syncLog !== null && $syncLog->status === SbOrderXs2SyncLog::STATUS_FAILED) {
+            return response()->json([
+                'message' => $syncLog->error ?? 'XS2 order creation failed.',
+                'data' => new SbOrderResource($sbOrder),
+            ], 422);
+        }
+
+        if ($syncLog !== null && $syncLog->status === SbOrderXs2SyncLog::STATUS_SKIPPED) {
+            return response()->json([
+                'message' => $syncLog->skip_reason ?? 'XS2 order creation was skipped.',
+                'data' => new SbOrderResource($sbOrder),
+            ], 422);
+        }
+
+        if ($sbOrder->xs2Order === null || ! filled($sbOrder->xs2Order->xs2_booking_id)) {
+            return response()->json([
+                'message' => 'XS2 order creation did not complete.',
+                'data' => new SbOrderResource($sbOrder),
+            ], 422);
+        }
 
         $isSandbox = $this->apiEnvironment->xs2OrdersEnvironment() === ApiEnvironmentService::ENV_SANDBOX;
         $envLabel = $isSandbox ? 'sandbox' : 'production';
 
         return response()->json([
             'message' => sprintf(
-                'XS2 %s order creation queued for booking %s. Reservation and booking will complete in the background.',
+                'XS2 %s order %s created for booking %s.',
                 $envLabel,
+                $sbOrder->xs2Order->external_order_id,
                 $sbOrder->booking_no,
             ),
-            'data' => [
-                'queued' => true,
-                'sb_order' => new SbOrderResource($sbOrder),
-            ],
-        ], 202);
+            'data' => new SbOrderResource($sbOrder),
+        ]);
     }
 
     public function moveToXs2Order(SbOrder $sbOrder, SbOrderXs2GuestDataSyncService $guestData): JsonResponse

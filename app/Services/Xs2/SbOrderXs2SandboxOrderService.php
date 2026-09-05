@@ -467,7 +467,7 @@ class SbOrderXs2SandboxOrderService
 
     /**
      * Synchronous validation for manual Create XS2 order (mapping + net_rate).
-     * XS2 reservation/booking API calls run in CreateXs2SandboxOrderFromSbOrder.
+     * XS2 reservation/booking API calls run inline via dispatchSync on the manual admin endpoint.
      */
     public function resolveManualCreateSkipReason(SbOrder $order): ?string
     {
