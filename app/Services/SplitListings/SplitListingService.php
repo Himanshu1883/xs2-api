@@ -6,7 +6,9 @@ use App\Contracts\MarketplaceListingPublisher;
 use App\Jobs\DeleteXs2SellerListing;
 use App\Models\ListingSplit;
 use App\Models\ListingSplitActivity;
+use App\Models\EventMapping;
 use App\Models\Xs2Ticket;
+use App\Services\Currency\CurrencyConversionService;
 use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
 use App\Services\Xs2\ListingPublishValidator;
@@ -41,11 +43,17 @@ class SplitListingService
         private readonly Xs2TicketMappingStatusService $mappingStatuses,
         private readonly ListingPublishValidator $publishValidator,
         private readonly ?ListingSalesService $listingSales = null,
+        private readonly ?CurrencyConversionService $currencyConversion = null,
     ) {}
 
     private function listingSales(): ListingSalesService
     {
         return $this->listingSales ?? app(ListingSalesService::class);
+    }
+
+    private function currencyConversion(): CurrencyConversionService
+    {
+        return $this->currencyConversion ?? app(CurrencyConversionService::class);
     }
 
     /**
@@ -552,6 +560,10 @@ class SplitListingService
                 'split_order' => $split->split_order,
                 'quantity' => $split->quantity,
                 'price' => (float) $split->price,
+                'seller_price' => $ticket->xs2Event?->mapping
+                    ? $this->sellerMajorPriceForPlan($ticket, $ticket->xs2Event->mapping, (float) $split->price)
+                    : (float) $split->price,
+                'seller_currency' => $this->sellerCurrencyForTicket($ticket),
                 'seatsbroker_listing_id' => $split->seatsbroker_listing_id,
                 'xs2_listing_id' => $split->xs2ListingId(),
                 'status' => $split->status,
@@ -816,6 +828,9 @@ class SplitListingService
     private function buildPayload(Xs2Ticket $ticket, array $plan, string $reference, ?ListingSplit $split = null): array
     {
         $with = ['xs2Event.mapping'];
+        if (Schema::hasTable('match_info')) {
+            $with[] = 'xs2Event.mapping.event';
+        }
         if (Schema::hasTable('xs2_ticket_mapping_states')) {
             $with[] = 'mappingState.categoryMapping.details';
         }
@@ -850,10 +865,46 @@ class SplitListingService
 
         $payload['seller_reference'] = $reference;
         $payload['quantity'] = $remaining;
-        $payload['price'] = $this->sellerPriceFromMajor((float) $plan['price']);
+        $payload['price'] = $this->sellerPriceFromMajor(
+            $this->sellerMajorPriceForPlan($ticket, $mapping, (float) $plan['price'])
+        );
         $payload['status'] = $remaining > 0 ? '1' : '0';
 
         return $payload;
+    }
+
+    private function sellerMajorPriceForPlan(Xs2Ticket $ticket, EventMapping $mapping, float $planPriceMajor): float
+    {
+        $ticketCurrency = strtoupper(trim((string) ($ticket->currency_code ?? '')));
+        $eventCurrency = $this->currencyConversion()->eventCurrency($mapping);
+        $converter = $this->currencyConversion();
+
+        if ($ticketCurrency === '' || ! $converter->needsConversion($ticketCurrency, $eventCurrency)) {
+            return $planPriceMajor;
+        }
+
+        return $converter->convertMajor(
+            $planPriceMajor,
+            $ticketCurrency,
+            $converter->normalizeCurrency($eventCurrency) ?? $ticketCurrency,
+        );
+    }
+
+    private function sellerCurrencyForTicket(Xs2Ticket $ticket): ?string
+    {
+        $mapping = $ticket->xs2Event?->mapping;
+        if ($mapping === null) {
+            return $this->currencyConversion()->normalizeCurrency($ticket->currency_code);
+        }
+
+        $ticketCurrency = $this->currencyConversion()->normalizeCurrency($ticket->currency_code);
+        $eventCurrency = $this->currencyConversion()->eventCurrency($mapping);
+
+        if ($this->currencyConversion()->needsConversion((string) $ticketCurrency, $eventCurrency)) {
+            return $this->currencyConversion()->normalizeCurrency($eventCurrency);
+        }
+
+        return $ticketCurrency;
     }
 
     private function sellerPriceFromMajor(float $major): int|string

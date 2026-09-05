@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Services\Currency\CurrencyConversionService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -36,6 +37,7 @@ class Xs2TicketAdminResource extends JsonResource
             'package_price' => $this->minorToMajor($this->package_price, $divisor),
             'currency' => $this->currency_code,
             'net_rate' => $this->minorToMajor($this->net_rate, $divisor),
+            'seller_listing' => $this->sellerListingPreview($divisor),
             'mapping_status' => $mappingStatus,
             'mapping_error' => $this->mappingState?->mapping_error,
             'can_publish' => $mappingStates->isManualPublishable($mappingStatus)
@@ -73,5 +75,46 @@ class Xs2TicketAdminResource extends JsonResource
     private function minorToMajor(?int $amount, int $divisor): ?float
     {
         return $amount === null ? null : round($amount / $divisor, 2);
+    }
+
+    /** @return array<string, mixed>|null */
+    private function sellerListingPreview(int $divisor): ?array
+    {
+        $mapping = $this->xs2Event?->mapping;
+        if ($mapping === null) {
+            return null;
+        }
+
+        $converter = app(CurrencyConversionService::class);
+        $ticketCurrency = (string) ($this->currency_code ?? '');
+        $eventCurrency = $converter->eventCurrency($mapping);
+        $priceMajor = $this->minorToMajor(
+            $this->package_price ?? $this->net_rate ?? $this->face_value,
+            $divisor,
+        );
+
+        if ($priceMajor === null) {
+            return null;
+        }
+
+        $summary = $converter->conversionSummary($priceMajor, $ticketCurrency, $eventCurrency);
+        if ($summary === null) {
+            return [
+                'currency' => strtoupper(trim($ticketCurrency)),
+                'price' => $priceMajor,
+                'converted' => false,
+            ];
+        }
+
+        return [
+            'currency' => $summary['to_currency'],
+            'price' => $summary['converted_amount_major'],
+            'converted' => true,
+            'source' => [
+                'currency' => $summary['from_currency'],
+                'price' => $summary['original_amount_major'],
+                'rate' => $summary['rate'],
+            ],
+        ];
     }
 }

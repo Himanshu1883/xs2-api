@@ -7,6 +7,7 @@ use App\Models\EventMapping;
 use App\Models\Xs2CategoryMapping;
 use App\Models\Xs2Ticket;
 use App\Models\Xs2TicketMappingState;
+use App\Services\Currency\CurrencyConversionService;
 use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
 use Illuminate\Support\Facades\Cache;
@@ -19,6 +20,7 @@ class Xs2SellerListingTransformer
         private readonly SellerApiClient $sellerApi,
         private readonly ?ListingSalesService $listingSales = null,
         private readonly ?Xs2TextNormalizer $textNormalizer = null,
+        private readonly ?CurrencyConversionService $currencyConversion = null,
     ) {}
 
     private function listingSales(): ListingSalesService
@@ -29,6 +31,11 @@ class Xs2SellerListingTransformer
     private function textNormalizer(): Xs2TextNormalizer
     {
         return $this->textNormalizer ?? app(Xs2TextNormalizer::class);
+    }
+
+    private function currencyConversion(): CurrencyConversionService
+    {
+        return $this->currencyConversion ?? app(CurrencyConversionService::class);
     }
 
     /**
@@ -60,6 +67,12 @@ class Xs2SellerListingTransformer
             && ($mapping->xs2Event?->isSellable() ?? false);
         $listingPrice = (int) ($ticket->package_price ?? $ticket->net_rate ?? $ticket->face_value ?? 0);
         $faceValue = (int) ($ticket->face_value ?? $ticket->net_rate ?? 0);
+        [$listingPrice, $faceValue, $sellerCurrency] = $this->sellerPrices(
+            $ticket,
+            $mapping,
+            $listingPrice,
+            $faceValue,
+        );
 
         $categoryName = $this->required($ticket->category_name, 'XS2 inventory category name');
         $ticketCategoryId = $this->resolveTicketCategoryId($catalog, $categoryName, $matchId, $mappingState);
@@ -74,7 +87,7 @@ class Xs2SellerListingTransformer
             'ticket_block' => $this->ticketBlock($ticket, $mappingState),
             'ticket_row' => (string) data_get($ticket->options, 'ticket_row', ''),
             'home_town' => $this->homeTown($ticket, $mapping),
-            'price_type' => $this->required($ticket->currency_code, 'XS2 ticket currency'),
+            'price_type' => $sellerCurrency,
             'price' => $this->sellerAmount($listingPrice),
             'ticket_details' => $this->ticketDetails($ticket),
             'split_type' => $this->resolveSplitTypeId($catalog, $this->sellerSplitType($ticketForTransform)),
@@ -670,6 +683,33 @@ class Xs2SellerListingTransformer
         }
 
         return 'No Preferences';
+    }
+
+    /**
+     * @return array{0: int, 1: int, 2: string}
+     */
+    private function sellerPrices(
+        Xs2Ticket $ticket,
+        EventMapping $mapping,
+        int $listingPrice,
+        int $faceValue,
+    ): array {
+        $ticketCurrency = $this->required($ticket->currency_code, 'XS2 ticket currency');
+        $eventCurrency = $this->currencyConversion()->eventCurrency($mapping);
+        $converter = $this->currencyConversion();
+
+        if (! $converter->needsConversion($ticketCurrency, $eventCurrency)) {
+            return [$listingPrice, $faceValue, strtoupper(trim($ticketCurrency))];
+        }
+
+        $sellerCurrency = $converter->normalizeCurrency($eventCurrency)
+            ?? strtoupper(trim($ticketCurrency));
+
+        return [
+            $converter->convertMinorUnits($listingPrice, $ticketCurrency, $sellerCurrency),
+            $converter->convertMinorUnits($faceValue, $ticketCurrency, $sellerCurrency),
+            $sellerCurrency,
+        ];
     }
 
     private function sellerAmount(int $amount): int|string

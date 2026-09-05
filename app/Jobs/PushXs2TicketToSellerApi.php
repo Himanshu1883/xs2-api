@@ -71,13 +71,23 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
         ];
     }
 
+    /** @return list<string> */
+    private function ticketPublishRelations(): array
+    {
+        $with = ['xs2Event.mapping'];
+        if (Schema::hasTable('match_info')) {
+            $with[] = 'xs2Event.mapping.event';
+        }
+        if (Schema::hasTable('xs2_ticket_mapping_states')) {
+            $with[] = 'mappingState.categoryMapping.details';
+        }
+
+        return $with;
+    }
+
     public function handle(SellerApiClient $client, Xs2SellerListingTransformer $transformer, ListingPublishValidator $validator): void
     {
-        $query = Xs2Ticket::with('xs2Event.mapping');
-        if (Schema::hasTable('xs2_ticket_mapping_states')) {
-            $query->with('mappingState.categoryMapping.details');
-        }
-        $ticket = $query->findOrFail($this->ticketId);
+        $ticket = Xs2Ticket::with($this->ticketPublishRelations())->findOrFail($this->ticketId);
 
         // Split-enabled masters publish via SplitListingService, not the 1:1 path.
         if ($ticket->split_enabled) {

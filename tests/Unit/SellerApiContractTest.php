@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use App\Exceptions\Integrations\ListingTransformationException;
 use App\Exceptions\Integrations\SellerApiRequestException;
 use App\Models\EventMapping;
+use App\Models\MatchInfo;
 use App\Models\Xs2CategoryMapping;
 use App\Models\Xs2CategoryMappingDetail;
 use App\Models\Xs2Event;
@@ -896,6 +897,51 @@ class SellerApiContractTest extends TestCase
         $this->assertSame('EUR', $payload['price_type']);
         $this->assertSame(8, $payload['quantity']);
         $this->assertSame(2, $payload['ticket_type']);
+    }
+
+    public function test_transformer_converts_eur_ticket_price_to_gbp_for_gbp_only_event(): void
+    {
+        config()->set('currency.enabled', true);
+        config()->set('currency.rates.EUR.GBP', 81.67 / 95);
+
+        Cache::forget('seller-api:ticket-dropdown:9400');
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('ticketDropdown')->once()->with(9400)->andReturn([
+            'result' => [
+                'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                'category' => [['id' => 4, 'category_name' => 'Longside Upper Tier']],
+            ],
+        ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
+
+        $mapping = new EventMapping(['m_id' => 9400]);
+        $mapping->setRelation('event', new MatchInfo(['price_type' => 'GBP']));
+        $mapping->setRelation('xs2Event', new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => '2999-01-01 12:00:00',
+        ]));
+
+        $payload = $this->transformer($client)->transform(
+            new Xs2Ticket([
+                'external_ticket_id' => 'xs2-eur-gbp',
+                'ticket_type' => 'eticket',
+                'ticket_status' => 'available',
+                'stock' => 2,
+                'category_name' => 'Longside Upper Tier',
+                'currency_code' => 'EUR',
+                'net_rate' => 9500,
+                'face_value' => 9500,
+                'flags' => [],
+                'options' => [],
+            ]),
+            $mapping,
+            $this->mappedCategoryState(),
+        );
+
+        $this->assertSame('GBP', $payload['price_type']);
+        $this->assertSame('81.67', $payload['price']);
+        $this->assertSame('81.67', $payload['facevalue']);
     }
 
     public function test_transformer_maps_net_rate_to_seller_price_in_minor_units_when_configured(): void
