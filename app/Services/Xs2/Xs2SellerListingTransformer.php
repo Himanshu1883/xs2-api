@@ -695,7 +695,7 @@ class Xs2SellerListingTransformer
         int $faceValue,
     ): array {
         $ticketCurrency = $this->required($ticket->currency_code, 'XS2 ticket currency');
-        $eventCurrency = $this->currencyConversion()->eventCurrency($mapping);
+        $eventCurrency = $this->currencyConversion()->eventCurrency($mapping, $ticketCurrency);
         $converter = $this->currencyConversion();
 
         if (! $converter->needsConversion($ticketCurrency, $eventCurrency)) {

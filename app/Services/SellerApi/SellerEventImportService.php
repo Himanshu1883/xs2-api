@@ -301,7 +301,7 @@ class SellerEventImportService
                 'country' => $countryId !== null ? (string) $countryId : '',
                 'create_date' => now()->format('Y-m-d H:i:s'),
                 'event_type' => $eventType,
-                'price_type' => 'EUR',
+                'price_type' => $this->resolveImportPriceType($event),
                 'store_id' => 13,
                 'xs2event_id' => '',
                 'source_type' => '1boxoffice',
@@ -1166,5 +1166,18 @@ class SellerEventImportService
         }
 
         return $image !== '' ? $image : null;
+    }
+
+    /** @param  array<string, mixed>  $event */
+    private function resolveImportPriceType(array $event): string
+    {
+        foreach (['price_type', 'currency', 'currency_code', 'currency_type'] as $key) {
+            $value = $this->nullableString($event[$key] ?? null);
+            if ($value !== null && strlen(strtoupper($value)) === 3) {
+                return strtoupper($value);
+            }
+        }
+
+        return 'EUR';
     }
 }

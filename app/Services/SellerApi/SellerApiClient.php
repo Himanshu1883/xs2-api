@@ -13,6 +13,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class SellerApiClient
 {
@@ -142,6 +143,17 @@ class SellerApiClient
 
     public function createListing(array $payload, string $idempotencyKey): array
     {
+        Log::channel(config('services.seller_api.log_channel', 'stack'))->info(
+            'Seller API createListing payload currency fields.',
+            [
+                'match_id' => $payload['match_id'] ?? null,
+                'price_type' => $payload['price_type'] ?? null,
+                'price' => $payload['price'] ?? null,
+                'facevalue' => $payload['facevalue'] ?? null,
+                'seller_reference' => $payload['seller_reference'] ?? null,
+            ],
+        );
+
         $response = $this->send('POST', $this->endpoint('create_listing_endpoint'), $payload, [
             $this->setting('idempotency_key_header', 'Idempotency-Key') => $idempotencyKey,
         ], 'create_listing');

@@ -910,7 +910,7 @@ class SplitListingService
     private function sellerMajorPriceForPlan(Xs2Ticket $ticket, EventMapping $mapping, float $planPriceMajor): float
     {
         $ticketCurrency = strtoupper(trim((string) ($ticket->currency_code ?? '')));
-        $eventCurrency = $this->currencyConversion()->eventCurrency($mapping);
+        $eventCurrency = $this->currencyConversion()->eventCurrency($mapping, $ticketCurrency);
         $converter = $this->currencyConversion();
 
         if ($ticketCurrency === '' || ! $converter->needsConversion($ticketCurrency, $eventCurrency)) {
@@ -932,7 +932,7 @@ class SplitListingService
         }
 
         $ticketCurrency = $this->currencyConversion()->normalizeCurrency($ticket->currency_code);
-        $eventCurrency = $this->currencyConversion()->eventCurrency($mapping);
+        $eventCurrency = $this->currencyConversion()->eventCurrency($mapping, $ticketCurrency);
 
         if ($this->currencyConversion()->needsConversion((string) $ticketCurrency, $eventCurrency)) {
             return $this->currencyConversion()->normalizeCurrency($eventCurrency);

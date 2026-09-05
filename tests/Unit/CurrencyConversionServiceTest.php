@@ -7,7 +7,9 @@ use App\Models\EventMapping;
 use App\Models\MatchInfo;
 use App\Services\Currency\CurrencyConversionService;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
@@ -64,6 +66,49 @@ class CurrencyConversionServiceTest extends TestCase
         $this->assertSame('GBP', $this->service->eventCurrency($mapping));
 
         Schema::dropIfExists('match_info');
+    }
+
+    public function test_resolves_event_currency_from_ticket_dropdown_when_match_info_price_type_is_wrong(): void
+    {
+        Cache::flush();
+
+        config()->set('services.seller_api.enabled', true);
+        config()->set('services.seller_api.base_url', 'https://seller.test');
+        config()->set('services.seller_api.listing_base_url', 'https://seller.test');
+        config()->set('services.seller_api.api_key', 'seller-test-key');
+        config()->set('services.seller_api.api_key_header', 'apiKey');
+        config()->set('services.seller_api.ticket_dropdown_endpoint', '/api/ticket_dropdown');
+        config()->set('services.seller_api.seller_id', 77);
+
+        Http::fake(function ($request) {
+            if (str_contains($request->url(), 'ticket_dropdown')) {
+                return Http::response([
+                    'result' => [
+                        'currency' => [['currency_code' => 'GBP']],
+                    ],
+                ]);
+            }
+
+            return Http::response([], 404);
+        });
+
+        $mapping = new EventMapping(['m_id' => 5616]);
+        $mapping->setRelation('event', new MatchInfo(['price_type' => 'EUR']));
+
+        $this->assertSame('GBP', $this->service->eventCurrency($mapping, 'EUR'));
+    }
+
+    public function test_currency_codes_from_ticket_dropdown_response(): void
+    {
+        $codes = $this->service->currencyCodesFromTicketDropdown([
+            'result' => [
+                'currency' => [
+                    ['currency_code' => 'GBP'],
+                ],
+            ],
+        ]);
+
+        $this->assertSame(['GBP'], $codes);
     }
 
     public function test_throws_when_rate_is_missing(): void

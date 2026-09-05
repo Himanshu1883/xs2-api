@@ -4,17 +4,24 @@ namespace App\Services\Currency;
 
 use App\Exceptions\Integrations\ListingTransformationException;
 use App\Models\EventMapping;
+use App\Services\SellerApi\SellerApiClient;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 
 /**
  * Converts XS2 ticket prices to the currency required by a mapped SB event.
  *
- * Rates are read from config/currency.php (fixed config). When ticket currency
- * differs from match_info.price_type, listing publish paths convert before the
- * Seller API call while preserving the original XS2 price in the database.
+ * Rates are read from config/currency.php (fixed config). Event currency is
+ * resolved from the Seller API ticket_dropdown (authoritative for listing
+ * publish), then match_info.price_type, then mapping match_details.
  */
 class CurrencyConversionService
 {
+    public function __construct(
+        private readonly ?SellerApiClient $sellerApi = null,
+    ) {}
+
     public function isEnabled(): bool
     {
         return (bool) config('currency.enabled', true);
@@ -32,31 +39,20 @@ class CurrencyConversionService
     }
 
     /**
-     * Currency required by the mapped Seats Broker event (match_info.price_type).
+     * Currency required by the mapped Seats Broker event for listing publish.
      */
-    public function eventCurrency(EventMapping $mapping): ?string
+    public function eventCurrency(EventMapping $mapping, ?string $ticketCurrency = null): ?string
     {
-        if ($mapping->relationLoaded('event')) {
-            $fromEvent = $this->normalizeCurrency($mapping->event?->getAttribute('price_type'));
-            if ($fromEvent !== null) {
-                return $fromEvent;
+        if ($mapping->m_id) {
+            $fromDropdown = $this->eventCurrencyFromTicketDropdown((int) $mapping->m_id, $ticketCurrency);
+            if ($fromDropdown !== null) {
+                return $fromDropdown;
             }
         }
 
-        if ($mapping->m_id && Schema::hasTable('match_info')) {
-            $fromEvent = $this->normalizeCurrency(
-                $mapping->relationLoaded('event')
-                    ? $mapping->event?->getAttribute('price_type')
-                    : $mapping->event()->value('price_type')
-            );
-            if ($fromEvent === null && $mapping->relationLoaded('event')) {
-                $fromEvent = $this->normalizeCurrency(
-                    $mapping->event()->value('price_type')
-                );
-            }
-            if ($fromEvent !== null) {
-                return $fromEvent;
-            }
+        $fromMatchInfo = $this->eventCurrencyFromMatchInfo($mapping);
+        if ($fromMatchInfo !== null) {
+            return $fromMatchInfo;
         }
 
         $details = is_array($mapping->match_details) ? $mapping->match_details : [];
@@ -65,6 +61,105 @@ class CurrencyConversionService
             data_get($details, 'local_references.price_type')
                 ?? data_get($details, 'best_match.price_type')
         );
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function currencyCodesFromTicketDropdown(array $dropdown): array
+    {
+        $currencies = data_get($dropdown, 'result.currency');
+        if (! is_array($currencies)) {
+            $currencies = data_get($dropdown, 'currency');
+        }
+
+        $codes = [];
+        foreach ((array) $currencies as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $code = $this->normalizeCurrency(
+                data_get($entry, 'currency_code')
+                    ?? data_get($entry, 'price_type')
+                    ?? data_get($entry, 'currency')
+            );
+            if ($code !== null) {
+                $codes[] = $code;
+            }
+        }
+
+        return array_values(array_unique($codes));
+    }
+
+    private function eventCurrencyFromMatchInfo(EventMapping $mapping): ?string
+    {
+        if ($mapping->relationLoaded('event')) {
+            $fromEvent = $this->normalizeCurrency($mapping->event?->getAttribute('price_type'));
+            if ($fromEvent !== null) {
+                return $fromEvent;
+            }
+        }
+
+        if (! $mapping->m_id || ! Schema::hasTable('match_info')) {
+            return null;
+        }
+
+        $fromEvent = $this->normalizeCurrency(
+            $mapping->relationLoaded('event')
+                ? $mapping->event?->getAttribute('price_type')
+                : $mapping->event()->value('price_type')
+        );
+        if ($fromEvent === null && $mapping->relationLoaded('event')) {
+            $fromEvent = $this->normalizeCurrency(
+                $mapping->event()->value('price_type')
+            );
+        }
+
+        return $fromEvent;
+    }
+
+    private function eventCurrencyFromTicketDropdown(int $matchId, ?string $ticketCurrency = null): ?string
+    {
+        if (! config('services.seller_api.enabled', false)) {
+            return null;
+        }
+
+        try {
+            $dropdown = Cache::remember(
+                "seller-api:ticket-dropdown:{$matchId}",
+                now()->addHour(),
+                fn (): array => $this->sellerApi()->ticketDropdown($matchId),
+            );
+        } catch (\Throwable $exception) {
+            Log::channel(config('services.seller_api.log_channel', 'stack'))->info(
+                'Seller API ticket dropdown unavailable while resolving event currency.',
+                ['match_id' => $matchId, 'error' => mb_substr($exception->getMessage(), 0, 500)],
+            );
+
+            return null;
+        }
+
+        $codes = $this->currencyCodesFromTicketDropdown($dropdown);
+        if ($codes === []) {
+            return null;
+        }
+
+        if (count($codes) === 1) {
+            return $codes[0];
+        }
+
+        $ticket = $this->normalizeCurrency($ticketCurrency);
+        if ($ticket !== null && in_array($ticket, $codes, true)) {
+            return $ticket;
+        }
+
+        return $codes[0];
+    }
+
+    private function sellerApi(): SellerApiClient
+    {
+        return $this->sellerApi ?? app(SellerApiClient::class);
     }
 
     public function needsConversion(string $fromCurrency, ?string $toCurrency): bool

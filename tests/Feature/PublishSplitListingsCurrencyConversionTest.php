@@ -54,6 +54,7 @@ class PublishSplitListingsCurrencyConversionTest extends TestCase
                         'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
                         'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
                         'category' => [['id' => 4, 'category_name' => 'Longside Upper Tier']],
+                        'currency' => [['currency_code' => 'GBP']],
                     ],
                 ]);
             }
@@ -94,7 +95,59 @@ class PublishSplitListingsCurrencyConversionTest extends TestCase
         $this->assertSame('1', $payload['status'] ?? null);
     }
 
-    private function eurTicketOnGbpEvent(int $stock): Xs2Ticket
+    public function test_publish_split_listings_uses_ticket_dropdown_currency_when_match_info_price_type_is_wrong(): void
+    {
+        Cache::flush();
+
+        $capturedPayloads = [];
+        Http::fake(function ($request) use (&$capturedPayloads) {
+            if (str_contains($request->url(), 'ticket_dropdown')) {
+                return Http::response([
+                    'result' => [
+                        'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                        'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                        'category' => [['id' => 4, 'category_name' => 'Longside Upper Tier']],
+                        'currency' => [['currency_code' => 'GBP']],
+                    ],
+                ]);
+            }
+
+            $payload = [];
+            foreach ($request->data() as $part) {
+                if (is_array($part) && isset($part['name'])) {
+                    $payload[$part['name']] = $part['contents'];
+                }
+            }
+            $capturedPayloads[] = $payload;
+
+            return Http::response(['ticket_id' => 9000 + count($capturedPayloads)]);
+        });
+
+        $ticket = $this->eurTicketOnGbpEvent(stock: 2, matchInfoPriceType: 'EUR');
+
+        $job = new PublishSplitListings($ticket->id, [
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 0,
+            'base_price' => 257.0,
+        ]);
+        $job->handle(app(\App\Services\SplitListings\SplitListingService::class));
+
+        $this->assertNotEmpty($capturedPayloads, 'Expected Seller API createListing to be called.');
+        $payload = $capturedPayloads[0];
+        $expectedGbp = number_format(
+            app(CurrencyConversionService::class)->convertMajor(257.0, 'EUR', 'GBP'),
+            2,
+            '.',
+            ''
+        );
+
+        $this->assertSame('GBP', $payload['price_type'] ?? null);
+        $this->assertSame($expectedGbp, $payload['price'] ?? null);
+        $this->assertSame($expectedGbp, $payload['facevalue'] ?? null);
+    }
+
+    private function eurTicketOnGbpEvent(int $stock, ?string $matchInfoPriceType = 'GBP'): Xs2Ticket
     {
         $event = Xs2Event::query()->create([
             'external_event_id' => 'event-tottenham-everton',
@@ -115,7 +168,7 @@ class PublishSplitListingsCurrencyConversionTest extends TestCase
             'm_id' => 5616,
             'match_name' => 'Tottenham Hotspur vs Everton',
             'match_date' => now()->addWeek(),
-            'price_type' => 'GBP',
+            'price_type' => $matchInfoPriceType,
         ]);
 
         $mapping = EventMapping::query()->create([
