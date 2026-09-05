@@ -181,7 +181,7 @@ class QueueManagementService
             'rate_limit_per_minute' => max(1, (int) config('services.xs2.rate_limit_per_minute', config('xs2.rate_limit_per_minute', 30))),
             'worker_sleep_seconds' => max(1, (int) config('xs2.queue_worker_options.sleep', 3)),
             'profile' => $this->profiles->snapshot(),
-            'backpressure' => $this->backpressure->status(),
+            'backpressure' => $this->backpressure->snapshot(),
             'supervisor_config' => $this->profiles->supervisorConfig(),
             'recommended_worker_commands' => $this->recommendedWorkerCommands(),
             'worker_script' => 'bash scripts/run-queue-workers.sh',

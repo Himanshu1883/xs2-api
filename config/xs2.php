@@ -84,6 +84,11 @@ return [
     'queue_backpressure' => [
         'max_pending_jobs' => max(10, (int) env('QUEUE_MAX_PENDING_JOBS', 150)),
         'max_dispatch_per_run' => max(1, (int) env('QUEUE_MAX_DISPATCH_PER_RUN', 30)),
+        // seller-api is always excluded from global counts; publish crons use per-queue checks.
+        'exclude_from_global' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('QUEUE_BACKPRESSURE_EXCLUDE_FROM_GLOBAL', '')),
+        ))),
     ],
     'log_channel' => env('XS2_LOG_CHANNEL', 'stack'),
 

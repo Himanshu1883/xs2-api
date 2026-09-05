@@ -10,6 +10,11 @@ class RetryFailedSbListingPublishCommand extends Command
 {
     use RespectsQueueBackpressure;
 
+    protected function queueBackpressureScope(): ?string
+    {
+        return (string) config('services.seller_api.queue', 'seller-api');
+    }
+
     protected $signature = 'xs2:retry-failed-listing-publish
                             {--sync : Run publish jobs inline instead of queueing}
                             {--ticket= : Limit to one XS2 ticket id}

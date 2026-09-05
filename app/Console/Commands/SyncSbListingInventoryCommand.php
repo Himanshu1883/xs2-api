@@ -10,6 +10,11 @@ class SyncSbListingInventoryCommand extends Command
 {
     use RespectsQueueBackpressure;
 
+    protected function queueBackpressureScope(): ?string
+    {
+        return (string) config('services.seller_api.queue', 'seller-api');
+    }
+
     protected $signature = 'xs2:sync-sb-listing-inventory
                             {--sync : Run Seller API jobs inline instead of queueing}
                             {--ticket= : Limit to one XS2 ticket id}
