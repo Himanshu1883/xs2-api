@@ -2,11 +2,13 @@
 
 namespace App\Services\Xs2;
 
+use App\Models\EventMapping;
 use App\Models\ExternalListingMapping;
 use App\Services\Admin\ApiEnvironmentService;
 use App\Models\ListingSplit;
 use App\Models\SbOrder;
 use App\Models\SbOrderAttendee;
+use App\Models\Xs2Event;
 use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
 use App\Models\Xs2Ticket;
@@ -67,6 +69,11 @@ class SbOrderXs2SandboxOrderService
                 'skipped' => true,
                 'reason' => $this->existingOrderSkipReason(),
             ];
+        }
+
+        $linkedExisting = $this->linkExistingXs2Order($order, $existing);
+        if ($linkedExisting !== null) {
+            return $linkedExisting;
         }
 
         $ticket = $this->resolveMappedTicket($order);
@@ -297,6 +304,16 @@ class SbOrderXs2SandboxOrderService
 
     public function resolveMappedTicket(SbOrder $order): ?Xs2Ticket
     {
+        $ticket = $this->resolveMappedTicketFromListing($order);
+        if ($ticket !== null) {
+            return $ticket;
+        }
+
+        return $this->resolveMappedTicketFromEvent($order);
+    }
+
+    private function resolveMappedTicketFromListing(SbOrder $order): ?Xs2Ticket
+    {
         foreach ($this->marketplaceListingIds($order) as $listingId) {
             $mapping = ExternalListingMapping::query()
                 ->where('seller_listing_id', $listingId)
@@ -322,6 +339,20 @@ class SbOrderXs2SandboxOrderService
         }
 
         return null;
+    }
+
+    private function resolveMappedTicketFromEvent(SbOrder $order): ?Xs2Ticket
+    {
+        $event = $this->resolveXs2EventForSbOrder($order);
+        if ($event === null) {
+            return null;
+        }
+
+        $tickets = Xs2Ticket::query()
+            ->where('xs2_event_id', $event->id)
+            ->get();
+
+        return $this->selectBestTicketForSbOrder($order, $tickets);
     }
 
     /** @deprecated Use resolveMappedTicket() */
@@ -395,6 +426,11 @@ class SbOrderXs2SandboxOrderService
                     }
                 }
             }
+        }
+
+        $eventReason = $this->resolveEventTicketMappingSkipReason($order);
+        if ($eventReason !== null) {
+            return $eventReason;
         }
 
         return null;
@@ -550,6 +586,235 @@ class SbOrderXs2SandboxOrderService
         }
 
         return "Mapped XS2 ticket #{$ticket->id} from {$source} (seller_listing_id {$listingId}) is not eligible for XS2 order creation.";
+    }
+
+    /**
+     * Link an XS2 order that was synced from the XS2 API but not yet tied to this SB booking.
+     *
+     * @return array{
+     *     order: Xs2Order,
+     *     created: bool,
+     *     updated: bool,
+     *     skipped: bool,
+     *     reason: string|null
+     * }|null
+     */
+    private function linkExistingXs2Order(SbOrder $order, ?Xs2Order $existing): ?array
+    {
+        $unlinked = $this->findUnlinkedXs2OrderMatchingSbBooking($order);
+        if ($unlinked === null) {
+            return null;
+        }
+
+        DB::transaction(function () use ($order, $existing, $unlinked): void {
+            $unlinked->update(['sb_order_id' => $order->id]);
+
+            if (
+                $existing !== null
+                && $existing->id !== $unlinked->id
+                && (
+                    ! filled($existing->xs2_booking_id)
+                    || str_starts_with((string) $existing->external_order_id, 'sb-pending:')
+                )
+            ) {
+                $existing->delete();
+            }
+
+            $this->syncAttendees($unlinked, $order);
+        });
+
+        $this->syncLogs->recordSuccess($order->id, $unlinked->id);
+
+        return [
+            'order' => $unlinked->fresh(['attendees']),
+            'created' => false,
+            'updated' => true,
+            'skipped' => false,
+            'reason' => null,
+        ];
+    }
+
+    private function findUnlinkedXs2OrderMatchingSbBooking(SbOrder $order): ?Xs2Order
+    {
+        $bookingNo = $this->normalizedBookingReference($order->booking_no);
+        if ($bookingNo === null) {
+            return null;
+        }
+
+        $candidates = Xs2Order::query()
+            ->whereNull('sb_order_id')
+            ->where('is_sandbox', $this->isSandboxEnvironment())
+            ->whereNotNull('xs2_booking_id')
+            ->orderByDesc('id')
+            ->limit(100)
+            ->get();
+
+        foreach ($candidates as $candidate) {
+            if ($this->xs2OrderReferencesSbBooking($candidate, $bookingNo)) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private function xs2OrderReferencesSbBooking(Xs2Order $xs2Order, string $normalizedBookingNo): bool
+    {
+        foreach (['booking_reference', 'invoice_reference', 'payment_reference', 'external_reference_id', 'booking_code'] as $field) {
+            $reference = $this->normalizedBookingReference(data_get($xs2Order->raw_payload, $field));
+            if ($reference === $normalizedBookingNo) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function normalizedBookingReference(?string $value): ?string
+    {
+        $value = $this->nullableString($value);
+
+        return $value !== null ? mb_strtoupper($value) : null;
+    }
+
+    private function resolveXs2EventForSbOrder(SbOrder $order): ?Xs2Event
+    {
+        if ($order->match_id !== null) {
+            $mapping = EventMapping::query()
+                ->where('m_id', $order->match_id)
+                ->whereNotNull('xs2_event_id')
+                ->first();
+            if ($mapping !== null) {
+                $event = Xs2Event::query()->find($mapping->xs2_event_id);
+                if ($event !== null) {
+                    return $event;
+                }
+            }
+        }
+
+        $matchName = $this->nullableString($order->match_name);
+        if ($matchName === null) {
+            return null;
+        }
+
+        $normalizer = app(Xs2TextNormalizer::class);
+        $threshold = 80.0;
+        $best = null;
+        $bestScore = 0.0;
+
+        $query = Xs2Event::query();
+        if ($order->match_date !== null) {
+            $query->whereDate('date_start_local', $order->match_date);
+        }
+
+        foreach ($query->get() as $event) {
+            $score = $normalizer->similarity($matchName, $event->event_name);
+            if ($score >= $threshold && $score > $bestScore) {
+                $bestScore = $score;
+                $best = $event;
+            }
+        }
+
+        if ($best !== null) {
+            return $best;
+        }
+
+        if ($order->match_date === null) {
+            return null;
+        }
+
+        foreach (Xs2Event::query()->get() as $event) {
+            $score = $normalizer->similarity($matchName, $event->event_name);
+            if ($score < $threshold || $score <= $bestScore) {
+                continue;
+            }
+
+            if (
+                $event->date_start_local !== null
+                && $event->date_start_local->toDateString() === $order->match_date->toDateString()
+            ) {
+                $bestScore = $score;
+                $best = $event;
+            }
+        }
+
+        return $best;
+    }
+
+    /**
+     * @param  Collection<int, Xs2Ticket>  $tickets
+     */
+    private function selectBestTicketForSbOrder(SbOrder $order, Collection $tickets): ?Xs2Ticket
+    {
+        $eligible = $tickets->filter(fn (Xs2Ticket $ticket): bool => $this->isEligibleTicket($ticket));
+        if ($eligible->isEmpty()) {
+            return null;
+        }
+
+        $seatCategory = $this->nullableString($order->seat_category);
+        if ($seatCategory !== null) {
+            $normalizer = app(Xs2TextNormalizer::class);
+            $categoryMatch = $eligible->first(function (Xs2Ticket $ticket) use ($seatCategory, $normalizer): bool {
+                return $normalizer->similarity($seatCategory, $ticket->category_name) >= 80.0;
+            });
+            if ($categoryMatch !== null) {
+                return $categoryMatch;
+            }
+        }
+
+        foreach ($this->marketplaceListingIds($order) as $listingId) {
+            $mapped = $eligible->first(function (Xs2Ticket $ticket) use ($listingId): bool {
+                return ExternalListingMapping::query()
+                    ->where('xs2_ticket_id', $ticket->id)
+                    ->where('seller_listing_id', $listingId)
+                    ->exists();
+            });
+            if ($mapped !== null) {
+                return $mapped;
+            }
+        }
+
+        $withRate = $eligible
+            ->sortByDesc(fn (Xs2Ticket $ticket): int => (int) ($ticket->net_rate ?? 0))
+            ->first(fn (Xs2Ticket $ticket): bool => (int) ($ticket->net_rate ?? 0) > 0);
+
+        return $withRate ?? $eligible->first();
+    }
+
+    private function resolveEventTicketMappingSkipReason(SbOrder $order): ?string
+    {
+        $event = $this->resolveXs2EventForSbOrder($order);
+        if ($event === null) {
+            $matchName = $this->nullableString($order->match_name);
+            if ($matchName === null) {
+                return null;
+            }
+
+            return 'No XS2 event match found for SB order event "'.$matchName.'"'
+                .($order->match_date ? ' on '.$order->match_date->toDateString() : '')
+                .'.';
+        }
+
+        $tickets = Xs2Ticket::query()->where('xs2_event_id', $event->id)->get();
+        if ($tickets->isEmpty()) {
+            return 'XS2 event "'.$event->event_name.'" has no local tickets to map for manual order creation.';
+        }
+
+        $hasEligible = $tickets->contains(fn (Xs2Ticket $ticket): bool => $this->isEligibleTicket($ticket));
+        if ($hasEligible) {
+            return null;
+        }
+
+        foreach ($tickets as $ticket) {
+            $reason = $this->ticketIneligibleReason($ticket, 'xs2_events', (string) $event->external_event_id);
+            if ($reason !== null) {
+                return $reason;
+            }
+        }
+
+        return 'Mapped XS2 tickets for event "'.$event->event_name.'" are not eligible for '
+            .($this->isSandboxEnvironment() ? 'sandbox' : 'production')
+            .' order creation.';
     }
 
     private function resolveBookingEmail(SbOrder $order): string
