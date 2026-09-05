@@ -130,4 +130,49 @@ class CurrencyConversionServiceTest extends TestCase
         $this->assertSame(95.0, $summary['original_amount_major']);
         $this->assertSame(81.67, $summary['converted_amount_major']);
     }
+
+    public function test_converts_qar_to_usd_using_pegged_rate(): void
+    {
+        config()->set('currency.rates.QAR.USD', 1 / 3.64);
+
+        $this->assertSame(100.0, $this->service->convertMajor(364.0, 'QAR', 'USD'));
+        $this->assertSame(10000, $this->service->convertMinorUnits(36400, 'QAR', 'USD'));
+    }
+
+    public function test_converts_qar_to_usd_via_config_defaults(): void
+    {
+        config()->set('currency.rates', config('currency.rates'));
+
+        $this->assertSame(100.0, $this->service->convertMajor(364.0, 'QAR', 'USD'));
+    }
+
+    public function test_resolves_usd_event_currency_from_ticket_dropdown_for_qar_ticket(): void
+    {
+        Cache::flush();
+
+        config()->set('services.seller_api.enabled', true);
+        config()->set('services.seller_api.base_url', 'https://seller.test');
+        config()->set('services.seller_api.listing_base_url', 'https://seller.test');
+        config()->set('services.seller_api.api_key', 'seller-test-key');
+        config()->set('services.seller_api.api_key_header', 'apiKey');
+        config()->set('services.seller_api.ticket_dropdown_endpoint', '/api/ticket_dropdown');
+        config()->set('services.seller_api.seller_id', 77);
+
+        Http::fake(function ($request) {
+            if (str_contains($request->url(), 'ticket_dropdown')) {
+                return Http::response([
+                    'result' => [
+                        'currency' => [['currency_code' => 'USD']],
+                    ],
+                ]);
+            }
+
+            return Http::response([], 404);
+        });
+
+        $mapping = new EventMapping(['m_id' => 9001]);
+        $mapping->setRelation('event', new MatchInfo(['price_type' => 'QAR']));
+
+        $this->assertSame('USD', $this->service->eventCurrency($mapping, 'QAR'));
+    }
 }

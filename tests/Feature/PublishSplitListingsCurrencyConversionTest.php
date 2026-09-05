@@ -147,6 +147,126 @@ class PublishSplitListingsCurrencyConversionTest extends TestCase
         $this->assertSame($expectedGbp, $payload['facevalue'] ?? null);
     }
 
+    public function test_publish_split_listings_converts_qar_ticket_to_usd_for_usd_event(): void
+    {
+        Cache::flush();
+
+        $capturedPayloads = [];
+        Http::fake(function ($request) use (&$capturedPayloads) {
+            if (str_contains($request->url(), 'ticket_dropdown')) {
+                return Http::response([
+                    'result' => [
+                        'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                        'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                        'category' => [['id' => 4, 'category_name' => 'Longside Upper Tier']],
+                        'currency' => [['currency_code' => 'USD']],
+                    ],
+                ]);
+            }
+
+            $payload = [];
+            foreach ($request->data() as $part) {
+                if (is_array($part) && isset($part['name'])) {
+                    $payload[$part['name']] = $part['contents'];
+                }
+            }
+            $capturedPayloads[] = $payload;
+
+            return Http::response(['ticket_id' => 9000 + count($capturedPayloads)]);
+        });
+
+        $ticket = $this->qarTicketOnUsdEvent(stock: 2);
+
+        $job = new PublishSplitListings($ticket->id, [
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 0,
+            'base_price' => 364.0,
+        ]);
+        $job->handle(app(\App\Services\SplitListings\SplitListingService::class));
+
+        $this->assertNotEmpty($capturedPayloads, 'Expected Seller API createListing to be called.');
+        $payload = $capturedPayloads[0];
+        $expectedUsd = number_format(
+            app(CurrencyConversionService::class)->convertMajor(364.0, 'QAR', 'USD'),
+            2,
+            '.',
+            ''
+        );
+
+        $this->assertSame('USD', $payload['price_type'] ?? null);
+        $this->assertSame($expectedUsd, $payload['price'] ?? null);
+        $this->assertSame($expectedUsd, $payload['facevalue'] ?? null);
+    }
+
+    private function qarTicketOnUsdEvent(int $stock, ?string $matchInfoPriceType = 'USD'): Xs2Ticket
+    {
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'event-qar-usd',
+            'event_name' => 'Qatar Event',
+            'hometeam_name' => 'Home',
+            'event_status' => 'notstarted',
+            'date_start_local' => now()->addWeek(),
+            'raw_payload' => [],
+        ]);
+
+        Schema::table('match_info', function (Blueprint $table): void {
+            if (! Schema::hasColumn('match_info', 'price_type')) {
+                $table->string('price_type')->nullable();
+            }
+        });
+
+        \DB::table('match_info')->insert([
+            'm_id' => 9001,
+            'match_name' => 'Qatar Event',
+            'match_date' => now()->addWeek(),
+            'price_type' => $matchInfoPriceType,
+        ]);
+
+        $mapping = EventMapping::query()->create([
+            'xs2_event_id' => $event->id,
+            'm_id' => 9001,
+            'status' => 'mapped',
+        ]);
+
+        $categoryMapping = Xs2CategoryMapping::query()->create([
+            'status' => 'mapped',
+            'manually_confirmed' => true,
+            'stadium_seat_id' => 4,
+        ]);
+        Xs2CategoryMappingDetail::query()->create([
+            'xs2_category_mapping_id' => $categoryMapping->id,
+            'stadium_detail_id' => 1,
+            'stadium_seat_id' => 4,
+            'stadium_seat_name' => 'Longside Upper Tier',
+        ]);
+
+        $ticket = Xs2Ticket::query()->create([
+            'xs2_event_id' => $event->id,
+            'external_event_id' => $event->external_event_id,
+            'external_ticket_id' => 'ticket-9001-qar',
+            'ticket_status' => 'available',
+            'stock' => $stock,
+            'category_name' => 'Longside Upper Tier',
+            'ticket_type' => 'eticket',
+            'currency_code' => 'QAR',
+            'net_rate' => 36400,
+            'face_value' => 36400,
+            'flags' => [],
+            'options' => [],
+            'raw_payload' => [],
+        ]);
+
+        Xs2TicketMappingState::query()->create([
+            'xs2_ticket_id' => $ticket->id,
+            'event_mapping_id' => $mapping->id,
+            'xs2_category_mapping_id' => $categoryMapping->id,
+            'mapping_status' => 'ready_to_publish',
+        ]);
+
+        return $ticket->fresh(['xs2Event.mapping']);
+    }
+
     private function eurTicketOnGbpEvent(int $stock, ?string $matchInfoPriceType = 'GBP'): Xs2Ticket
     {
         $event = Xs2Event::query()->create([
