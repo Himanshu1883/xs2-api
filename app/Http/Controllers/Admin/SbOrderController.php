@@ -214,7 +214,13 @@ class SbOrderController extends Controller
             ], 422);
         }
 
-        if ($sbOrder->xs2Order === null || ! filled($sbOrder->xs2Order->xs2_booking_id)) {
+        if (
+            $sbOrder->xs2Order === null
+            || (
+                ! filled($sbOrder->xs2Order->xs2_booking_id)
+                && ! \App\Support\Xs2BookingOrderIdentity::orderHasResolvableBookingOrderId($sbOrder->xs2Order)
+            )
+        ) {
             return response()->json([
                 'message' => $result['reason'] ?? 'XS2 order creation did not complete.',
                 'data' => new SbOrderResource($sbOrder),

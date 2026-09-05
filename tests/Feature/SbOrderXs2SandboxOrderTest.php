@@ -1363,6 +1363,138 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_create_manual_links_synced_order_when_booking_id_only_in_external_order_id(): void
+    {
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_PRODUCTION,
+        );
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67678',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'quantity' => 1,
+            'match_name' => 'AS Roma vs Atalanta',
+            'match_date' => '2026-09-05',
+        ]);
+
+        Xs2Order::query()->create([
+            'external_order_id' => 'sb-pending:1BX67678',
+            'is_sandbox' => false,
+            'sb_order_id' => $sbOrder->id,
+            'order_status' => 'failed',
+            'order_status_text' => 'XS2 sync failed',
+            'sandbox_sync_error' => 'XS2 booking failed.',
+            'synced_at' => now()->subHour(),
+        ]);
+
+        $syncedOrder = Xs2Order::query()->create([
+            'external_order_id' => '7d4c92fa89544519bc81d664c09c1c39_bkn',
+            'is_sandbox' => false,
+            'sb_order_id' => null,
+            'xs2_booking_id' => null,
+            'xs2_bookingorder_id' => null,
+            'event_name' => 'AS Roma vs Atalanta',
+            'event_date' => '2026-09-05',
+            'quantity' => 1,
+            'order_status' => 'completed',
+            'raw_payload' => [
+                'booking_reference' => '1BX67678',
+            ],
+            'synced_at' => now(),
+        ]);
+
+        Http::fake();
+
+        $result = app(SbOrderXs2SandboxOrderService::class)->createFromSbOrder($sbOrder);
+
+        $this->assertTrue($result['linked'] ?? false);
+        $this->assertSame($syncedOrder->id, $result['order']?->id);
+        $this->assertDatabaseHas('xs2_orders', [
+            'id' => $syncedOrder->id,
+            'sb_order_id' => $sbOrder->id,
+        ]);
+        $this->assertDatabaseMissing('xs2_orders', [
+            'external_order_id' => 'sb-pending:1BX67678',
+        ]);
+
+        Http::assertNothingSent();
+    }
+
+    public function test_create_manual_links_by_unique_match_id_when_event_name_is_date_tbc(): void
+    {
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_PRODUCTION,
+        );
+
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'production-event-roma-atalanta',
+            'event_name' => 'AS Roma vs Atalanta',
+            'sport_type' => 'soccer',
+            'event_status' => 'closed',
+            'date_start_local' => '2026-09-05 20:45:00',
+            'raw_payload' => [],
+        ]);
+
+        \App\Models\EventMapping::query()->create([
+            'xs2_event_id' => $event->id,
+            'm_id' => 9064,
+            'status' => 'mapped',
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67678',
+            'booking_status' => SbOrder::STATUS_COMPLETED,
+            'booking_status_text' => 'Delivered',
+            'match_id' => 9064,
+            'quantity' => 1,
+            'match_name' => 'AS Roma vs Atalanta',
+            'match_date' => '2026-09-05',
+        ]);
+
+        Xs2Order::query()->create([
+            'external_order_id' => 'sb-pending:1BX67678',
+            'is_sandbox' => false,
+            'sb_order_id' => $sbOrder->id,
+            'order_status' => 'failed',
+            'sandbox_sync_error' => 'XS2 reservation failed.',
+            'synced_at' => now()->subHour(),
+        ]);
+
+        $syncedOrder = Xs2Order::query()->create([
+            'external_order_id' => '7d4c92fa89544519bc81d664c09c1c39_bkn',
+            'is_sandbox' => false,
+            'sb_order_id' => null,
+            'xs2_booking_id' => null,
+            'xs2_bookingorder_id' => '7d4c92fa89544519bc81d664c09c1c39_bko',
+            'external_event_id' => 'production-event-roma-atalanta',
+            'event_name' => 'Date TBC',
+            'quantity' => 1,
+            'order_status' => 'completed',
+            'raw_payload' => [],
+            'synced_at' => now(),
+        ]);
+
+        Http::fake();
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
+            ->assertOk()
+            ->assertJsonPath('data.xs2_order.id', $syncedOrder->id);
+
+        $this->assertDatabaseHas('xs2_orders', [
+            'id' => $syncedOrder->id,
+            'sb_order_id' => $sbOrder->id,
+        ]);
+        $this->assertDatabaseMissing('xs2_orders', [
+            'external_order_id' => 'sb-pending:1BX67678',
+        ]);
+
+        Http::assertNothingSent();
+    }
+
     public function test_manual_create_endpoint_returns_linked_message(): void
     {
         app(IntegrationSettingService::class)->set(

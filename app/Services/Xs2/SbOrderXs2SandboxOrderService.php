@@ -862,6 +862,7 @@ class SbOrderXs2SandboxOrderService
             ->merge($this->queryUnlinkedXs2OrdersByPendingExternalPattern($normalizedBookingNo))
             ->merge($this->queryUnlinkedXs2OrdersByEventMatch($order))
             ->merge($this->queryUnlinkedXs2OrdersByMatchId($order))
+            ->merge($this->queryUnlinkedXs2OrdersByUniqueMatchEvent($order))
             ->merge($this->queryUnlinkedXs2OrdersByBuyerEmail($order))
             ->merge($this->queryUnlinkedXs2OrdersByTicketMapping($order))
             ->merge($this->queryUnlinkedXs2OrdersByQuantityAmount($order));
@@ -876,7 +877,14 @@ class SbOrderXs2SandboxOrderService
     {
         $query = Xs2Order::query()
             ->whereNull('sb_order_id')
-            ->whereNotNull('xs2_booking_id')
+            ->where(function ($query): void {
+                $query->whereNotNull('xs2_booking_id')
+                    ->orWhereNotNull('xs2_bookingorder_id')
+                    ->orWhere(function ($query): void {
+                        $query->whereNotNull('external_order_id')
+                            ->where('external_order_id', 'not like', Xs2BookingOrderIdentity::PENDING_EXTERNAL_ORDER_PREFIX.'%');
+                    });
+            })
             ->where(function ($query): void {
                 $query->where('external_order_id', 'not like', Xs2BookingOrderIdentity::PENDING_EXTERNAL_ORDER_PREFIX.'%')
                     ->orWhereNull('external_order_id');
@@ -1008,9 +1016,45 @@ class SbOrderXs2SandboxOrderService
             return collect();
         }
 
+        $externalEventId = (string) $event->external_event_id;
+
         return $this->unlinkedXs2OrdersBaseQuery()
-            ->where('external_event_id', $event->external_event_id)
+            ->where(function ($query) use ($externalEventId): void {
+                $query->where('external_event_id', $externalEventId)
+                    ->orWhere('raw_payload->event_id', $externalEventId)
+                    ->orWhere('raw_payload->external_event_id', $externalEventId);
+            })
             ->get();
+    }
+
+    /**
+     * When exactly one unlinked completed XS2 order exists for the SB match/event, link it.
+     *
+     * @return Collection<int, Xs2Order>
+     */
+    private function queryUnlinkedXs2OrdersByUniqueMatchEvent(SbOrder $order): Collection
+    {
+        if ($order->match_id === null) {
+            return collect();
+        }
+
+        $event = $this->resolveXs2EventForSbOrder($order);
+        if ($event === null || ! filled($event->external_event_id)) {
+            return collect();
+        }
+
+        $externalEventId = (string) $event->external_event_id;
+        $candidates = $this->unlinkedXs2OrdersBaseQuery()
+            ->where('order_status', 'completed')
+            ->where(function ($query) use ($externalEventId): void {
+                $query->where('external_event_id', $externalEventId)
+                    ->orWhere('raw_payload->event_id', $externalEventId)
+                    ->orWhere('raw_payload->external_event_id', $externalEventId);
+            })
+            ->when((int) ($order->quantity ?? 0) > 0, fn ($query) => $query->where('quantity', (int) $order->quantity))
+            ->get();
+
+        return $candidates->count() === 1 ? $candidates : collect();
     }
 
     /** @return Collection<int, Xs2Order> */
@@ -1155,6 +1199,10 @@ class SbOrderXs2SandboxOrderService
             return true;
         }
 
+        if ($this->xs2OrderMatchesSbUniqueMatchEvent($xs2Order, $order)) {
+            return true;
+        }
+
         $pendingId = Xs2BookingOrderIdentity::pendingExternalOrderId($normalizedBookingNo);
         if ($this->nullableString($xs2Order->external_order_id) === $pendingId) {
             return false;
@@ -1200,6 +1248,10 @@ class SbOrderXs2SandboxOrderService
             return false;
         }
 
+        if ($this->xs2OrderMatchesSbEventViaMapping($xs2Order, $order)) {
+            return $this->xs2OrderMatchesSbEventDate($xs2Order, $order);
+        }
+
         $matchName = $this->nullableString($order->match_name);
         $eventName = $this->nullableString($xs2Order->event_name);
         if ($matchName === null || $eventName === null || $order->match_date === null) {
@@ -1211,8 +1263,77 @@ class SbOrderXs2SandboxOrderService
             return false;
         }
 
-        return $xs2Order->event_date !== null
-            && $xs2Order->event_date->toDateString() === $order->match_date->toDateString();
+        return $this->xs2OrderMatchesSbEventDate($xs2Order, $order);
+    }
+
+    private function xs2OrderMatchesSbEventViaMapping(Xs2Order $xs2Order, SbOrder $order): bool
+    {
+        if ($order->match_id === null) {
+            return false;
+        }
+
+        $event = $this->resolveXs2EventForSbOrder($order);
+        if ($event === null || ! filled($event->external_event_id)) {
+            return false;
+        }
+
+        $externalEventId = (string) $event->external_event_id;
+        if ($this->nullableString($xs2Order->external_event_id) === $externalEventId) {
+            return true;
+        }
+
+        $payloadEventId = $this->nullableString(
+            data_get($xs2Order->raw_payload, 'event_id')
+                ?? data_get($xs2Order->raw_payload, 'external_event_id'),
+        );
+
+        return $payloadEventId === $externalEventId;
+    }
+
+    private function xs2OrderMatchesSbEventDate(Xs2Order $xs2Order, SbOrder $order): bool
+    {
+        if ($order->match_date === null) {
+            return false;
+        }
+
+        if (
+            $xs2Order->event_date !== null
+            && $xs2Order->event_date->toDateString() === $order->match_date->toDateString()
+        ) {
+            return true;
+        }
+
+        if ((int) $order->booking_status === SbOrder::STATUS_COMPLETED && $order->match_date->isPast()) {
+            return true;
+        }
+
+        return $xs2Order->event_date === null && $order->match_date->isPast();
+    }
+
+    private function xs2OrderMatchesSbUniqueMatchEvent(Xs2Order $xs2Order, SbOrder $order): bool
+    {
+        if ($order->match_id === null) {
+            return false;
+        }
+
+        if (mb_strtolower((string) ($xs2Order->order_status ?? '')) !== 'completed') {
+            return false;
+        }
+
+        $candidates = $this->queryUnlinkedXs2OrdersByUniqueMatchEvent($order);
+        if ($candidates->count() !== 1) {
+            return false;
+        }
+
+        $candidate = $candidates->first();
+        if ($candidate === null || $candidate->id !== $xs2Order->id) {
+            return false;
+        }
+
+        $sbQty = (int) ($order->quantity ?? 0);
+        $xs2Qty = (int) ($xs2Order->quantity ?? 0);
+
+        return $sbQty < 1 || $xs2Qty < 1 || $sbQty === $xs2Qty;
     }
 
     private function xs2OrderMatchesSbBuyerEmail(Xs2Order $xs2Order, SbOrder $order): bool
