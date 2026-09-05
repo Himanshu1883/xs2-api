@@ -423,6 +423,8 @@ class Xs2InventoryController extends Controller
             ->where(fn ($query) => $query->whereNull('stock')->orWhere('stock', '<=', 0))
             ->count();
 
+        $withStockNotPublished = $this->countWithStockNotPublishedOnSb($scoped);
+
         $lowStock = (clone $scoped)
             ->where('stock', '>', 0)
             ->where('stock', '<=', $lowStockMax)
@@ -471,6 +473,7 @@ class Xs2InventoryController extends Controller
                 'published_ticket_qty' => $publishedTicketQty,
                 'pending' => max(0, $total - $published),
                 'no_stock' => $noStock,
+                'with_stock_not_published' => $withStockNotPublished,
                 'low_stock' => $lowStock,
                 'errors' => $errors,
                 'low_stock_max' => $lowStockMax,
@@ -479,6 +482,33 @@ class Xs2InventoryController extends Controller
                 'sb_split_listings' => $splitSbListings,
             ],
         ]);
+    }
+
+    /**
+     * Unpublished XS2 listings that still have stock but are not live on SeatsBroker
+     * (no active master or split seller listing id).
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\Xs2Ticket>  $scoped
+     */
+    private function countWithStockNotPublishedOnSb($scoped): int
+    {
+        return (clone $scoped)
+            ->where('stock', '>', 0)
+            ->where(function ($query): void {
+                $query->whereDoesntHave('listingMapping', fn ($mapping) => $mapping
+                    ->where('provider', 'xs2event')
+                    ->where('status', 'active')
+                    ->whereNotNull('seller_listing_id'),
+                );
+
+                if (Schema::hasTable('listing_splits')) {
+                    $query->whereDoesntHave('listingSplits', fn ($split) => $split
+                        ->where('status', 'active')
+                        ->whereNotNull('seatsbroker_listing_id'),
+                    );
+                }
+            })
+            ->count();
     }
 
     /** @param  \Illuminate\Database\Eloquent\Builder<\App\Models\Xs2Ticket>  $query */

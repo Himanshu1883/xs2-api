@@ -567,6 +567,7 @@ class Xs2InventoryMappingTest extends TestCase
                     'published_ticket_qty',
                     'pending',
                     'no_stock',
+                    'with_stock_not_published',
                     'low_stock',
                     'errors',
                     'low_stock_max',
@@ -580,6 +581,8 @@ class Xs2InventoryMappingTest extends TestCase
             ->assertJsonPath('data.published', 0)
             ->assertJsonPath('data.published_ticket_qty', 0)
             ->assertJsonPath('data.pending', 1)
+            ->assertJsonPath('data.with_stock_not_published', 1)
+            ->assertJsonPath('data.no_stock', 0)
             ->assertJsonStructure([
                 'data' => [
                     'total',
@@ -587,6 +590,7 @@ class Xs2InventoryMappingTest extends TestCase
                     'published_ticket_qty',
                     'pending',
                     'no_stock',
+                    'with_stock_not_published',
                     'low_stock',
                     'errors',
                     'low_stock_max',
