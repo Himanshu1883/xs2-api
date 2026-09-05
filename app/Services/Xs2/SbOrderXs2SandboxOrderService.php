@@ -215,6 +215,18 @@ class SbOrderXs2SandboxOrderService
         } catch (\Throwable $exception) {
             $message = mb_substr($exception->getMessage(), 0, 2000);
 
+            $unlinkedMatch = $this->findUnlinkedXs2OrderMatchingSbBooking($order);
+            if ($unlinkedMatch !== null) {
+                $linkedExisting = $this->linkExistingSyncedXs2Order($order, $existing, $unlinkedMatch);
+                if ($linkedExisting !== null) {
+                    return $linkedExisting;
+                }
+            }
+
+            if ($existing === null) {
+                $existing = $this->existingOrder($order);
+            }
+
             if ($existing === null) {
                 $existing = Xs2Order::query()->create([
                     'external_order_id' => $this->pendingExternalOrderId($order),

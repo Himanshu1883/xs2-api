@@ -212,6 +212,15 @@ class Xs2OrderSyncService
                 $attributes['external_order_id'] = $externalId;
             }
 
+            $sbOrderId = $attributes['sb_order_id'] ?? null;
+            if (
+                $sbOrderId !== null
+                && $existing !== null
+                && ! Xs2BookingOrderIdentity::orderHasPendingBookingOrderId($existing)
+            ) {
+                $this->deletePendingPlaceholdersForSbOrder($sbOrderId, $existing->id);
+            }
+
             if ($existing === null) {
                 $order = Xs2Order::query()->create([
                     'external_order_id' => $externalId,
@@ -526,6 +535,15 @@ class Xs2OrderSyncService
         }
 
         return number_format($amount, 2, '.', '');
+    }
+
+    private function deletePendingPlaceholdersForSbOrder(int $sbOrderId, int $keepOrderId): void
+    {
+        Xs2Order::query()
+            ->where('sb_order_id', $sbOrderId)
+            ->where('id', '!=', $keepOrderId)
+            ->where('external_order_id', 'like', Xs2BookingOrderIdentity::PENDING_EXTERNAL_ORDER_PREFIX.'%')
+            ->delete();
     }
 
     private function nullableDate(mixed $value): ?string
