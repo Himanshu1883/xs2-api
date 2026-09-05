@@ -172,7 +172,13 @@ class Xs2OrderEticketService
             return $this->sandbox->fetchBookingOrder($bookingOrderId);
         }
 
-        return $this->client->getBookingOrder($bookingOrderId);
+        if (! $this->client->isOrdersConfigured()) {
+            throw new \RuntimeException(
+                'XS2 production order API is not configured. Set XS2_BASE_URL and XS2_API_KEY in .env (or Admin → API Config).',
+            );
+        }
+
+        return $this->client->getBookingOrderViaOrdersApi($bookingOrderId);
     }
 
     /** @return array<string, mixed> */
@@ -182,7 +188,13 @@ class Xs2OrderEticketService
             return $this->sandbox->fetchBooking($bookingId);
         }
 
-        return $this->client->getBooking($bookingId);
+        if (! $this->client->isOrdersConfigured()) {
+            throw new \RuntimeException(
+                'XS2 production order API is not configured. Set XS2_BASE_URL and XS2_API_KEY in .env (or Admin → API Config).',
+            );
+        }
+
+        return $this->client->getBookingViaOrdersApi($bookingId);
     }
 
     /**
@@ -200,7 +212,13 @@ class Xs2OrderEticketService
             ];
         }
 
-        $response = $this->client->downloadEticketPdf($bookingOrderId, $orderItemId, $downloadLink);
+        if (! $this->client->isOrdersConfigured()) {
+            throw new \RuntimeException(
+                'XS2 production order API is not configured. Set XS2_BASE_URL and XS2_API_KEY in .env (or Admin → API Config).',
+            );
+        }
+
+        $response = $this->client->downloadEticketPdfViaOrdersApi($bookingOrderId, $orderItemId, $downloadLink);
 
         return [
             'status' => $response['status'],

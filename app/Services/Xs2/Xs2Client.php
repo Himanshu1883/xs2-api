@@ -402,6 +402,17 @@ class Xs2Client
         );
     }
 
+    /** @return array<string, mixed> */
+    public function getBookingViaOrdersApi(string $bookingId): array
+    {
+        return $this->sendOrders(
+            'GET',
+            $this->endpoint('booking_detail_endpoint', ['booking_id' => $bookingId]),
+            [],
+            'get_booking_orders',
+        );
+    }
+
     /**
      * @param  array<string, mixed>  $payload
      * @return array{
@@ -508,6 +519,73 @@ class Xs2Client
 
         $this->debugger->record(
             'download_eticket',
+            'GET',
+            $url,
+            $requestHeaders,
+            [
+                'bookingorder_id' => $bookingOrderId,
+                'orderitem_id' => $orderItemId,
+                'download_link' => $downloadLink,
+            ],
+            $response,
+        );
+
+        if (! $response->successful()) {
+            $json = $response->json();
+
+            throw Xs2RequestException::fromHttpResponse(
+                $response->status(),
+                is_array($json) ? $json : null,
+                $url,
+            );
+        }
+
+        $body = $response->body();
+        if ($body === '') {
+            throw new Xs2ResponseException('XS2 e-ticket response was empty.');
+        }
+
+        return [
+            'status' => $response->status(),
+            'body' => $body,
+            'headers' => $response->headers(),
+        ];
+    }
+
+    /**
+     * Download a single e-ticket PDF via the Create Order API host/credentials.
+     *
+     * @return array{status: int, body: string, headers: array<string, list<string>>}
+     */
+    public function downloadEticketPdfViaOrdersApi(string $bookingOrderId, string $orderItemId, string $downloadLink): array
+    {
+        foreach (['base_url', 'api_key'] as $key) {
+            if (blank($this->ordersSetting($key))) {
+                throw new Xs2ConfigurationException('XS2 orders API is not configured.');
+            }
+        }
+
+        $uri = $this->endpoint('eticket_download_endpoint', [
+            'bookingorder_id' => $bookingOrderId,
+            'orderitem_id' => $orderItemId,
+            'url' => $downloadLink,
+        ]);
+        $url = $this->ordersAbsoluteUrl($uri);
+        $requestHeaders = $this->ordersRequestHeaders();
+
+        try {
+            $response = Http::baseUrl(rtrim((string) $this->ordersSetting('base_url'), '/'))
+                ->withHeaders($requestHeaders)
+                ->accept('application/pdf, application/octet-stream, */*')
+                ->connectTimeout((int) $this->setting('connect_timeout', 10))
+                ->timeout((int) $this->setting('timeout', 30))
+                ->get($uri);
+        } catch (ConnectionException) {
+            throw new Xs2RequestException('XS2 e-ticket request could not connect.');
+        }
+
+        $this->debugger->record(
+            'download_eticket_orders',
             'GET',
             $url,
             $requestHeaders,

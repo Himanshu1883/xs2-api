@@ -10,6 +10,7 @@ use App\Models\Xs2Event;
 use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
 use App\Models\Xs2Ticket;
+use App\Services\Admin\IntegrationSettingService;
 use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
 use Illuminate\Support\Facades\Artisan;
@@ -216,6 +217,69 @@ class AdminOrderAttendeeWorkflowTest extends TestCase
             ->assertOk()
             ->assertHeader('Content-Type', 'application/pdf')
             ->assertHeader('Content-Disposition', 'attachment; filename="ticket-abc.pdf"');
+
+        $xs2Order->refresh();
+        $this->assertNotNull($xs2Order->eticket_fetched_at);
+        $this->assertTrue((bool) data_get($xs2Order->xs2_eticket_response, 'success'));
+    }
+
+    public function test_get_ticket_downloads_pdf_from_production_xs2_orders_api(): void
+    {
+        config()->set('xs2.base_url', 'https://api.xs2.test');
+        config()->set('xs2.api_key', 'production-key');
+        config()->set('xs2.bookingorder_detail_endpoint', '/v1/bookingorders/{bookingorder_id}');
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill(['is_sandbox' => false])->save();
+        Xs2OrderAttendee::query()->create([
+            'xs2_order_id' => $xs2Order->id,
+            'position' => 0,
+            'first_name' => 'Jane',
+            'last_name' => 'Doe',
+        ]);
+
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID => Http::response([
+                'bookingorder_id' => self::BOOKINGORDER_ID,
+                'logistic_status' => 'completed',
+                'items' => [[
+                    'ticket_id' => self::TICKET_ID,
+                    'orderitem_id' => 'orderitem-1',
+                    'distribution_channel' => 'xs2event',
+                    'download_link' => 'ticket-abc.pdf',
+                ]],
+            ]),
+            'https://api.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-1/url/ticket-abc.pdf' => Http::response(
+                '%PDF-1.4 production-workflow-ticket',
+                200,
+                [
+                    'Content-Type' => 'application/pdf',
+                    'Content-Disposition' => 'attachment; filename="ticket-abc.pdf"',
+                ],
+            ),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->post("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket")
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf')
+            ->assertHeader('Content-Disposition', 'attachment; filename="ticket-abc.pdf"');
+
+        Http::assertSent(fn ($request): bool => str_contains($request->url(), 'https://api.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID));
+        Http::assertSent(fn ($request): bool => str_contains(
+            $request->url(),
+            'https://api.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-1/url/ticket-abc.pdf',
+        ));
 
         $xs2Order->refresh();
         $this->assertNotNull($xs2Order->eticket_fetched_at);
