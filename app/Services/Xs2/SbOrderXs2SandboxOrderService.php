@@ -72,9 +72,19 @@ class SbOrderXs2SandboxOrderService
             ];
         }
 
-        $linkedExisting = $this->linkExistingXs2Order($order, $existing);
-        if ($linkedExisting !== null) {
-            return $linkedExisting;
+        if ($this->isPendingLinkedXs2Order($existing) || $this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
+            $linkedExisting = $this->linkExistingSyncedXs2Order($order, $existing);
+            if ($linkedExisting !== null) {
+                return $linkedExisting;
+            }
+        }
+
+        if ($this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
+            return $this->skip(
+                $existing,
+                'A matching synced XS2 order exists but could not be linked.',
+                $order,
+            );
         }
 
         $ticket = $this->resolveMappedTicket($order);
@@ -476,13 +486,18 @@ class SbOrderXs2SandboxOrderService
      */
     public function resolveManualCreateSkipReason(SbOrder $order): ?string
     {
-        $reason = $this->resolveQueueSkipReason($order);
-        if ($reason !== null) {
-            return $reason;
+        $existing = $this->existingOrder($order);
+        if ($existing !== null && filled($existing->xs2_booking_id)) {
+            return $this->existingOrderSkipReason();
         }
 
         if ($this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
             return null;
+        }
+
+        $reason = $this->resolveQueueSkipReason($order);
+        if ($reason !== null) {
+            return $reason;
         }
 
         $ticket = $this->resolveMappedTicket($order);
@@ -705,7 +720,32 @@ class SbOrderXs2SandboxOrderService
      *     reason: string|null
      * }|null
      */
-    private function linkExistingXs2Order(SbOrder $order, ?Xs2Order $existing): ?array
+    private function isPendingLinkedXs2Order(?Xs2Order $order): bool
+    {
+        if ($order === null) {
+            return false;
+        }
+
+        if (filled($order->xs2_booking_id)) {
+            return false;
+        }
+
+        return Xs2BookingOrderIdentity::isPendingExternalOrderId($order->external_order_id)
+            || $order->sb_order_id !== null;
+    }
+
+    /**
+     * Link an XS2 order that was synced from the XS2 API but not yet tied to this SB booking.
+     *
+     * @return array{
+     *     order: Xs2Order,
+     *     created: bool,
+     *     updated: bool,
+     *     skipped: bool,
+     *     reason: string|null
+     * }|null
+     */
+    private function linkExistingSyncedXs2Order(SbOrder $order, ?Xs2Order $existing): ?array
     {
         $unlinked = $this->findUnlinkedXs2OrderMatchingSbBooking($order);
         if ($unlinked === null) {
@@ -747,20 +787,48 @@ class SbOrderXs2SandboxOrderService
             return null;
         }
 
-        $candidates = Xs2Order::query()
-            ->whereNull('sb_order_id')
-            ->where('is_sandbox', $this->isSandboxEnvironment())
-            ->whereNotNull('xs2_booking_id')
-            ->orderByDesc('id')
-            ->limit(100)
-            ->get();
-
-        $matches = $candidates
+        $matches = $this->queryUnlinkedXs2OrdersByBookingReference($bookingNo)
             ->filter(fn (Xs2Order $candidate): bool => $this->xs2OrderReferencesSbBooking($candidate, $bookingNo))
             ->sortByDesc(fn (Xs2Order $candidate): int => $this->linkExistingOrderPriority($candidate))
             ->values();
 
         return $matches->first();
+    }
+
+    /** @return Collection<int, Xs2Order> */
+    private function queryUnlinkedXs2OrdersByBookingReference(string $normalizedBookingNo): Collection
+    {
+        $baseQuery = Xs2Order::query()
+            ->whereNull('sb_order_id')
+            ->where('is_sandbox', $this->isSandboxEnvironment())
+            ->whereNotNull('xs2_booking_id');
+
+        $referenceFields = [
+            'booking_reference',
+            'invoice_reference',
+            'payment_reference',
+            'external_reference_id',
+            'booking_code',
+        ];
+
+        $candidates = (clone $baseQuery)
+            ->where(function ($query) use ($referenceFields, $normalizedBookingNo): void {
+                foreach ($referenceFields as $field) {
+                    $path = 'raw_payload->'.$field;
+                    $query->orWhere($path, $normalizedBookingNo)
+                        ->orWhere($path, mb_strtolower($normalizedBookingNo));
+                }
+            })
+            ->get();
+
+        if ($candidates->isNotEmpty()) {
+            return $candidates;
+        }
+
+        return (clone $baseQuery)
+            ->orderByDesc('id')
+            ->limit(500)
+            ->get();
     }
 
     private function linkExistingOrderPriority(Xs2Order $order): int
