@@ -29,12 +29,6 @@ class Xs2OrderEticketService
      */
     public function fetchTicket(Xs2Order $xs2Order): array
     {
-        $xs2Order->loadMissing('attendees');
-
-        if ($xs2Order->attendees->isEmpty()) {
-            throw new \RuntimeException('Move attendee details onto this XS2 order before getting a ticket.');
-        }
-
         $bookingOrderId = $this->nullableString($xs2Order->xs2_bookingorder_id)
             ?? $this->nullableString($xs2Order->external_order_id);
         $bookingId = $this->nullableString($xs2Order->xs2_booking_id);

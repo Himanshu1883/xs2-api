@@ -286,15 +286,71 @@ class AdminOrderAttendeeWorkflowTest extends TestCase
         $this->assertTrue((bool) data_get($xs2Order->xs2_eticket_response, 'success'));
     }
 
-    public function test_get_ticket_requires_attendees(): void
+    public function test_get_ticket_requires_bookingorder_id(): void
     {
         $sbOrder = $this->seedLinkedOrder(withAttendees: true);
         $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill([
+            'xs2_bookingorder_id' => null,
+            'xs2_booking_id' => null,
+            'external_order_id' => '',
+        ])->save();
 
         $this->withToken($this->adminToken())
             ->postJson("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket")
             ->assertStatus(422)
-            ->assertJsonPath('message', 'Move attendee details onto this XS2 order before getting a ticket.');
+            ->assertJsonPath('message', 'This XS2 order is missing a bookingorder_id, so a ticket cannot be fetched yet.');
+    }
+
+    public function test_get_ticket_works_without_local_attendees_when_bookingorder_id_present(): void
+    {
+        config()->set('xs2.base_url', 'https://api.xs2.test');
+        config()->set('xs2.api_key', 'production-key');
+        config()->set('xs2.bookingorder_detail_endpoint', '/v1/bookingorders/{bookingorder_id}');
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill(['is_sandbox' => false])->save();
+        Xs2OrderAttendee::query()->where('xs2_order_id', $xs2Order->id)->delete();
+
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID => Http::response([
+                'bookingorder_id' => self::BOOKINGORDER_ID,
+                'logistic_status' => 'completed',
+                'items' => [[
+                    'ticket_id' => self::TICKET_ID,
+                    'orderitem_id' => 'orderitem-1',
+                    'distribution_channel' => 'xs2event',
+                    'download_link' => 'ticket-abc.pdf',
+                ]],
+            ]),
+            'https://api.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-1/url/ticket-abc.pdf' => Http::response(
+                '%PDF-1.4 production-no-attendees',
+                200,
+                [
+                    'Content-Type' => 'application/pdf',
+                    'Content-Disposition' => 'attachment; filename="ticket-abc.pdf"',
+                ],
+            ),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->post("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket")
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf');
+
+        $xs2Order->refresh();
+        $this->assertNotNull($xs2Order->eticket_fetched_at);
+        $this->assertTrue((bool) data_get($xs2Order->xs2_eticket_response, 'success'));
     }
 
     private function seedLinkedOrder(bool $withAttendees): SbOrder

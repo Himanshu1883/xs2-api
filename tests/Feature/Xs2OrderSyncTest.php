@@ -6,6 +6,7 @@ use App\Models\SbOrder;
 use App\Models\SbOrderAttendee;
 use App\Models\User;
 use App\Models\Xs2Order;
+use App\Models\Xs2OrderAttendee;
 use App\Jobs\SyncXs2OrdersJob;
 use App\Services\Admin\ApiEnvironmentService;
 use App\Services\Admin\IntegrationSettingService;
@@ -306,6 +307,50 @@ class Xs2OrderSyncTest extends TestCase
             ->assertJsonPath('data.environment', 'production')
             ->assertJsonPath('data.is_sandbox', false)
             ->assertJsonPath('data.endpoint', '/v1/bookingorders');
+    }
+
+    public function test_sync_preserves_existing_attendees_when_bookingorders_payload_has_no_guests(): void
+    {
+        $order = Xs2Order::query()->create([
+            'external_order_id' => self::PRODUCTION_BOOKINGORDER_ID,
+            'xs2_bookingorder_id' => self::PRODUCTION_BOOKINGORDER_ID,
+            'xs2_booking_id' => self::PRODUCTION_BOOKING_ID,
+            'is_sandbox' => false,
+            'order_status' => 'completed',
+            'quantity' => 1,
+        ]);
+
+        Xs2OrderAttendee::query()->create([
+            'xs2_order_id' => $order->id,
+            'position' => 0,
+            'first_name' => 'Jane',
+            'last_name' => 'Doe',
+            'email' => 'jane@example.com',
+        ]);
+
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders*' => Http::response([
+                'bookingorders' => [[
+                    'bookingorder_id' => self::PRODUCTION_BOOKINGORDER_ID,
+                    'booking_id' => self::PRODUCTION_BOOKING_ID,
+                    'logistic_status' => 'completed',
+                    'items' => [[
+                        'ticket_id' => 'production-ticket-sync_tck',
+                        'quantity' => 1,
+                    ]],
+                ]],
+                'pagination' => ['total_pages' => 1],
+            ]),
+        ]);
+
+        app(Xs2OrderSyncService::class)->sync();
+
+        $this->assertDatabaseHas('xs2_order_attendees', [
+            'xs2_order_id' => $order->id,
+            'first_name' => 'Jane',
+            'last_name' => 'Doe',
+            'email' => 'jane@example.com',
+        ]);
     }
 
     public function test_sync_job_surfaces_upstream_xs2_401_with_actionable_message(): void

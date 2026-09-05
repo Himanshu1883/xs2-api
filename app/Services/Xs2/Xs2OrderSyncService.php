@@ -220,26 +220,28 @@ class Xs2OrderSyncService
                 $summary['updated'] = (int) $summary['updated'] + 1;
             }
 
-            Xs2OrderAttendee::query()->where('xs2_order_id', $order->id)->delete();
+            if ($attendees !== []) {
+                Xs2OrderAttendee::query()->where('xs2_order_id', $order->id)->delete();
 
-            $position = 0;
-            foreach ($attendees as $attendee) {
-                Xs2OrderAttendee::query()->create([
-                    'xs2_order_id' => $order->id,
-                    'position' => $position,
-                    'first_name' => $this->nullableString($attendee['first_name'] ?? $attendee['firstname'] ?? null),
-                    'last_name' => $this->nullableString($attendee['last_name'] ?? $attendee['lastname'] ?? null),
-                    'dob' => $this->nullableString($attendee['dob'] ?? $attendee['date_of_birth'] ?? null),
-                    'nationality' => $this->nullableString($attendee['nationality'] ?? $attendee['country_of_residence'] ?? null),
-                    'province' => $this->nullableString($attendee['province'] ?? $attendee['state'] ?? null),
-                    'email' => $this->nullableString($attendee['email'] ?? null),
-                    'phone' => $this->nullableString($attendee['phone'] ?? $attendee['mobile'] ?? null),
-                    'passport' => $this->nullableString($attendee['passport'] ?? $attendee['passport_number'] ?? null),
-                    'gender' => $this->nullableString($attendee['gender'] ?? null),
-                    'raw_payload' => $attendee,
-                ]);
-                $position++;
-                $summary['attendees'] = (int) $summary['attendees'] + 1;
+                $position = 0;
+                foreach ($attendees as $attendee) {
+                    Xs2OrderAttendee::query()->create([
+                        'xs2_order_id' => $order->id,
+                        'position' => $position,
+                        'first_name' => $this->nullableString($attendee['first_name'] ?? $attendee['firstname'] ?? null),
+                        'last_name' => $this->nullableString($attendee['last_name'] ?? $attendee['lastname'] ?? null),
+                        'dob' => $this->nullableString($attendee['dob'] ?? $attendee['date_of_birth'] ?? null),
+                        'nationality' => $this->nullableString($attendee['nationality'] ?? $attendee['country_of_residence'] ?? null),
+                        'province' => $this->nullableString($attendee['province'] ?? $attendee['state'] ?? null),
+                        'email' => $this->nullableString($attendee['email'] ?? null),
+                        'phone' => $this->nullableString($attendee['phone'] ?? $attendee['mobile'] ?? null),
+                        'passport' => $this->nullableString($attendee['passport'] ?? $attendee['passport_number'] ?? null),
+                        'gender' => $this->nullableString($attendee['gender'] ?? null),
+                        'raw_payload' => $attendee,
+                    ]);
+                    $position++;
+                    $summary['attendees'] = (int) $summary['attendees'] + 1;
+                }
             }
         });
     }
