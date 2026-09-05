@@ -522,6 +522,68 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         Http::assertNothingSent();
     }
 
+    public function test_create_manual_replaces_sb_pending_with_existing_synced_order(): void
+    {
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_PRODUCTION,
+        );
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67678',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'quantity' => 1,
+            'match_name' => 'AS Roma vs Atalanta',
+            'match_date' => '2026-09-05',
+        ]);
+
+        $pendingOrder = Xs2Order::query()->create([
+            'external_order_id' => 'sb-pending:1BX67678',
+            'is_sandbox' => false,
+            'sb_order_id' => $sbOrder->id,
+            'order_status' => 'failed',
+            'order_status_text' => 'XS2 sync failed',
+            'sandbox_sync_error' => 'XS2 booking failed.',
+            'synced_at' => now()->subHour(),
+        ]);
+
+        $syncedOrder = Xs2Order::query()->create([
+            'external_order_id' => '7d4c92fa89544519bc81d664c09c1c39_bko',
+            'is_sandbox' => false,
+            'sb_order_id' => null,
+            'xs2_booking_id' => '7d4c92fa89544519bc81d664c09c1c39_bkn',
+            'xs2_bookingorder_id' => '7d4c92fa89544519bc81d664c09c1c39_bko',
+            'event_name' => 'AS Roma vs Atalanta',
+            'quantity' => 1,
+            'order_status' => 'completed',
+            'raw_payload' => [
+                'booking_reference' => '1BX67678',
+                'booking_id' => '7d4c92fa89544519bc81d664c09c1c39_bkn',
+                'bookingorder_id' => '7d4c92fa89544519bc81d664c09c1c39_bko',
+            ],
+            'synced_at' => now(),
+        ]);
+
+        $result = app(SbOrderXs2SandboxOrderService::class)->createFromSbOrder($sbOrder);
+
+        $this->assertFalse($result['skipped']);
+        $this->assertTrue($result['updated']);
+        $this->assertFalse($result['created']);
+        $this->assertSame($syncedOrder->id, $result['order']?->id);
+        $this->assertDatabaseMissing('xs2_orders', ['id' => $pendingOrder->id]);
+        $this->assertDatabaseHas('xs2_orders', [
+            'id' => $syncedOrder->id,
+            'sb_order_id' => $sbOrder->id,
+            'external_order_id' => '7d4c92fa89544519bc81d664c09c1c39_bko',
+            'order_status' => 'completed',
+        ]);
+        $this->assertSame(1, Xs2Order::query()->where('sb_order_id', $sbOrder->id)->count());
+
+        Http::fake();
+        Http::assertNothingSent();
+    }
+
     public function test_resolve_mapped_ticket_falls_back_to_past_event_by_name_and_date(): void
     {
         app(IntegrationSettingService::class)->set(

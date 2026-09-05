@@ -705,8 +705,6 @@ class SbOrderXs2SandboxOrderService
         }
 
         DB::transaction(function () use ($order, $existing, $unlinked): void {
-            $unlinked->update(['sb_order_id' => $order->id]);
-
             if (
                 $existing !== null
                 && $existing->id !== $unlinked->id
@@ -717,6 +715,8 @@ class SbOrderXs2SandboxOrderService
             ) {
                 $existing->delete();
             }
+
+            $unlinked->update(['sb_order_id' => $order->id]);
 
             $this->syncAttendees($unlinked, $order);
         });
@@ -747,13 +747,31 @@ class SbOrderXs2SandboxOrderService
             ->limit(100)
             ->get();
 
-        foreach ($candidates as $candidate) {
-            if ($this->xs2OrderReferencesSbBooking($candidate, $bookingNo)) {
-                return $candidate;
-            }
+        $matches = $candidates
+            ->filter(fn (Xs2Order $candidate): bool => $this->xs2OrderReferencesSbBooking($candidate, $bookingNo))
+            ->sortByDesc(fn (Xs2Order $candidate): int => $this->linkExistingOrderPriority($candidate))
+            ->values();
+
+        return $matches->first();
+    }
+
+    private function linkExistingOrderPriority(Xs2Order $order): int
+    {
+        $priority = 0;
+
+        if (Xs2BookingOrderIdentity::orderHasResolvableBookingOrderId($order)) {
+            $priority += 1_000;
         }
 
-        return null;
+        if (mb_strtolower((string) ($order->order_status ?? '')) === 'completed') {
+            $priority += 100;
+        }
+
+        if (filled($order->xs2_booking_id)) {
+            $priority += 10;
+        }
+
+        return ($priority * 1_000_000) + (int) $order->id;
     }
 
     private function xs2OrderReferencesSbBooking(Xs2Order $xs2Order, string $normalizedBookingNo): bool
