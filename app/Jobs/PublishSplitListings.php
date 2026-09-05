@@ -9,6 +9,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class PublishSplitListings implements ShouldBeUniqueUntilProcessing, ShouldQueue
 {
@@ -46,7 +47,12 @@ class PublishSplitListings implements ShouldBeUniqueUntilProcessing, ShouldQueue
 
     public function handle(SplitListingService $splits): void
     {
-        $ticket = Xs2Ticket::query()->with('xs2Event.mapping')->findOrFail($this->ticketId);
+        $with = ['xs2Event.mapping'];
+        if (Schema::hasTable('match_info')) {
+            $with[] = 'xs2Event.mapping.event';
+        }
+
+        $ticket = Xs2Ticket::query()->with($with)->findOrFail($this->ticketId);
         $ticket->refresh();
 
         // Stock can drop to zero between queue time and job execution (inventory sync,

@@ -41,10 +41,19 @@ class CurrencyConversionService
             if ($fromEvent !== null) {
                 return $fromEvent;
             }
-        } elseif ($mapping->m_id && Schema::hasTable('match_info')) {
+        }
+
+        if ($mapping->m_id && Schema::hasTable('match_info')) {
             $fromEvent = $this->normalizeCurrency(
-                $mapping->event()->value('price_type')
+                $mapping->relationLoaded('event')
+                    ? $mapping->event?->getAttribute('price_type')
+                    : $mapping->event()->value('price_type')
             );
+            if ($fromEvent === null && $mapping->relationLoaded('event')) {
+                $fromEvent = $this->normalizeCurrency(
+                    $mapping->event()->value('price_type')
+                );
+            }
             if ($fromEvent !== null) {
                 return $fromEvent;
             }

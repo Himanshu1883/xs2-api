@@ -865,10 +865,44 @@ class SplitListingService
 
         $payload['seller_reference'] = $reference;
         $payload['quantity'] = $remaining;
-        $payload['price'] = $this->sellerPriceFromMajor(
-            $this->sellerMajorPriceForPlan($ticket, $mapping, (float) $plan['price'])
-        );
+        $payload = $this->applySellerMonetaryFields($ticket, $mapping, $payload, $plan);
         $payload['status'] = $remaining > 0 ? '1' : '0';
+
+        return $payload;
+    }
+
+    /**
+     * Split listings use per-split plan prices (not the master ticket net_rate).
+     * Always align price_type, price, and facevalue to the mapped SB event currency.
+     *
+     * @param  array{split_order: int, quantity: int, price: float}  $plan
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function applySellerMonetaryFields(
+        Xs2Ticket $ticket,
+        EventMapping $mapping,
+        array $payload,
+        array $plan,
+    ): array {
+        $planPriceMajor = (float) $plan['price'];
+        $convertedPlanMajor = $this->sellerMajorPriceForPlan($ticket, $mapping, $planPriceMajor);
+        $sellerCurrency = $this->sellerCurrencyForTicket($ticket);
+
+        if ($sellerCurrency !== null) {
+            $payload['price_type'] = $sellerCurrency;
+        }
+
+        $payload['price'] = $this->sellerPriceFromMajor($convertedPlanMajor);
+
+        $divisor = max(1, (int) config('services.xs2.minor_unit_divisor', 100));
+        $faceMinor = (int) ($ticket->face_value ?? $ticket->net_rate ?? 0);
+        $faceMajor = $faceMinor > 0
+            ? $faceMinor / $divisor
+            : $planPriceMajor;
+        $payload['facevalue'] = $this->sellerPriceFromMajor(
+            $this->sellerMajorPriceForPlan($ticket, $mapping, $faceMajor)
+        );
 
         return $payload;
     }

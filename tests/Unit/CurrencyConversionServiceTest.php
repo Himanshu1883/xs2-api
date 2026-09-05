@@ -6,6 +6,9 @@ use App\Exceptions\Integrations\ListingTransformationException;
 use App\Models\EventMapping;
 use App\Models\MatchInfo;
 use App\Services\Currency\CurrencyConversionService;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
 
 class CurrencyConversionServiceTest extends TestCase
@@ -45,6 +48,22 @@ class CurrencyConversionServiceTest extends TestCase
         $mapping->setRelation('event', new MatchInfo(['price_type' => 'GBP']));
 
         $this->assertSame('GBP', $this->service->eventCurrency($mapping));
+    }
+
+    public function test_resolves_event_currency_from_match_info_when_event_relation_loaded_as_null(): void
+    {
+        Schema::create('match_info', function (Blueprint $table): void {
+            $table->increments('m_id');
+            $table->string('price_type')->nullable();
+        });
+        DB::table('match_info')->insert(['m_id' => 456, 'price_type' => 'GBP']);
+
+        $mapping = new EventMapping(['m_id' => 456]);
+        $mapping->setRelation('event', null);
+
+        $this->assertSame('GBP', $this->service->eventCurrency($mapping));
+
+        Schema::dropIfExists('match_info');
     }
 
     public function test_throws_when_rate_is_missing(): void

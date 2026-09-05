@@ -965,11 +965,13 @@ class SplitListingServiceTest extends TestCase
         array $transformBase,
         int $quantity,
         float $priceMajor,
+        float $faceMajor = 100.0,
     ): string {
         $payload = array_merge($transformBase, [
             'seller_reference' => $sellerReference,
             'quantity' => $quantity,
             'price' => number_format($priceMajor, 2, '.', ''),
+            'facevalue' => number_format($faceMajor, 2, '.', ''),
             'status' => '1',
         ]);
         ksort($payload);
