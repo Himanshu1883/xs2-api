@@ -108,19 +108,11 @@ class AdminOrderAttendeeWorkflowTest extends TestCase
         ]);
     }
 
-    public function test_push_guest_data_requires_xs2_attendees_and_persists_log(): void
+    public function test_push_guest_data_auto_copies_sb_attendees_and_persists_log(): void
     {
         $sbOrder = $this->seedLinkedOrder(withAttendees: true);
         $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
-
-        $this->withToken($this->adminToken())
-            ->postJson("/api/admin/xs2-orders/{$xs2Order->id}/push-guest-data")
-            ->assertStatus(422)
-            ->assertJsonPath('message', 'Move attendee details onto this XS2 order first.');
-
-        $this->withToken($this->adminToken())
-            ->postJson("/api/admin/sb-orders/{$sbOrder->id}/move-to-xs2")
-            ->assertOk();
+        Xs2OrderAttendee::query()->where('xs2_order_id', $xs2Order->id)->delete();
 
         Http::fake([
             'https://sandbox.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID.'/guestdata*' => Http::sequence()

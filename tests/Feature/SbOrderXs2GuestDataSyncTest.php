@@ -47,11 +47,12 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
         Queue::fake();
 
         $sbOrder = $this->seedLinkedOrder(withAttendees: false);
-        Xs2Order::query()->where('sb_order_id', $sbOrder->id)->update([
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill([
             'xs2_bookingorder_id' => self::BOOKINGORDER_ID,
             'xs2_booking_id' => 'xs2-booking-guest-sync',
             'external_ticket_id' => self::TICKET_ID,
-        ]);
+        ])->save();
 
         $client = Mockery::mock(SellerApiClient::class);
         $client->shouldReceive('fetchBookings')
@@ -78,7 +79,7 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
         app(SellerBookingSyncService::class, [
             'client' => $client,
             'listingSales' => $listingSales,
-        ])->sync();
+        ])->syncOrder($sbOrder->fresh(), true);
 
         $sbOrder->refresh();
         $this->assertNotNull($sbOrder->attendee_fetched_at);
@@ -87,6 +88,12 @@ class SbOrderXs2GuestDataSyncTest extends TestCase
             'first_name' => 'Jane',
             'last_name' => 'Doe',
         ]);
+        $this->assertDatabaseHas('xs2_order_attendees', [
+            'xs2_order_id' => $xs2Order->id,
+            'first_name' => 'Jane',
+            'last_name' => 'Doe',
+        ]);
+        $this->assertNotNull($xs2Order->fresh()->attendees_copied_from_sb_at);
         Queue::assertNotPushed(SyncXs2OrderGuestDataFromSbOrder::class);
         Queue::assertNotPushed(\App\Jobs\CreateXs2SandboxOrderFromSbOrder::class);
     }

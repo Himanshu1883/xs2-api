@@ -23,6 +23,7 @@ class SellerBookingSyncService
         private readonly SellerApiClient $client,
         private readonly ListingSalesService $listingSales,
         private readonly SbOrderXs2SandboxOrderService $xs2SandboxOrders,
+        private readonly SbOrderXs2GuestDataSyncService $guestDataSync,
     ) {}
 
     /**
@@ -428,6 +429,8 @@ class SellerBookingSyncService
         if ($updates !== []) {
             $order->forceFill($updates)->save();
         }
+
+        $this->guestDataSync->ensureLinkedXs2OrderHasSbAttendees($order->fresh(['attendees', 'xs2Order']));
     }
 
     /** @return list<string> */

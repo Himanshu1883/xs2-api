@@ -8,6 +8,7 @@ use App\Models\SbOrder;
 use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
 use App\Services\Admin\ApiEnvironmentService;
+use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -23,6 +24,7 @@ class Xs2OrderSyncService
         private readonly ApiEnvironmentService $apiEnvironment,
         private readonly Xs2Client $client,
         private readonly Xs2SandboxService $sandbox,
+        private readonly SbOrderXs2GuestDataSyncService $guestDataSync,
     ) {}
 
     /**
@@ -241,6 +243,11 @@ class Xs2OrderSyncService
                     ]);
                     $position++;
                     $summary['attendees'] = (int) $summary['attendees'] + 1;
+                }
+            } elseif ($order->sb_order_id !== null) {
+                $sbOrder = SbOrder::query()->with(['attendees', 'xs2Order'])->find($order->sb_order_id);
+                if ($sbOrder !== null) {
+                    $this->guestDataSync->ensureLinkedXs2OrderHasSbAttendees($sbOrder);
                 }
             }
         });

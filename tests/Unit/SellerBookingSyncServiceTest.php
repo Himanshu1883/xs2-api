@@ -6,6 +6,7 @@ use App\Models\SbOrder;
 use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
 use App\Services\SellerApi\SellerBookingSyncService;
+use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
 use App\Services\Xs2\SbOrderXs2SandboxOrderService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -56,8 +57,9 @@ class SellerBookingSyncServiceTest extends TestCase
 
         $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
         $xs2SandboxOrders->shouldReceive('queueIfEligible')->once()->andReturn(false);
+        $xs2SandboxOrders->shouldReceive('recordQueueDecision')->once();
 
-        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders, $this->guestDataSyncMock());
         $refreshed = $service->syncOrder(SbOrder::query()->where('booking_no', 'SB-100')->firstOrFail());
 
         $this->assertSame(SbOrder::STATUS_CONFIRMED, $refreshed->booking_status);
@@ -85,7 +87,7 @@ class SellerBookingSyncServiceTest extends TestCase
         $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
         $xs2SandboxOrders->shouldIgnoreMissing();
 
-        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders, $this->guestDataSyncMock());
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessage('Booking SB-404 was not found in Seller API response.');
@@ -122,8 +124,9 @@ class SellerBookingSyncServiceTest extends TestCase
 
         $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
         $xs2SandboxOrders->shouldReceive('queueIfEligible')->once()->andReturn(false);
+        $xs2SandboxOrders->shouldReceive('recordQueueDecision')->once();
 
-        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders, $this->guestDataSyncMock());
         $refreshed = $service->fetchAttendees($order, false);
 
         $this->assertNotNull($refreshed->attendee_fetched_at);
@@ -163,8 +166,9 @@ class SellerBookingSyncServiceTest extends TestCase
 
         $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
         $xs2SandboxOrders->shouldReceive('queueIfEligible')->once()->andReturn(false);
+        $xs2SandboxOrders->shouldReceive('recordQueueDecision')->once();
 
-        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders, $this->guestDataSyncMock());
         $refreshed = $service->fetchAttendees($order, true);
 
         $this->assertSame('Grace', $refreshed->attendees->first()?->first_name);
@@ -186,7 +190,7 @@ class SellerBookingSyncServiceTest extends TestCase
         $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
         $xs2SandboxOrders->shouldIgnoreMissing();
 
-        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders, $this->guestDataSyncMock());
         $summary = $service->sync();
 
         $this->assertSame('failed', $summary['status']);
@@ -225,8 +229,9 @@ class SellerBookingSyncServiceTest extends TestCase
 
         $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
         $xs2SandboxOrders->shouldReceive('queueIfEligible')->once()->andReturn(false);
+        $xs2SandboxOrders->shouldReceive('recordQueueDecision')->once();
 
-        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders);
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders, $this->guestDataSyncMock());
         $summary = $service->sync();
 
         $this->assertSame('completed', $summary['status']);
@@ -234,6 +239,14 @@ class SellerBookingSyncServiceTest extends TestCase
         $this->assertSame(1, $summary['fetched']);
         $this->assertSame(1, $summary['created']);
         $this->assertTrue(SbOrder::query()->where('booking_no', 'SB-300')->exists());
+    }
+
+    private function guestDataSyncMock(): SbOrderXs2GuestDataSyncService
+    {
+        $guestDataSync = Mockery::mock(SbOrderXs2GuestDataSyncService::class);
+        $guestDataSync->shouldReceive('ensureLinkedXs2OrderHasSbAttendees')->andReturn(false);
+
+        return $guestDataSync;
     }
 
     private function createTables(): void

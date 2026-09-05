@@ -111,6 +111,47 @@ class SbOrderXs2GuestDataSyncService
     }
 
     /**
+     * Copy SB attendees onto the linked XS2 order when the XS2 order has none yet,
+     * or when SB attendee data changed after a previous copy from SB.
+     */
+    public function ensureLinkedXs2OrderHasSbAttendees(SbOrder $order): bool
+    {
+        $order->loadMissing(['attendees', 'xs2Order']);
+        if ($order->attendees->isEmpty() || $order->xs2Order === null) {
+            return false;
+        }
+
+        $xs2Order = $order->xs2Order;
+        $xs2Order->loadMissing('attendees');
+        $sbFingerprint = $this->attendeeFingerprint($order);
+        if ($sbFingerprint === null) {
+            return false;
+        }
+
+        if ($xs2Order->attendees->isNotEmpty()) {
+            if ($xs2Order->attendees_copied_from_sb_at === null) {
+                return false;
+            }
+
+            if ($this->xs2AttendeeFingerprint($xs2Order) === $sbFingerprint) {
+                return false;
+            }
+        }
+
+        $this->syncAttendees($xs2Order, $order);
+
+        $updates = [];
+        if (Schema::hasColumn('xs2_orders', 'attendees_copied_from_sb_at')) {
+            $updates['attendees_copied_from_sb_at'] = now();
+        }
+        if ($updates !== []) {
+            $xs2Order->forceFill($updates)->save();
+        }
+
+        return true;
+    }
+
+    /**
      * Copy SB attendee rows onto the linked XS2 order without calling the XS2 API.
      *
      * @return array{copied: bool, skipped: bool, sb_order_id: int|null, xs2_order_id: int|null, error: string|null, reason: string|null}
@@ -171,6 +212,11 @@ class SbOrderXs2GuestDataSyncService
     public function pushGuestDataForXs2Order(Xs2Order $xs2Order): array
     {
         $xs2Order->loadMissing(['attendees', 'sbOrder.attendees']);
+
+        if ($xs2Order->attendees->isEmpty() && $xs2Order->sbOrder !== null) {
+            $this->ensureLinkedXs2OrderHasSbAttendees($xs2Order->sbOrder);
+            $xs2Order->load('attendees');
+        }
 
         if ($xs2Order->attendees->isEmpty()) {
             return [
@@ -848,21 +894,71 @@ class SbOrderXs2GuestDataSyncService
 
         $parts = $order->attendees
             ->sortBy('position')
-            ->map(fn (SbOrderAttendee $attendee): string => implode('|', [
-                (string) ($attendee->first_name ?? ''),
-                (string) ($attendee->last_name ?? ''),
-                (string) ($attendee->dob ?? ''),
-                (string) ($attendee->nationality ?? ''),
-                (string) ($attendee->province ?? ''),
-                (string) ($attendee->email ?? ''),
-                (string) ($attendee->phone ?? ''),
-                (string) ($attendee->passport ?? ''),
-                (string) ($attendee->gender ?? ''),
-            ]))
+            ->map(fn (SbOrderAttendee $attendee): string => $this->attendeeFingerprintPart(
+                $attendee->first_name,
+                $attendee->last_name,
+                $attendee->dob,
+                $attendee->nationality,
+                $attendee->province,
+                $attendee->email,
+                $attendee->phone,
+                $attendee->passport,
+                $attendee->gender,
+            ))
             ->values()
             ->all();
 
         return hash('sha256', implode("\n", $parts));
+    }
+
+    private function xs2AttendeeFingerprint(Xs2Order $xs2Order): ?string
+    {
+        $xs2Order->loadMissing('attendees');
+        if ($xs2Order->attendees->isEmpty()) {
+            return null;
+        }
+
+        $parts = $xs2Order->attendees
+            ->sortBy('position')
+            ->map(fn (Xs2OrderAttendee $attendee): string => $this->attendeeFingerprintPart(
+                $attendee->first_name,
+                $attendee->last_name,
+                $attendee->dob,
+                $attendee->nationality,
+                $attendee->province,
+                $attendee->email,
+                $attendee->phone,
+                $attendee->passport,
+                $attendee->gender,
+            ))
+            ->values()
+            ->all();
+
+        return hash('sha256', implode("\n", $parts));
+    }
+
+    private function attendeeFingerprintPart(
+        mixed $firstName,
+        mixed $lastName,
+        mixed $dob,
+        mixed $nationality,
+        mixed $province,
+        mixed $email,
+        mixed $phone,
+        mixed $passport,
+        mixed $gender,
+    ): string {
+        return implode('|', [
+            (string) ($firstName ?? ''),
+            (string) ($lastName ?? ''),
+            (string) ($dob ?? ''),
+            (string) ($nationality ?? ''),
+            (string) ($province ?? ''),
+            (string) ($email ?? ''),
+            (string) ($phone ?? ''),
+            (string) ($passport ?? ''),
+            (string) ($gender ?? ''),
+        ]);
     }
 
     /** @return list<string> */

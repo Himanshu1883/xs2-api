@@ -187,6 +187,133 @@ class Xs2OrderSyncTest extends TestCase
         ]);
     }
 
+    public function test_sync_copies_sb_attendees_when_linking_production_order_without_api_guests(): void
+    {
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders*' => Http::response([
+                'bookingorders' => [[
+                    'bookingorder_id' => self::PRODUCTION_BOOKINGORDER_ID,
+                    'booking_id' => self::PRODUCTION_BOOKING_ID,
+                    'booking_reference' => 'SB-ATTENDEE-LINK',
+                    'booking_email' => 'guest@example.com',
+                    'logistic_status' => 'confirmed',
+                    'items' => [[
+                        'ticket_id' => 'production-ticket-sync_tck',
+                        'quantity' => 1,
+                    ]],
+                ]],
+                'pagination' => ['total_pages' => 1],
+            ]),
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-ATTENDEE-LINK',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'quantity' => 1,
+            'match_name' => 'Attendee Link Match',
+        ]);
+
+        SbOrderAttendee::query()->create([
+            'sb_order_id' => $sbOrder->id,
+            'position' => 0,
+            'first_name' => 'Sebastian',
+            'last_name' => 'Wickremasinghe',
+            'dob' => '1999-09-09',
+            'nationality' => 'Chile',
+        ]);
+
+        app(Xs2OrderSyncService::class)->sync();
+
+        $xs2Order = Xs2Order::query()
+            ->where('external_order_id', self::PRODUCTION_BOOKINGORDER_ID)
+            ->firstOrFail();
+
+        $this->assertSame($sbOrder->id, $xs2Order->sb_order_id);
+        $this->assertDatabaseHas('xs2_order_attendees', [
+            'xs2_order_id' => $xs2Order->id,
+            'first_name' => 'Sebastian',
+            'last_name' => 'Wickremasinghe',
+            'dob' => '1999-09-09',
+            'nationality' => 'Chile',
+        ]);
+        $this->assertNotNull($xs2Order->attendees_copied_from_sb_at);
+    }
+
+    public function test_push_guest_data_auto_copies_sb_attendees_when_xs2_order_has_none(): void
+    {
+        config()->set('xs2.sandbox.api_url', 'https://sandbox.xs2.test');
+        config()->set('xs2.sandbox.api_key', 'sandbox-key');
+        config()->set('xs2.bookingorder_guestdata_endpoint', '/v1/bookingorders/{bookingorder_id}/guestdata');
+        config()->set('xs2.ticket_guestdata_endpoint', '/v1/tickets/{ticket_id}/guestdata');
+
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders/'.self::PRODUCTION_BOOKINGORDER_ID.'/guestdata*' => Http::sequence()
+                ->push([
+                    'items' => [[
+                        'ticket_id' => 'production-ticket-sync_tck',
+                        'guests' => [[
+                            'first_name' => ['condition' => 'required'],
+                            'last_name' => ['condition' => 'required'],
+                            'date_of_birth' => ['condition' => 'required'],
+                            'country_of_residence' => ['condition' => 'required'],
+                        ]],
+                    ]],
+                ])
+                ->push([
+                    'guestdata_status' => 'completed',
+                    'items' => [[
+                        'ticket_id' => 'production-ticket-sync_tck',
+                        'guests' => [[
+                            'first_name' => 'Sebastian',
+                            'last_name' => 'Wickremasinghe',
+                            'date_of_birth' => '1999-09-09',
+                            'country_of_residence' => 'Chile',
+                        ]],
+                    ]],
+                ]),
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-PUSH-AUTO',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'quantity' => 1,
+            'match_name' => 'Push Auto Copy Match',
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+        ]);
+
+        SbOrderAttendee::query()->create([
+            'sb_order_id' => $sbOrder->id,
+            'position' => 0,
+            'first_name' => 'Sebastian',
+            'last_name' => 'Wickremasinghe',
+            'dob' => '1999-09-09',
+            'nationality' => 'Chile',
+        ]);
+
+        $xs2Order = Xs2Order::query()->create([
+            'external_order_id' => self::PRODUCTION_BOOKINGORDER_ID,
+            'xs2_bookingorder_id' => self::PRODUCTION_BOOKINGORDER_ID,
+            'xs2_booking_id' => self::PRODUCTION_BOOKING_ID,
+            'is_sandbox' => false,
+            'sb_order_id' => $sbOrder->id,
+            'external_ticket_id' => 'production-ticket-sync_tck',
+            'quantity' => 1,
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/xs2-orders/{$xs2Order->id}/push-guest-data")
+            ->assertOk()
+            ->assertJsonPath('data.attendees_count', 1);
+
+        $this->assertDatabaseHas('xs2_order_attendees', [
+            'xs2_order_id' => $xs2Order->id,
+            'first_name' => 'Sebastian',
+            'last_name' => 'Wickremasinghe',
+        ]);
+        $this->assertNotNull($xs2Order->fresh()->guest_data_synced_at);
+    }
+
     public function test_sync_updates_existing_production_order(): void
     {
         Http::fake([
