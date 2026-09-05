@@ -13,6 +13,7 @@ class PipelineWorkloadService
 {
     public function __construct(
         private readonly QueueManagementService $queues,
+        private readonly PipelineStaleStateService $staleStates,
     ) {}
 
     /** @return array<string, mixed> */
@@ -21,6 +22,8 @@ class PipelineWorkloadService
         if (! Schema::hasTable('pipeline_runs')) {
             return $this->emptySnapshot();
         }
+
+        $this->staleStates->reconcile();
 
         $currentRun = PipelineRun::query()->where('status', 'running')->latest('started_at')->first();
         $lastRun = PipelineRun::query()

@@ -70,9 +70,6 @@ class SyncXs2EventInventory implements ShouldBeUnique, ShouldQueue
         }
 
         $step = $this->pipelineStep($pipelineSteps, $event->id);
-        if ($step !== null) {
-            $pipelineSteps->start($step);
-        }
 
         $lock = Cache::lock(
             'xs2-event-inventory:event:'.$event->id,
@@ -82,6 +79,10 @@ class SyncXs2EventInventory implements ShouldBeUnique, ShouldQueue
             $this->release(60);
 
             return;
+        }
+
+        if ($step !== null) {
+            $pipelineSteps->start($step);
         }
 
         $recorder->enable();
