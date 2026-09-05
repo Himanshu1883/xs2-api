@@ -75,7 +75,11 @@ class Xs2SellerListingTransformer
         );
 
         $categoryName = $this->required($ticket->category_name, 'XS2 inventory category name');
-        $ticketCategoryId = $this->resolveTicketCategoryId($catalog, $categoryName, $matchId, $mappingState);
+        $this->logCategoryNameFallbackWhenUnresolved(
+            $this->tryResolveTicketCategoryId($catalog, $categoryName, $matchId, $mappingState),
+            $matchId,
+            $categoryName,
+        );
         $ticketTypeMapping = $this->resolveSellerTicketType($ticketForTransform);
 
         return [
@@ -156,24 +160,22 @@ class Xs2SellerListingTransformer
     }
 
     /**
-     * Resolve ticket_category as a positive integer ID from the SB ticket
-     * dropdown. Prefer a confirmed/mapped stadium seat id, then fuzzy-match
-     * XS2 / mapped category names, then similar_text when above threshold.
-     * When the dropdown has no categories, use a confirmed mapped stadium_seat_id.
-     * SB exposes no API to create match ticket categories — never invent an ID.
+     * Best-effort resolve of ticket_category from the SB ticket dropdown.
+     * Prefer a confirmed/mapped stadium seat id, then fuzzy-match XS2 / mapped
+     * category names, then similar_text when above threshold. Returns null when
+     * nothing matches — publish proceeds with category_name only (SB may create
+     * the category on create, same as legacy listings).
      *
      * @param  array<string, mixed>|null  $catalog
      */
-    private function resolveTicketCategoryId(
+    private function tryResolveTicketCategoryId(
         ?array $catalog,
         string $xs2CategoryName,
         int $matchId,
         ?Xs2TicketMappingState $mappingState = null,
-    ): int {
+    ): ?int {
         if ($catalog === null) {
-            throw new ListingTransformationException(
-                "Cannot publish: SB match_id {$matchId} is invalid or ticket dropdown unavailable."
-            );
+            return null;
         }
 
         $categories = data_get($catalog, 'category', []);
@@ -191,10 +193,7 @@ class Xs2SellerListingTransformer
                 return $mappedSeatId;
             }
 
-            throw new ListingTransformationException(
-                "Cannot publish: SB match_id {$matchId} has no ticket categories."
-                .' Seats Broker does not expose a Seller API to create match ticket categories — configure categories for this match in SB admin, or confirm a stadium seat mapping in XS2 admin.'
-            );
+            return null;
         }
 
         $categoryMapping = $mappingState?->categoryMapping;
@@ -233,20 +232,24 @@ class Xs2SellerListingTransformer
             return $similarityMatch['id'];
         }
 
-        $available = collect($categories)
-            ->filter(fn ($item): bool => is_array($item))
-            ->map(fn (array $item): string => trim((string) data_get($item, 'category_name', '')))
-            ->filter()
-            ->unique()
-            ->values()
-            ->implode(', ');
+        return null;
+    }
 
-        throw new ListingTransformationException(
-            'Cannot publish: XS2 category "'.$xs2CategoryName.'" does not match a Seats Broker ticket_category ID for match_id '.$matchId.'.'
-            .' Map the category in admin (or use a name that matches the SB dropdown), then re-Publish.'
-            .' Seats Broker does not expose a Seller API to create match ticket categories.'
-            .($available !== '' ? ' Available SB categories: '.$available.'.' : '')
-            .($tried !== [] ? ' Tried: '.implode(', ', $tried).'.' : '')
+    private function logCategoryNameFallbackWhenUnresolved(
+        ?int $ticketCategoryId,
+        int $matchId,
+        string $xs2CategoryName,
+    ): void {
+        if ($ticketCategoryId !== null) {
+            return;
+        }
+
+        \Log::channel(config('services.seller_api.log_channel', 'stack'))->info(
+            'Publishing with XS2 category_name only — no SB ticket_category match.',
+            [
+                'match_id' => $matchId,
+                'xs2_category_name' => $xs2CategoryName,
+            ],
         );
     }
 

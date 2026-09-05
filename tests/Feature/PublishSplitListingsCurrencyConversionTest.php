@@ -199,6 +199,104 @@ class PublishSplitListingsCurrencyConversionTest extends TestCase
         $this->assertSame($expectedUsd, $payload['facevalue'] ?? null);
     }
 
+    public function test_publish_split_listings_uses_category_name_when_sb_has_no_ticket_plus(): void
+    {
+        Cache::flush();
+
+        $capturedPayloads = [];
+        Http::fake(function ($request) use (&$capturedPayloads) {
+            if (str_contains($request->url(), 'ticket_dropdown')) {
+                return Http::response([
+                    'result' => [
+                        'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                        'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                        'category' => [
+                            ['id' => 1, 'category_name' => 'Away'],
+                            ['id' => 2, 'category_name' => 'Shortside Lower Tier'],
+                            ['id' => 3, 'category_name' => 'Longside Upper Tier'],
+                            ['id' => 4, 'category_name' => 'Longside Lower Tier'],
+                            ['id' => 5, 'category_name' => 'VIP & Hospitality'],
+                            ['id' => 6, 'category_name' => 'Shortside Upper Tier'],
+                        ],
+                        'currency' => [['currency_code' => 'EUR']],
+                    ],
+                ]);
+            }
+
+            $payload = [];
+            foreach ($request->data() as $part) {
+                if (is_array($part) && isset($part['name'])) {
+                    $payload[$part['name']] = $part['contents'];
+                }
+            }
+            $capturedPayloads[] = $payload;
+
+            return Http::response(['ticket_id' => 9400 + count($capturedPayloads)]);
+        });
+
+        $ticket = $this->ticketPlusOnMatch9426(stock: 2);
+
+        $job = new PublishSplitListings($ticket->id, [
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 0,
+            'base_price' => 120.0,
+        ]);
+        $job->handle(app(\App\Services\SplitListings\SplitListingService::class));
+
+        $this->assertNotEmpty($capturedPayloads, 'Expected Seller API createListing to be called.');
+        $payload = $capturedPayloads[0];
+        $this->assertSame('Ticket Plus', $payload['category_name'] ?? null);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
+    }
+
+    private function ticketPlusOnMatch9426(int $stock): Xs2Ticket
+    {
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'event-ticket-plus',
+            'event_name' => 'Ticket Plus Event',
+            'hometeam_name' => 'Home',
+            'event_status' => 'notstarted',
+            'date_start_local' => now()->addWeek(),
+            'raw_payload' => [],
+        ]);
+
+        $mapping = EventMapping::query()->create([
+            'xs2_event_id' => $event->id,
+            'm_id' => 9426,
+            'status' => 'mapped',
+        ]);
+
+        $categoryMapping = Xs2CategoryMapping::query()->create([
+            'status' => 'pending_category_mapping',
+        ]);
+
+        $ticket = Xs2Ticket::query()->create([
+            'xs2_event_id' => $event->id,
+            'external_event_id' => $event->external_event_id,
+            'external_ticket_id' => 'ticket-9426-ticket-plus',
+            'ticket_status' => 'available',
+            'stock' => $stock,
+            'category_name' => 'Ticket Plus',
+            'ticket_type' => 'eticket',
+            'currency_code' => 'EUR',
+            'net_rate' => 12000,
+            'face_value' => 12000,
+            'flags' => [],
+            'options' => [],
+            'raw_payload' => [],
+        ]);
+
+        Xs2TicketMappingState::query()->create([
+            'xs2_ticket_id' => $ticket->id,
+            'event_mapping_id' => $mapping->id,
+            'xs2_category_mapping_id' => $categoryMapping->id,
+            'mapping_status' => 'pending_category_mapping',
+        ]);
+
+        return $ticket->fresh(['xs2Event.mapping']);
+    }
+
     private function qarTicketOnUsdEvent(int $stock, ?string $matchInfoPriceType = 'USD'): Xs2Ticket
     {
         $event = Xs2Event::query()->create([

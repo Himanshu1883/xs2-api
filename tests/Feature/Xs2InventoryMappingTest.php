@@ -2134,13 +2134,14 @@ class Xs2InventoryMappingTest extends TestCase
                 'category' => [['id' => 4, 'category_name' => 'Away']],
             ],
         ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
 
-        $this->expectException(ListingTransformationException::class);
-        $this->expectExceptionMessage('does not match a Seats Broker ticket_category ID');
-
-        (new Xs2SellerListingTransformer($client))->transform(
+        $payload = (new Xs2SellerListingTransformer($client))->transform(
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping')
         );
+
+        $this->assertSame('Longside Upper', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_sends_xs2_category_name_when_category_mapping_is_pending_and_dropdown_matches(): void
@@ -2431,13 +2432,57 @@ class Xs2InventoryMappingTest extends TestCase
                 'category' => [['id' => 1, 'category_name' => 'Away']],
             ],
         ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
 
-        $this->expectException(ListingTransformationException::class);
-        $this->expectExceptionMessage('does not match a Seats Broker ticket_category ID');
-
-        (new Xs2SellerListingTransformer($client))->transform(
+        $payload = (new Xs2SellerListingTransformer($client))->transform(
             $ticket, $eventMapping, $mappingState->fresh('categoryMapping.details')
         );
+
+        $this->assertSame('Matchday Premium', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
+    }
+
+    public function test_transformer_publishes_ticket_plus_with_category_name_when_sb_has_no_match(): void
+    {
+        Cache::forget('seller-api:ticket-dropdown:9426');
+        $event = Xs2Event::create(['external_event_id' => 'event-ticket-plus']);
+        $eventMapping = EventMapping::create(['xs2_event_id' => $event->id, 'm_id' => 9426, 'status' => 'mapped']);
+        $eventMapping->setRelation('xs2Event', new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => '2999-01-01 12:00:00',
+        ]));
+        $ticket = new Xs2Ticket([
+            'external_ticket_id' => 'ticket-ticket-plus',
+            'ticket_status' => 'available',
+            'stock' => 2,
+            'category_name' => 'Ticket Plus',
+            'currency_code' => 'EUR',
+            'net_rate' => 10000,
+            'flags' => [],
+            'options' => [],
+        ]);
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('ticketDropdown')->once()->with(9426)->andReturn([
+            'result' => [
+                'ticket_type' => [['id' => 2, 'ticket_type_name' => 'E-Tickets']],
+                'split_type' => [['id' => 3, 'split_name' => 'No Preferences']],
+                'category' => [
+                    ['id' => 1, 'category_name' => 'Away'],
+                    ['id' => 2, 'category_name' => 'Shortside Lower Tier'],
+                    ['id' => 3, 'category_name' => 'Longside Upper Tier'],
+                    ['id' => 4, 'category_name' => 'Longside Lower Tier'],
+                    ['id' => 5, 'category_name' => 'VIP & Hospitality'],
+                    ['id' => 6, 'category_name' => 'Shortside Upper Tier'],
+                ],
+            ],
+        ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
+
+        $payload = (new Xs2SellerListingTransformer($client))->transform($ticket, $eventMapping);
+
+        $this->assertSame('Ticket Plus', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     public function test_transformer_fails_when_no_mapping_state_and_no_category_match(): void
@@ -2462,11 +2507,12 @@ class Xs2InventoryMappingTest extends TestCase
                 'category' => [['id' => 1, 'category_name' => 'Away']],
             ],
         ]);
+        $client->shouldReceive('sellerId')->once()->andReturn(77);
 
-        $this->expectException(ListingTransformationException::class);
-        $this->expectExceptionMessage('does not match a Seats Broker ticket_category ID');
+        $payload = (new Xs2SellerListingTransformer($client))->transform($ticket, $eventMapping);
 
-        (new Xs2SellerListingTransformer($client))->transform($ticket, $eventMapping);
+        $this->assertSame('Matchday Premium', $payload['category_name']);
+        $this->assertArrayNotHasKey('ticket_category', $payload);
     }
 
     private function masterLocation(): void
