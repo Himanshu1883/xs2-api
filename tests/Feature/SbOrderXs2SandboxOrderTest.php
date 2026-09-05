@@ -648,6 +648,155 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         ]);
     }
 
+    public function test_admin_can_manually_create_xs2_order_when_ticket_missing_net_rate_uses_sb_ticket_amount(): void
+    {
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_PRODUCTION,
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        config()->set('xs2.bookings_endpoint', '/v1/bookings');
+        config()->set('xs2.bookingorders_endpoint', '/v1/bookingorders');
+        config()->set('xs2.bookingorder_detail_endpoint', '/v1/bookingorders/{bookingorder_id}');
+
+        Http::fake([
+            'https://api.xs2.test/v1/reservations' => Http::response([
+                'reservation_id' => 'production-reservation-roma_rsv',
+            ], 201),
+            'https://api.xs2.test/v1/bookings' => Http::response([
+                'booking_id' => 'production-booking-roma_bkn',
+                'booking_code' => 'ROMA1BX',
+            ], 201),
+            'https://api.xs2.test/v1/bookingorders*' => Http::sequence()
+                ->push([
+                    'bookingorders' => [[
+                        'booking_id' => 'production-booking-roma_bkn',
+                        'bookingorder_id' => 'production-bookingorder-roma_bko',
+                    ]],
+                ])
+                ->push([
+                    'bookingorder_id' => 'production-bookingorder-roma_bko',
+                    'booking_id' => 'production-booking-roma_bkn',
+                    'event_name' => 'AS Roma vs Atalanta',
+                    'booking_status' => 'confirmed',
+                ]),
+        ]);
+
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'production-event-roma-no-rate',
+            'event_name' => 'AS Roma vs Atalanta',
+            'sport_type' => 'soccer',
+            'event_status' => 'closed',
+            'date_start_local' => '2026-09-05 20:45:00',
+            'raw_payload' => [],
+        ]);
+
+        $ticket = Xs2Ticket::query()->create([
+            'external_ticket_id' => 'production-ticket-roma-no-rate_tck',
+            'external_event_id' => $event->external_event_id,
+            'xs2_event_id' => $event->id,
+            'is_sandbox' => false,
+            'ticket_status' => 'available',
+            'stock' => 0,
+            'net_rate' => null,
+            'face_value' => null,
+            'currency_code' => 'EUR',
+            'category_name' => 'Distinti Laterale',
+            'sync_status' => 'pending',
+            'raw_payload' => [],
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67678',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'ticket_id' => 999999,
+            'listing_id' => '888888',
+            'quantity' => 1,
+            'ticket_amount' => 49.00,
+            'currency_type' => 'EUR',
+            'match_name' => 'AS Roma vs Atalanta',
+            'match_date' => '2026-09-05',
+            'seat_category' => 'Distinti Laterale',
+        ]);
+
+        $service = app(SbOrderXs2SandboxOrderService::class);
+        $this->assertSame(4900, $service->resolveReservationNetRate($sbOrder, $ticket));
+
+        $token = $this->adminToken();
+
+        $this->withToken($token)
+            ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
+            ->assertOk()
+            ->assertJsonPath('data.xs2_order.xs2_booking_id', 'production-booking-roma_bkn')
+            ->assertJsonPath('data.xs2_order.external_order_id', 'production-bookingorder-roma_bko');
+
+        Http::assertSent(function ($request): bool {
+            if ($request->method() !== 'POST' || ! str_contains($request->url(), '/v1/reservations')) {
+                return false;
+            }
+
+            return data_get($request->data(), 'items.0.net_rate') === 4900
+                && data_get($request->data(), 'items.0.sales_price') === 4900;
+        });
+
+        $this->assertDatabaseHas('xs2_orders', [
+            'sb_order_id' => $sbOrder->id,
+            'is_sandbox' => false,
+            'external_ticket_id' => $ticket->external_ticket_id,
+        ]);
+    }
+
+    public function test_resolve_reservation_net_rate_prefers_ticket_face_value_over_sb_order_amount(): void
+    {
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'production-event-face-value',
+            'event_name' => 'AS Roma vs Atalanta',
+            'sport_type' => 'soccer',
+            'event_status' => 'closed',
+            'date_start_local' => '2026-09-05 20:45:00',
+            'raw_payload' => [],
+        ]);
+
+        $ticket = Xs2Ticket::query()->create([
+            'external_ticket_id' => 'production-ticket-face-value_tck',
+            'external_event_id' => $event->external_event_id,
+            'xs2_event_id' => $event->id,
+            'is_sandbox' => false,
+            'ticket_status' => 'available',
+            'stock' => 0,
+            'net_rate' => null,
+            'face_value' => 18000,
+            'currency_code' => 'EUR',
+            'category_name' => 'Distinti Laterale',
+            'sync_status' => 'pending',
+            'raw_payload' => [],
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67680',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'quantity' => 1,
+            'ticket_amount' => 49.00,
+            'match_name' => 'AS Roma vs Atalanta',
+            'match_date' => '2026-09-05',
+        ]);
+
+        $service = app(SbOrderXs2SandboxOrderService::class);
+
+        $this->assertSame(18000, $service->resolveReservationNetRate($sbOrder, $ticket));
+        $this->assertSame(18000, $service->resolveReservationSalesPrice($ticket, 18000));
+    }
+
     public function test_admin_xs2_orders_index_includes_sandbox_order_linked_to_sb_order(): void
     {
         $token = $this->adminToken();

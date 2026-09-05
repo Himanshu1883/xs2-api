@@ -87,13 +87,13 @@ class SbOrderXs2SandboxOrderService
         }
 
         $quantity = max(1, (int) ($order->quantity ?? 1));
-        $netRate = (int) ($ticket->net_rate ?? 0);
-        if ($netRate <= 0) {
+        $netRate = $this->resolveReservationNetRate($order, $ticket);
+        if ($netRate === null || $netRate <= 0) {
             return $this->skip($existing, 'Mapped XS2 ticket is missing net_rate.', $order);
         }
 
         $currency = (string) ($ticket->currency_code ?? $order->currency_type ?? 'EUR');
-        $salesPrice = (int) ($ticket->face_value ?? $netRate);
+        $salesPrice = $this->resolveReservationSalesPrice($ticket, $netRate);
         $bookingEmail = $this->resolveBookingEmail($order);
 
         $reservationRequest = [
@@ -310,6 +310,79 @@ class SbOrderXs2SandboxOrderService
         }
 
         return $this->resolveMappedTicketFromEvent($order);
+    }
+
+    /**
+     * Reservation net_rate in XS2 minor units. Prefer synced ticket pricing, then SB order amount.
+     */
+    public function resolveReservationNetRate(SbOrder $order, Xs2Ticket $ticket): ?int
+    {
+        foreach ($this->reservationRateCandidates($order, $ticket) as $rate) {
+            if ($rate > 0) {
+                return $rate;
+            }
+        }
+
+        return null;
+    }
+
+    public function resolveReservationSalesPrice(Xs2Ticket $ticket, int $netRate): int
+    {
+        $faceValue = (int) ($ticket->face_value ?? 0);
+        if ($faceValue > 0) {
+            return $faceValue;
+        }
+
+        $fromPayload = $this->positiveIntFromPayload($ticket->raw_payload, 'face_value');
+        if ($fromPayload > 0) {
+            return $fromPayload;
+        }
+
+        return $netRate;
+    }
+
+    /** @return list<int> */
+    private function reservationRateCandidates(SbOrder $order, Xs2Ticket $ticket): array
+    {
+        $payload = is_array($ticket->raw_payload) ? $ticket->raw_payload : [];
+
+        return [
+            (int) ($ticket->net_rate ?? 0),
+            (int) ($ticket->face_value ?? 0),
+            (int) ($ticket->package_price ?? 0),
+            $this->positiveIntFromPayload($payload, 'net_rate'),
+            $this->positiveIntFromPayload($payload, 'face_value'),
+            $this->positiveIntFromPayload($payload, 'gross_rate'),
+            $this->minorRateFromSbOrderTicketAmount($order),
+        ];
+    }
+
+    private function minorRateFromSbOrderTicketAmount(SbOrder $order): int
+    {
+        if ($order->ticket_amount === null) {
+            return 0;
+        }
+
+        $quantity = max(1, (int) ($order->quantity ?? 1));
+        $divisor = max(1, (int) config('services.xs2.minor_unit_divisor', 100));
+        $totalMinor = (int) round((float) $order->ticket_amount * $divisor);
+
+        return (int) round($totalMinor / $quantity);
+    }
+
+    /** @param  array<string, mixed>|null  $payload */
+    private function positiveIntFromPayload(?array $payload, string $key): int
+    {
+        if (! is_array($payload) || ! array_key_exists($key, $payload)) {
+            return 0;
+        }
+
+        $value = $payload[$key];
+        if (! is_numeric($value)) {
+            return 0;
+        }
+
+        return max(0, (int) $value);
     }
 
     private function resolveMappedTicketFromListing(SbOrder $order): ?Xs2Ticket
