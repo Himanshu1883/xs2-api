@@ -27,8 +27,10 @@ class Xs2OrderEticketService
      *     content_type: string
      * }
      */
-    public function fetchTicket(Xs2Order $xs2Order): array
+    public function fetchTicket(Xs2Order $xs2Order, ?string $format = null): array
     {
+        $ticketFormat = $this->normalizeTicketFormat($format);
+
         $bookingOrderId = $this->nullableString($xs2Order->xs2_bookingorder_id)
             ?? $this->nullableString($xs2Order->external_order_id);
         $bookingId = $this->nullableString($xs2Order->xs2_booking_id);
@@ -40,6 +42,7 @@ class Xs2OrderEticketService
         $requestPayload = [
             'bookingorder_id' => $bookingOrderId,
             'booking_id' => $bookingId,
+            'format' => $ticketFormat,
             'requested_at' => now()->toIso8601String(),
         ];
 
@@ -68,7 +71,7 @@ class Xs2OrderEticketService
                 }
             }
 
-            if ($targets === []) {
+            if ($targets === [] && ($ticketFormat === null || $ticketFormat === 'pdf')) {
                 $zipDownload = $this->tryDownloadZipArchive($xs2Order, $bookingPayload, $bookingOrderId ?? $bookingId);
                 if ($zipDownload !== null) {
                     $byteSize = strlen($zipDownload['body']);
@@ -101,11 +104,27 @@ class Xs2OrderEticketService
                 }
             }
 
-            if ($targets === []) {
+            $downloadableTargets = array_values(array_filter(
+                $targets,
+                fn (array $target): bool => $target['distribution_channel'] === null
+                    || $target['distribution_channel'] === 'xs2event',
+            ));
+
+            if ($ticketFormat !== null) {
+                $downloadableTargets = $this->filterTargetsByFormat($downloadableTargets, $ticketFormat);
+            }
+
+            if ($downloadableTargets === []) {
+                if ($targets !== [] && $ticketFormat === null) {
+                    $blockedChannel = $targets[0]['distribution_channel'] ?? 'unknown';
+                    throw new \RuntimeException(sprintf(
+                        'E-ticket download is not available for distribution channel "%s".',
+                        $blockedChannel,
+                    ));
+                }
+
                 $logisticStatus = $this->nullableString($bookingPayload['logistic_status'] ?? null);
-                $message = $logisticStatus !== null && $logisticStatus !== 'completed'
-                    ? sprintf('E-ticket is not ready yet (logistic_status=%s).', $logisticStatus)
-                    : 'No downloadable e-ticket links were found in the XS2 booking response.';
+                $message = $this->missingTicketMessage($ticketFormat, $logisticStatus);
 
                 $xs2Order->fill([
                     'xs2_eticket_request' => $requestPayload,
@@ -121,20 +140,6 @@ class Xs2OrderEticketService
                 ])->save();
 
                 throw new \RuntimeException($message);
-            }
-
-            $downloadableTargets = array_values(array_filter(
-                $targets,
-                fn (array $target): bool => $target['distribution_channel'] === null
-                    || $target['distribution_channel'] === 'xs2event',
-            ));
-
-            if ($downloadableTargets === []) {
-                $blockedChannel = $targets[0]['distribution_channel'] ?? 'unknown';
-                throw new \RuntimeException(sprintf(
-                    'E-ticket download is not available for distribution channel "%s".',
-                    $blockedChannel,
-                ));
             }
 
             $requestPayload = [
@@ -655,6 +660,105 @@ class Xs2OrderEticketService
         }
 
         return 1;
+    }
+
+    /**
+     * @param  list<array{
+     *     bookingorder_id: string,
+     *     orderitem_id: string,
+     *     download_link: string,
+     *     distribution_channel: string|null,
+     *     ticket_id: string|null,
+     *     type_ticket: string|null
+     * }>  $targets
+     * @return list<array{
+     *     bookingorder_id: string,
+     *     orderitem_id: string,
+     *     download_link: string,
+     *     distribution_channel: string|null,
+     *     ticket_id: string|null,
+     *     type_ticket: string|null
+     * }>
+     */
+    private function filterTargetsByFormat(array $targets, string $format): array
+    {
+        return array_values(array_filter(
+            $targets,
+            fn (array $target): bool => $this->targetMatchesFormat($target, $format),
+        ));
+    }
+
+    /**
+     * @param  array{
+     *     bookingorder_id: string,
+     *     orderitem_id: string,
+     *     download_link: string,
+     *     distribution_channel: string|null,
+     *     ticket_id: string|null,
+     *     type_ticket: string|null
+     * }  $target
+     */
+    private function targetMatchesFormat(array $target, string $format): bool
+    {
+        if ($format === 'mobile') {
+            return $this->isMobileTarget($target);
+        }
+
+        return $this->isPdfTarget($target);
+    }
+
+    /** @param array{download_link: string, type_ticket: string|null} $target */
+    private function isMobileTarget(array $target): bool
+    {
+        $link = strtolower($target['download_link']);
+        $typeTicket = strtolower((string) ($target['type_ticket'] ?? ''));
+
+        return str_ends_with($link, '.pkpass') || $typeTicket === 'appticket';
+    }
+
+    /** @param array{download_link: string, type_ticket: string|null} $target */
+    private function isPdfTarget(array $target): bool
+    {
+        if ($this->isMobileTarget($target)) {
+            return false;
+        }
+
+        $link = strtolower($target['download_link']);
+        $typeTicket = strtolower((string) ($target['type_ticket'] ?? ''));
+
+        return str_ends_with($link, '.pdf')
+            || in_array($typeTicket, ['eticket', 'etickets', 'e-tickets', 'e_tickets'], true);
+    }
+
+    private function normalizeTicketFormat(?string $format): ?string
+    {
+        if ($format === null) {
+            return null;
+        }
+
+        $normalized = strtolower(trim($format));
+
+        return match ($normalized) {
+            'pdf', 'eticket', 'e-ticket', 'e_tickets', 'e-tickets', 'etickets' => 'pdf',
+            'mobile', 'appticket', 'pkpass' => 'mobile',
+            default => throw new \InvalidArgumentException(sprintf(
+                'Unsupported ticket format "%s". Use pdf, eticket, mobile, or appticket.',
+                $format,
+            )),
+        };
+    }
+
+    private function missingTicketMessage(?string $format, ?string $logisticStatus): string
+    {
+        if ($logisticStatus !== null && $logisticStatus !== 'completed') {
+            return sprintf('E-ticket is not ready yet (logistic_status=%s).', $logisticStatus);
+        }
+
+        return match ($format) {
+            'pdf' => 'No PDF e-ticket was found in the XS2 booking response.',
+            'mobile' => 'No mobile wallet pass was found in the XS2 booking response.',
+            default => 'No downloadable e-ticket links were found in the XS2 booking response.',
+        };
     }
 
     /** @param array<string, mixed> $item @return list<string> */

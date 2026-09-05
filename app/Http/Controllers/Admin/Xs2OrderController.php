@@ -15,6 +15,7 @@ use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
 use App\Services\Xs2\Xs2OrderEticketService;
 use App\Services\Xs2\Xs2OrderSyncService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
 class Xs2OrderController extends Controller
@@ -154,12 +155,19 @@ class Xs2OrderController extends Controller
         ]);
     }
 
-    public function getTicket(Xs2Order $xs2Order, Xs2OrderEticketService $etickets): Response
+    public function getTicket(Request $request, Xs2Order $xs2Order, Xs2OrderEticketService $etickets): Response
     {
         $this->authorize('viewAny', EventMapping::class);
 
+        $format = $request->query('format', $request->input('format'));
+
         try {
-            $result = $etickets->fetchTicket($xs2Order);
+            $result = $etickets->fetchTicket($xs2Order, is_string($format) ? $format : null);
+        } catch (\InvalidArgumentException $exception) {
+            return response()->json([
+                'message' => $exception->getMessage(),
+                'data' => new Xs2OrderResource($xs2Order->load(['attendees', 'sbOrder', 'latestGuestDataLog'])->loadCount('attendees')),
+            ], 422);
         } catch (\RuntimeException $exception) {
             $xs2Order->load(['attendees', 'sbOrder', 'latestGuestDataLog'])->loadCount('attendees');
 

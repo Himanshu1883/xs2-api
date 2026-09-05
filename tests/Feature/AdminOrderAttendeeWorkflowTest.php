@@ -544,6 +544,137 @@ class AdminOrderAttendeeWorkflowTest extends TestCase
         $this->assertTrue((bool) data_get($xs2Order->xs2_eticket_response, 'success'));
     }
 
+    public function test_get_ticket_with_format_pdf_downloads_only_pdf_when_both_available(): void
+    {
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+
+        Http::fake([
+            'https://sandbox.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID => Http::response([
+                'bookingorder_id' => self::BOOKINGORDER_ID,
+                'logistic_status' => 'completed',
+                'items' => [[
+                    'ticket_id' => self::TICKET_ID,
+                    'orderitem_id' => 'orderitem-1',
+                    'type_ticket' => 'eticket',
+                    'distribution_channel' => 'xs2event',
+                    'download_link' => 'ticket-abc.pdf',
+                    'download_items' => [[
+                        'download_link' => 'ticket-mobile.pkpass',
+                        'type_ticket' => 'appticket',
+                    ]],
+                ]],
+            ]),
+            'https://sandbox.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-1/url/ticket-abc.pdf' => Http::response(
+                '%PDF-1.4 workflow-ticket',
+                200,
+                [
+                    'Content-Type' => 'application/pdf',
+                    'Content-Disposition' => 'attachment; filename="ticket-abc.pdf"',
+                ],
+            ),
+            'https://sandbox.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-1/url/ticket-mobile.pkpass' => Http::response(
+                'PKPASS-BINARY',
+                200,
+                [
+                    'Content-Type' => 'application/vnd.apple.pkpass',
+                    'Content-Disposition' => 'attachment; filename="ticket-mobile.pkpass"',
+                ],
+            ),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->post("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket?format=pdf")
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf')
+            ->assertHeader('Content-Disposition', 'attachment; filename="ticket-abc.pdf"');
+
+        Http::assertSent(fn ($request): bool => str_contains($request->url(), 'ticket-abc.pdf'));
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'ticket-mobile.pkpass'));
+    }
+
+    public function test_get_ticket_with_format_mobile_downloads_only_pkpass_when_both_available(): void
+    {
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+
+        Http::fake([
+            'https://sandbox.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID => Http::response([
+                'bookingorder_id' => self::BOOKINGORDER_ID,
+                'logistic_status' => 'completed',
+                'items' => [[
+                    'ticket_id' => self::TICKET_ID,
+                    'orderitem_id' => 'orderitem-1',
+                    'type_ticket' => 'eticket',
+                    'distribution_channel' => 'xs2event',
+                    'download_link' => 'ticket-abc.pdf',
+                    'download_items' => [[
+                        'download_link' => 'ticket-mobile.pkpass',
+                        'type_ticket' => 'appticket',
+                    ]],
+                ]],
+            ]),
+            'https://sandbox.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-1/url/ticket-abc.pdf' => Http::response(
+                '%PDF-1.4 workflow-ticket',
+                200,
+                ['Content-Type' => 'application/pdf'],
+            ),
+            'https://sandbox.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-1/url/ticket-mobile.pkpass' => Http::response(
+                'PKPASS-BINARY',
+                200,
+                [
+                    'Content-Type' => 'application/vnd.apple.pkpass',
+                    'Content-Disposition' => 'attachment; filename="ticket-mobile.pkpass"',
+                ],
+            ),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->post("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket?format=mobile")
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/vnd.apple.pkpass')
+            ->assertHeader('Content-Disposition', 'attachment; filename="ticket-mobile.pkpass"');
+
+        Http::assertSent(fn ($request): bool => str_contains($request->url(), 'ticket-mobile.pkpass'));
+        Http::assertNotSent(fn ($request): bool => str_contains($request->url(), 'ticket-abc.pdf'));
+    }
+
+    public function test_get_ticket_with_format_pdf_returns_error_when_only_mobile_available(): void
+    {
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+
+        Http::fake([
+            'https://sandbox.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID => Http::response([
+                'bookingorder_id' => self::BOOKINGORDER_ID,
+                'logistic_status' => 'completed',
+                'items' => [[
+                    'ticket_id' => self::TICKET_ID,
+                    'orderitem_id' => 'orderitem-1',
+                    'type_ticket' => 'appticket',
+                    'distribution_channel' => 'xs2event',
+                    'download_link' => 'ticket-mobile.pkpass',
+                ]],
+            ]),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket?format=pdf")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'No PDF e-ticket was found in the XS2 booking response.');
+    }
+
+    public function test_get_ticket_rejects_unknown_format(): void
+    {
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket?format=paper")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Unsupported ticket format "paper". Use pdf, eticket, mobile, or appticket.');
+    }
+
     private function seedLinkedOrder(bool $withAttendees): SbOrder
     {
         $event = Xs2Event::query()->create([
