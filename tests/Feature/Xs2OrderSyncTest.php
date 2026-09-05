@@ -243,6 +243,26 @@ class Xs2OrderSyncTest extends TestCase
             ->assertJsonPath('data.endpoint', '/v1/bookingorders');
     }
 
+    public function test_sync_maps_upstream_xs2_401_to_502_so_web_client_does_not_log_out(): void
+    {
+        Http::fake([
+            'https://sandbox.xs2.test/v1/bookingorders*' => Http::response([
+                'message' => 'Invalid API key.',
+            ], 401),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->postJson('/api/admin/xs2-orders/sync')
+            ->assertStatus(502)
+            ->assertJsonPath('data.environment', 'sandbox')
+            ->assertJsonPath('data.endpoint', '/v1/bookingorders')
+            ->assertJson(fn ($json) => $json
+                ->where('message', fn (string $message) => str_contains($message, 'HTTP 401')
+                    && str_contains($message, 'Invalid API key.')
+                    && str_contains($message, '/v1/bookingorders'))
+                ->etc());
+    }
+
     private function adminToken(): string
     {
         $admin = User::factory()->create(['user_type' => User::ADMIN_USER_TYPE]);

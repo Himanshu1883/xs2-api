@@ -86,8 +86,8 @@ class Xs2OrderController extends Controller
         try {
             $summary = $sync->sync();
         } catch (Xs2ConfigurationException|Xs2RequestException $exception) {
-            $status = $exception instanceof Xs2RequestException && $exception->status !== null
-                ? max(400, min(599, $exception->status))
+            $status = $exception instanceof Xs2RequestException
+                ? Xs2RequestException::adminResponseStatus($exception->status)
                 : 422;
 
             return response()->json([

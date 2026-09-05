@@ -61,4 +61,23 @@ class Xs2RequestException extends \RuntimeException
 
         return $scheme.'://'.$host.$path;
     }
+
+    /**
+     * Map an upstream XS2 HTTP status to a safe admin API response code.
+     *
+     * Upstream 401/403 must not be returned to the web app — it treats those as
+     * provider session expiry and logs the user out.
+     */
+    public static function adminResponseStatus(?int $upstreamStatus, int $default = 422): int
+    {
+        if ($upstreamStatus === null) {
+            return $default;
+        }
+
+        if ($upstreamStatus === 401 || $upstreamStatus === 403) {
+            return 502;
+        }
+
+        return max(400, min(599, $upstreamStatus));
+    }
 }
