@@ -661,6 +661,79 @@ class Xs2InventoryMappingTest extends TestCase
         $this->assertSame('ticket-beta', $pageTwo->json('data.0.external_ticket_id'));
     }
 
+    public function test_admin_all_tickets_stock_filter(): void
+    {
+        $futureStart = now()->addDays(30)->format('Y-m-d H:i:s');
+
+        $event = Xs2Event::create([
+            'external_event_id' => 'event-stock-filter',
+            'event_name' => 'Stock Filter Fixture',
+            'venue_name' => 'Filter Ground',
+            'city' => 'London',
+            'date_start_local' => $futureStart,
+        ]);
+        $mapping = EventMapping::create(['xs2_event_id' => $event->id, 'status' => 'pending']);
+
+        $noStockTicket = Xs2Ticket::create([
+            'xs2_event_id' => $event->id,
+            'external_ticket_id' => 'ticket-stock-filter-no-stock',
+            'category_name' => 'No Stock',
+            'ticket_status' => 'available',
+            'stock' => 0,
+            'sync_status' => 'pending',
+        ]);
+        Xs2TicketMappingState::create([
+            'xs2_ticket_id' => $noStockTicket->id,
+            'event_mapping_id' => $mapping->id,
+            'mapping_status' => 'pending_event_mapping',
+        ]);
+
+        $withStockTicket = Xs2Ticket::create([
+            'xs2_event_id' => $event->id,
+            'external_ticket_id' => 'ticket-stock-filter-with-stock',
+            'category_name' => 'With Stock',
+            'ticket_status' => 'available',
+            'stock' => 5,
+            'sync_status' => 'pending',
+        ]);
+        Xs2TicketMappingState::create([
+            'xs2_ticket_id' => $withStockTicket->id,
+            'event_mapping_id' => $mapping->id,
+            'mapping_status' => 'pending_event_mapping',
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->getJson('/api/admin/xs2/tickets?'.http_build_query([
+                'mapping_status' => 'unpublished',
+                'stock_filter' => 'no_stock',
+            ]))
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.external_ticket_id', 'ticket-stock-filter-no-stock');
+
+        $this->withToken($this->adminToken())
+            ->getJson('/api/admin/xs2/tickets?'.http_build_query([
+                'mapping_status' => 'unpublished',
+                'stock_filter' => 'with_stock_not_published',
+            ]))
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.external_ticket_id', 'ticket-stock-filter-with-stock');
+
+        $grouped = $this->withToken($this->adminToken())
+            ->getJson('/api/admin/xs2/tickets?'.http_build_query([
+                'mapping_status' => 'unpublished',
+                'stock_filter' => 'with_stock_not_published',
+                'group_by_event' => 1,
+            ]))
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('meta.group_by', 'event');
+
+        $this->assertSame('ticket-stock-filter-with-stock', $grouped->json('data.0.external_ticket_id'));
+    }
+
     public function test_admin_all_tickets_can_filter_by_event_mapping_status(): void
     {
         $futureStart = now()->addDays(30)->format('Y-m-d H:i:s');

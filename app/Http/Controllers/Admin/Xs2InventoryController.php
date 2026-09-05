@@ -233,6 +233,7 @@ class Xs2InventoryController extends Controller
             'per_page' => ['nullable', 'integer', 'min:1', 'max:100'],
             // Paginate by distinct parent events (returns all tickets for each page of events).
             'group_by_event' => ['nullable', 'boolean'],
+            'stock_filter' => ['nullable', 'in:no_stock,with_stock_not_published'],
         ]);
 
         if ($request->boolean('group_by_event')) {
@@ -373,7 +374,43 @@ class Xs2InventoryController extends Controller
                                 ->orWhere('city', 'like', "%{$search}%");
                         });
                 });
-            });
+            })
+            ->tap(fn ($query) => $this->applyStockFilter($query, $validated['stock_filter'] ?? null));
+    }
+
+    /**
+     * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\Xs2Ticket>  $query
+     */
+    private function applyStockFilter($query, ?string $stockFilter)
+    {
+        if ($stockFilter === null || $stockFilter === '') {
+            return $query;
+        }
+
+        if ($stockFilter === 'no_stock') {
+            return $query->where(fn ($inner) => $inner->whereNull('stock')->orWhere('stock', '<=', 0));
+        }
+
+        if ($stockFilter === 'with_stock_not_published') {
+            return $query
+                ->where('stock', '>', 0)
+                ->where(function ($inner): void {
+                    $inner->whereDoesntHave('listingMapping', fn ($mapping) => $mapping
+                        ->where('provider', 'xs2event')
+                        ->where('status', 'active')
+                        ->whereNotNull('seller_listing_id'),
+                    );
+
+                    if (Schema::hasTable('listing_splits')) {
+                        $inner->whereDoesntHave('listingSplits', fn ($split) => $split
+                            ->where('status', 'active')
+                            ->whereNotNull('seatsbroker_listing_id'),
+                        );
+                    }
+                });
+        }
+
+        return $query;
     }
 
     /** Unpublished listings do not surface sold/remaining qty — skip the SB orders lookup. */
