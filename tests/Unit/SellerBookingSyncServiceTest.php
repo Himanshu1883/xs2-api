@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use App\Jobs\CreateXs2SandboxOrderFromSbOrder;
 use App\Models\SbOrder;
 use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
@@ -9,6 +10,7 @@ use App\Services\SellerApi\SellerBookingSyncService;
 use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
 use App\Services\Xs2\SbOrderXs2SandboxOrderService;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Mockery;
 use Tests\TestCase;
@@ -65,6 +67,53 @@ class SellerBookingSyncServiceTest extends TestCase
         $this->assertSame(SbOrder::STATUS_CONFIRMED, $refreshed->booking_status);
         $this->assertSame('Confirmed', $refreshed->booking_status_text);
         $this->assertNotNull($refreshed->synced_at);
+    }
+
+    public function test_sync_order_queues_xs2_order_without_undefined_summary_key(): void
+    {
+        Queue::fake();
+
+        SbOrder::query()->create([
+            'booking_no' => 'SB-101',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'ticket_id' => 906585,
+            'listing_id' => '841766',
+            'quantity' => 1,
+        ]);
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('fetchBookings')
+            ->once()
+            ->with(['booking_no' => 'SB-101'])
+            ->andReturn([
+                'result' => [
+                    [
+                        'booking_no' => 'SB-101',
+                        'booking_status' => SbOrder::STATUS_CONFIRMED,
+                        'booking_status_text' => 'Confirmed',
+                        'ticket_id' => 906585,
+                        'listing_id' => '841766',
+                        'quantity' => 1,
+                        'attendee_details' => [],
+                    ],
+                ],
+            ]);
+
+        $listingSales = Mockery::mock(ListingSalesService::class);
+        $listingSales->shouldReceive('queueStockReconcileForListingIds')
+            ->once()
+            ->andReturn(['queued' => 0]);
+
+        $xs2SandboxOrders = Mockery::mock(SbOrderXs2SandboxOrderService::class);
+        $xs2SandboxOrders->shouldReceive('queueIfEligible')->once()->andReturn(true);
+        $xs2SandboxOrders->shouldReceive('recordQueueDecision')->once();
+
+        $service = new SellerBookingSyncService($client, $listingSales, $xs2SandboxOrders, $this->guestDataSyncMock());
+        $refreshed = $service->syncOrder(SbOrder::query()->where('booking_no', 'SB-101')->firstOrFail());
+
+        $this->assertSame('SB-101', $refreshed->booking_no);
+        Queue::assertPushed(CreateXs2SandboxOrderFromSbOrder::class);
     }
 
     public function test_sync_order_throws_when_booking_missing_from_seller_api(): void

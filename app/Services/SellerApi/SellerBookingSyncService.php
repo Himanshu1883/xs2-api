@@ -116,6 +116,7 @@ class SellerBookingSyncService
             'updated' => 0,
             'attendees' => 0,
             'stock_reconcile_queued' => 0,
+            'xs2_orders_queued' => 0,
         ];
         $touchedListingIds = [];
         $createdBefore = SbOrder::query()->where('booking_no', $bookingNo)->exists();
@@ -163,6 +164,7 @@ class SellerBookingSyncService
             'updated' => 0,
             'attendees' => 0,
             'stock_reconcile_queued' => 0,
+            'xs2_orders_queued' => 0,
         ];
         $touchedListingIds = [];
         $this->upsertBooking($match, $summary, $touchedListingIds, $forceAttendees);
@@ -366,7 +368,7 @@ class SellerBookingSyncService
             $order = SbOrder::query()->where('booking_no', $bookingNo)->first();
             if ($order !== null) {
                 CreateXs2SandboxOrderFromSbOrder::dispatch($order->id);
-                $summary['xs2_orders_queued']++;
+                $summary['xs2_orders_queued'] = ($summary['xs2_orders_queued'] ?? 0) + 1;
             }
         }
     }
