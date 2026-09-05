@@ -458,6 +458,10 @@ class SbOrderXs2SandboxOrderService
             return $this->existingOrderSkipReason();
         }
 
+        if ($this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
+            return null;
+        }
+
         if ($this->resolveMappedTicket($order) === null) {
             return $this->resolveTicketMappingSkipReason($order)
                 ?? $this->noTicketMappingSkipReason();
@@ -475,6 +479,10 @@ class SbOrderXs2SandboxOrderService
         $reason = $this->resolveQueueSkipReason($order);
         if ($reason !== null) {
             return $reason;
+        }
+
+        if ($this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
+            return null;
         }
 
         $ticket = $this->resolveMappedTicket($order);
