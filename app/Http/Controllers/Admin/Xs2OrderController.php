@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Admin;
 use App\Exceptions\Integrations\Xs2ConfigurationException;
 use App\Exceptions\Integrations\Xs2RequestException;
 use App\Http\Controllers\Controller;
+use App\Jobs\SyncXs2OrdersJob;
 use App\Http\Requests\Xs2\Xs2OrderIndexRequest;
 use App\Http\Resources\Xs2OrderResource;
 use App\Models\EventMapping;
@@ -84,7 +85,7 @@ class Xs2OrderController extends Controller
         $this->authorize('viewAny', EventMapping::class);
 
         try {
-            $summary = $sync->sync();
+            $sync->validateConfiguration();
         } catch (Xs2ConfigurationException|Xs2RequestException $exception) {
             $status = $exception instanceof Xs2RequestException
                 ? Xs2RequestException::adminResponseStatus($exception->status)
@@ -106,22 +107,24 @@ class Xs2OrderController extends Controller
             ], $status);
         }
 
-        $envLabel = ($summary['is_sandbox'] ?? false) ? 'sandbox' : 'production';
-        $apiLabel = ($summary['is_sandbox'] ?? false) ? 'XS2 Test API' : 'XS2 Production API';
+        $meta = $sync->environmentMeta();
+        SyncXs2OrdersJob::dispatch();
+
+        $envLabel = ($meta['is_sandbox'] ?? false) ? 'sandbox' : 'production';
+        $apiLabel = ($meta['is_sandbox'] ?? false) ? 'XS2 Test API' : 'XS2 Production API';
 
         return response()->json([
             'message' => sprintf(
-                'Synced %d %s order(s) from %s GET %s (%d created, %d updated, %d attendee row(s)).',
-                $summary['fetched'],
+                'XS2 %s order sync queued. Orders will update from %s GET %s in the background.',
                 $envLabel,
                 $apiLabel,
-                $summary['endpoint'],
-                $summary['created'],
-                $summary['updated'],
-                $summary['attendees'],
+                $meta['endpoint'],
             ),
-            'data' => $summary,
-        ]);
+            'data' => [
+                'queued' => true,
+                ...$meta,
+            ],
+        ], 202);
     }
 
     public function pushGuestData(Xs2Order $xs2Order, SbOrderXs2GuestDataSyncService $guestData): JsonResponse

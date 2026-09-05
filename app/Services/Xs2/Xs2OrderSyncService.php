@@ -29,10 +29,9 @@ class Xs2OrderSyncService
      * @param  array<string, mixed>  $query
      * @return array{fetched:int, created:int, updated:int, attendees:int, endpoint:string, environment:string, is_sandbox:bool}
      */
-    public function sync(array $query = []): array
+    public function validateConfiguration(): void
     {
         $isSandbox = $this->isSandboxEnvironment();
-        $endpoint = $this->bookingOrdersEndpoint($isSandbox);
 
         if ($isSandbox) {
             if (! $this->sandbox->isConfigured()) {
@@ -40,11 +39,37 @@ class Xs2OrderSyncService
                     'XS2 sandbox test flow is not configured. Set XS2_SANDBOX_API_URL and XS2_SANDBOX_API_KEY in .env.',
                 );
             }
-        } elseif (! $this->client->isOrdersConfigured()) {
+
+            return;
+        }
+
+        if (! $this->client->isOrdersConfigured()) {
             throw new Xs2ConfigurationException(
                 'XS2 production order sync is not configured. Set XS2_BASE_URL and XS2_API_KEY in .env (or Admin → API Config).',
             );
         }
+    }
+
+    /**
+     * @return array{endpoint: string, environment: string, is_sandbox: bool}
+     */
+    public function environmentMeta(): array
+    {
+        $isSandbox = $this->isSandboxEnvironment();
+
+        return [
+            'endpoint' => $this->bookingOrdersEndpoint($isSandbox),
+            'environment' => $isSandbox ? 'sandbox' : 'production',
+            'is_sandbox' => $isSandbox,
+        ];
+    }
+
+    public function sync(array $query = []): array
+    {
+        $isSandbox = $this->isSandboxEnvironment();
+        $endpoint = $this->bookingOrdersEndpoint($isSandbox);
+
+        $this->validateConfiguration();
 
         try {
             $rows = $this->fetchAllBookingOrders($query, $isSandbox);

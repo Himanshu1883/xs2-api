@@ -6,10 +6,13 @@ use App\Models\SbOrder;
 use App\Models\SbOrderAttendee;
 use App\Models\User;
 use App\Models\Xs2Order;
+use App\Jobs\SyncXs2OrdersJob;
 use App\Services\Admin\ApiEnvironmentService;
 use App\Services\Admin\IntegrationSettingService;
+use App\Services\Xs2\Xs2OrderSyncService;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Queue;
 use Tests\TestCase;
 
 class Xs2OrderSyncTest extends TestCase
@@ -82,10 +85,8 @@ class Xs2OrderSyncTest extends TestCase
 
         $this->withToken($this->adminToken())
             ->postJson('/api/admin/xs2-orders/sync')
-            ->assertOk()
-            ->assertJsonPath('data.fetched', 1)
-            ->assertJsonPath('data.created', 1)
-            ->assertJsonPath('data.updated', 0)
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true)
             ->assertJsonPath('data.environment', 'production')
             ->assertJsonPath('data.is_sandbox', false)
             ->assertJsonPath('data.endpoint', '/v1/bookingorders');
@@ -134,8 +135,8 @@ class Xs2OrderSyncTest extends TestCase
 
         $this->withToken($this->adminToken())
             ->postJson('/api/admin/xs2-orders/sync')
-            ->assertOk()
-            ->assertJsonPath('data.created', 1);
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true);
 
         $this->assertDatabaseHas('xs2_orders', [
             'external_order_id' => self::PRODUCTION_BOOKINGORDER_ID,
@@ -177,7 +178,7 @@ class Xs2OrderSyncTest extends TestCase
 
         $this->withToken($this->adminToken())
             ->postJson('/api/admin/xs2-orders/sync')
-            ->assertOk();
+            ->assertStatus(202);
 
         $this->assertDatabaseHas('xs2_orders', [
             'external_order_id' => self::PRODUCTION_BOOKINGORDER_ID,
@@ -214,15 +215,27 @@ class Xs2OrderSyncTest extends TestCase
 
         $this->withToken($this->adminToken())
             ->postJson('/api/admin/xs2-orders/sync')
-            ->assertOk()
-            ->assertJsonPath('data.created', 0)
-            ->assertJsonPath('data.updated', 1);
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true);
 
         $this->assertDatabaseHas('xs2_orders', [
             'external_order_id' => self::PRODUCTION_BOOKINGORDER_ID,
             'event_name' => 'Updated Event',
             'order_status' => 'completed',
         ]);
+    }
+
+    public function test_admin_sync_queues_background_job_without_blocking_http(): void
+    {
+        Queue::fake();
+
+        $this->withToken($this->adminToken())
+            ->postJson('/api/admin/xs2-orders/sync')
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true)
+            ->assertJsonPath('data.environment', 'production');
+
+        Queue::assertPushed(SyncXs2OrdersJob::class);
     }
 
     public function test_index_includes_create_order_environment_defaulting_to_production(): void
@@ -270,7 +283,8 @@ class Xs2OrderSyncTest extends TestCase
 
         $this->withToken($this->adminToken())
             ->postJson('/api/admin/xs2-orders/sync')
-            ->assertOk()
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true)
             ->assertJsonPath('data.environment', 'sandbox')
             ->assertJsonPath('data.is_sandbox', true);
 
@@ -294,7 +308,7 @@ class Xs2OrderSyncTest extends TestCase
             ->assertJsonPath('data.endpoint', '/v1/bookingorders');
     }
 
-    public function test_sync_maps_upstream_xs2_401_to_502_so_web_client_does_not_log_out(): void
+    public function test_sync_job_surfaces_upstream_xs2_401_with_actionable_message(): void
     {
         Http::fake([
             'https://api.xs2.test/v1/bookingorders*' => Http::response([
@@ -302,17 +316,12 @@ class Xs2OrderSyncTest extends TestCase
             ], 401),
         ]);
 
-        $this->withToken($this->adminToken())
-            ->postJson('/api/admin/xs2-orders/sync')
-            ->assertStatus(502)
-            ->assertJsonPath('data.environment', 'production')
-            ->assertJsonPath('data.is_sandbox', false)
-            ->assertJsonPath('data.endpoint', '/v1/bookingorders')
-            ->assertJson(fn ($json) => $json
-                ->where('message', fn (string $message) => str_contains($message, 'HTTP 401')
-                    && str_contains($message, 'Invalid API key.')
-                    && str_contains($message, '/v1/bookingorders'))
-                ->etc());
+        $this->expectException(\App\Exceptions\Integrations\Xs2RequestException::class);
+        $this->expectExceptionMessage('HTTP 401');
+        $this->expectExceptionMessage('Invalid API key.');
+        $this->expectExceptionMessage('/v1/bookingorders');
+
+        app(Xs2OrderSyncService::class)->sync();
     }
 
     private function adminToken(): string
