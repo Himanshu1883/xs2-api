@@ -638,7 +638,8 @@ class Xs2InventoryMappingTest extends TestCase
             ->assertJsonPath('meta.total', 2)
             ->assertJsonPath('meta.per_page', 1)
             ->assertJsonPath('meta.current_page', 1)
-            ->assertJsonPath('meta.last_page', 2);
+            ->assertJsonPath('meta.last_page', 2)
+            ->assertJsonPath('meta.group_by', 'event');
 
         $this->assertSame('ticket-alpha', $pageOne->json('data.0.external_ticket_id'));
 

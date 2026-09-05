@@ -290,7 +290,7 @@ class Xs2InventoryController extends Controller
                 'query' => request()->query(),
             ]);
 
-            return Xs2TicketWithEventAdminResource::collection($paginator);
+            return $this->eventGroupedTicketsResponse($paginator);
         }
 
         $tickets = $this->allTicketsFilteredQuery($validated)
@@ -323,7 +323,19 @@ class Xs2InventoryController extends Controller
             ],
         );
 
-        return Xs2TicketWithEventAdminResource::collection($paginator);
+        return $this->eventGroupedTicketsResponse($paginator);
+    }
+
+    /**
+     * @param  LengthAwarePaginator<int, Xs2Ticket>  $paginator
+     */
+    private function eventGroupedTicketsResponse(LengthAwarePaginator $paginator)
+    {
+        $response = Xs2TicketWithEventAdminResource::collection($paginator);
+        $payload = $response->response()->getData(true);
+        $payload['meta']['group_by'] = 'event';
+
+        return response()->json($payload);
     }
 
     /**
