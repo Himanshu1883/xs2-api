@@ -113,7 +113,7 @@ class ApiEnvironmentService
 
     public function xs2OrdersEnvironment(): string
     {
-        return $this->environment(self::XS2_ORDERS_ACTIVE_ENVIRONMENT) ?? self::ENV_SANDBOX;
+        return $this->environment(self::XS2_ORDERS_ACTIVE_ENVIRONMENT) ?? self::ENV_PRODUCTION;
     }
 
     public function sellerCatalogEnvironment(): string

@@ -7,17 +7,23 @@ use App\Exceptions\Integrations\Xs2RequestException;
 use App\Models\SbOrder;
 use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
+use App\Services\Admin\ApiEnvironmentService;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Sync XS2 sandbox booking orders into xs2_orders / xs2_order_attendees.
+ * Sync XS2 booking orders into xs2_orders / xs2_order_attendees.
  *
- * Calls Xs2SandboxService::fetchBookingOrders() → GET /v1/bookingorders on the
- * XS2 Test API (testapi.xs2event.com). All upserted rows are marked is_sandbox=true.
+ * Uses the active Create Order API environment (XS2_ORDERS_ACTIVE_ENVIRONMENT):
+ * production → Xs2Client GET /v1/bookingorders on api.xs2event.com;
+ * sandbox → Xs2SandboxService on testapi.xs2event.com.
  */
 class Xs2OrderSyncService
 {
-    public function __construct(private readonly Xs2SandboxService $sandbox) {}
+    public function __construct(
+        private readonly ApiEnvironmentService $apiEnvironment,
+        private readonly Xs2Client $client,
+        private readonly Xs2SandboxService $sandbox,
+    ) {}
 
     /**
      * @param  array<string, mixed>  $query
@@ -25,27 +31,39 @@ class Xs2OrderSyncService
      */
     public function sync(array $query = []): array
     {
-        if (! $this->sandbox->isConfigured()) {
+        $isSandbox = $this->isSandboxEnvironment();
+        $endpoint = $this->bookingOrdersEndpoint($isSandbox);
+
+        if ($isSandbox) {
+            if (! $this->sandbox->isConfigured()) {
+                throw new Xs2ConfigurationException(
+                    'XS2 sandbox test flow is not configured. Set XS2_SANDBOX_API_URL and XS2_SANDBOX_API_KEY in .env.',
+                );
+            }
+        } elseif (! $this->client->isOrdersConfigured()) {
             throw new Xs2ConfigurationException(
-                'XS2 sandbox test flow is not configured. Set XS2_SANDBOX_API_URL and XS2_SANDBOX_API_KEY in .env.',
+                'XS2 production order sync is not configured. Set XS2_BASE_URL and XS2_API_KEY in .env (or Admin → API Config).',
             );
         }
 
-        $endpoint = (string) config('xs2.sandbox.bookingorders_endpoint', '/v1/bookingorders');
-
         try {
-            $rows = $this->fetchAllBookingOrders($query);
+            $rows = $this->fetchAllBookingOrders($query, $isSandbox);
         } catch (Xs2ConfigurationException $exception) {
+            $hint = $isSandbox
+                ? ' Configure XS2_SANDBOX_API_URL and XS2_SANDBOX_API_KEY for sandbox order sync.'
+                : ' Configure XS2_BASE_URL and XS2_API_KEY for production order sync.';
+
             throw new Xs2ConfigurationException(
-                $exception->getMessage().' Configure XS2_SANDBOX_API_URL and XS2_SANDBOX_API_KEY for sandbox order sync.',
+                $exception->getMessage().$hint,
                 (int) $exception->getCode(),
                 $exception,
             );
         } catch (Xs2RequestException $exception) {
             $status = $exception->status;
+            $apiLabel = $isSandbox ? 'XS2 Test API' : 'XS2 Production API';
             $hint = $status === 404
-                ? ' XS2 sandbox returned 404 for GET '.$endpoint.'.'
-                : ' Expected GET '.$endpoint.' on the XS2 Test API to return bookingorders.';
+                ? ' '.$apiLabel.' returned 404 for GET '.$endpoint.'.'
+                : ' Expected GET '.$endpoint.' on the '.$apiLabel.' to return bookingorders.';
 
             throw new Xs2RequestException($exception->getMessage().$hint, $status);
         }
@@ -56,15 +74,15 @@ class Xs2OrderSyncService
             'updated' => 0,
             'attendees' => 0,
             'endpoint' => $endpoint,
-            'environment' => 'sandbox',
-            'is_sandbox' => true,
+            'environment' => $isSandbox ? 'sandbox' : 'production',
+            'is_sandbox' => $isSandbox,
         ];
 
         foreach ($rows as $row) {
             if (! is_array($row)) {
                 continue;
             }
-            $this->upsertOrder($row, $summary);
+            $this->upsertOrder($row, $summary, $isSandbox);
         }
 
         return $summary;
@@ -74,7 +92,7 @@ class Xs2OrderSyncService
      * @param  array<string, mixed>  $query
      * @return list<array<string, mixed>>
      */
-    private function fetchAllBookingOrders(array $query): array
+    private function fetchAllBookingOrders(array $query, bool $isSandbox): array
     {
         $pageSize = max(1, min(100, (int) config('xs2.page_size', 100)));
         $maxPages = max(1, (int) config('xs2.max_pages', 50));
@@ -82,10 +100,10 @@ class Xs2OrderSyncService
         $rows = [];
 
         for ($iteration = 0; $iteration < $maxPages; $iteration++) {
-            $response = $this->sandbox->fetchBookingOrders(array_merge($query, [
+            $response = $this->fetchBookingOrdersPage(array_merge($query, [
                 'page' => $page,
                 'page_size' => $pageSize,
-            ]));
+            ]), $isSandbox);
 
             $orders = $response['bookingorders'] ?? [];
             if (! is_array($orders) || $orders === []) {
@@ -121,11 +139,31 @@ class Xs2OrderSyncService
         return $rows;
     }
 
+    /** @param  array<string, mixed>  $query */
+    private function fetchBookingOrdersPage(array $query, bool $isSandbox): array
+    {
+        return $isSandbox
+            ? $this->sandbox->fetchBookingOrders($query)
+            : $this->client->fetchBookingOrders($query);
+    }
+
+    private function isSandboxEnvironment(): bool
+    {
+        return $this->apiEnvironment->xs2OrdersEnvironment() === ApiEnvironmentService::ENV_SANDBOX;
+    }
+
+    private function bookingOrdersEndpoint(bool $isSandbox): string
+    {
+        return $isSandbox
+            ? (string) config('xs2.sandbox.bookingorders_endpoint', '/v1/bookingorders')
+            : (string) config('xs2.bookingorders_endpoint', '/v1/bookingorders');
+    }
+
     /**
      * @param  array<string, mixed>  $row
      * @param  array<string, int|string|bool>  $summary
      */
-    private function upsertOrder(array $row, array &$summary): void
+    private function upsertOrder(array $row, array &$summary, bool $isSandbox): void
     {
         $externalId = $this->externalOrderId($row);
         if ($externalId === null) {
@@ -135,7 +173,7 @@ class Xs2OrderSyncService
         $summary['fetched'] = (int) $summary['fetched'] + 1;
 
         $attendees = $this->attendeeRows($row);
-        $attributes = $this->orderAttributes($row);
+        $attributes = $this->orderAttributes($row, $isSandbox);
 
         DB::transaction(function () use ($externalId, $attributes, $attendees, $row, &$summary): void {
             $existing = Xs2Order::query()
@@ -275,7 +313,7 @@ class Xs2OrderSyncService
     }
 
     /** @param  array<string, mixed>  $row @return array<string, mixed> */
-    private function orderAttributes(array $row): array
+    private function orderAttributes(array $row, bool $isSandbox): array
     {
         $items = is_array($row['items'] ?? null)
             ? array_values(array_filter($row['items'], is_array(...)))
@@ -287,7 +325,7 @@ class Xs2OrderSyncService
         $status = $row['logistic_status'] ?? $row['booking_status'] ?? $row['status'] ?? null;
 
         return [
-            'is_sandbox' => true,
+            'is_sandbox' => $isSandbox,
             'xs2_reservation_id' => $this->nullableString($row['reservation_id'] ?? null),
             'xs2_booking_id' => $bookingId,
             'xs2_bookingorder_id' => $bookingOrderId,

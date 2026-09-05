@@ -154,10 +154,10 @@ class AdminApiConfigTest extends TestCase
         );
     }
 
-    public function test_xs2_create_order_defaults_to_sandbox_when_unset(): void
+    public function test_xs2_create_order_defaults_to_production_when_unset(): void
     {
-        config()->set('xs2.sandbox.api_url', 'https://testapi.xs2event.com');
-        config()->set('xs2.sandbox.api_key', 'sandbox-xs2-key');
+        config()->set('xs2.base_url', 'https://api.xs2event.com');
+        config()->set('xs2.api_key', 'prod-xs2-key');
 
         $user = User::factory()->create(['user_type' => 6]);
         $token = $user->createToken('api-config-xs2-order-default')->plainTextToken;
@@ -166,8 +166,8 @@ class AdminApiConfigTest extends TestCase
             ->getJson('/api/admin/api-config/environment')
             ->assertOk()
             ->assertJsonPath('data.integrations.3.id', 'xs2_create_order')
-            ->assertJsonPath('data.integrations.3.environment', 'sandbox')
-            ->assertJsonPath('data.integrations.3.base_url', 'https://testapi.xs2event.com');
+            ->assertJsonPath('data.integrations.3.environment', 'production')
+            ->assertJsonPath('data.integrations.3.base_url', 'https://api.xs2event.com');
     }
 
     public function test_xs2_client_uses_sandbox_credentials_when_environment_is_sandbox(): void

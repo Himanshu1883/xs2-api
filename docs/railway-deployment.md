@@ -57,25 +57,25 @@ SB marketplace orders can create matching reservations and bookings on the XS2 *
 | `XS2_SANDBOX_API_KEY` | Yes | XS2 sandbox API key |
 | `XS2_SANDBOX_AUTO_CREATE_ORDERS_FROM_SB` | No | Defaults to `true`; set `false` to disable auto-creation |
 
-**Create Order API environment** is stored in the database (`integration_settings` key `XS2_ORDERS_ACTIVE_ENVIRONMENT`), not in `.env`. Code defaults to **sandbox** when the row is missing.
+**Create Order API environment** is stored in the database (`integration_settings` key `XS2_ORDERS_ACTIVE_ENVIRONMENT`), not in `.env`. Code defaults to **production** when the row is missing.
 
 **Option A — Admin UI (recommended):**
 
 1. Open the provider web app → **Admin → XS2 → API Configuration** (`/admin/xs2/api-config`).
 2. In **Active API environments**, find **XS2 Create Order API**.
-3. Switch to **Sandbox**, then click **Save environments**.
+3. Switch to **Production**, then click **Save environments**.
 
-**Option B — SQL** (if the row exists and is set to `production`):
+**Option B — SQL** (if the row exists and is set to `sandbox`):
 
 ```sql
 UPDATE integration_settings
-SET value = 'sandbox'
+SET value = 'production'
 WHERE `key` = 'XS2_ORDERS_ACTIVE_ENVIRONMENT';
 ```
 
-If no row exists, no SQL is needed — the app already treats Create Order API as sandbox.
+If no row exists, no SQL is needed — the app already treats Create Order API as production.
 
-**Verify:** Admin → XS2 → Orders should show `create_order_environment: sandbox`. Cron config for **SB order → XS2 booking** should list `create_order_api: sandbox`.
+**Verify:** Admin → XS2 → Orders should show `create_order_environment: production`. Cron config for **SB order → XS2 booking** should list `create_order_api: production`.
 
 See also [cron-automation.md](./cron-automation.md) for Start All pipeline, split qty sync behaviour, and the production testing checklist.
 

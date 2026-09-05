@@ -90,20 +90,31 @@ class Xs2OrderController extends Controller
                 ? Xs2RequestException::adminResponseStatus($exception->status)
                 : 422;
 
+            $environment = $this->apiEnvironment->xs2OrdersEnvironment();
+            $isSandbox = $environment === ApiEnvironmentService::ENV_SANDBOX;
+            $endpoint = $isSandbox
+                ? config('xs2.sandbox.bookingorders_endpoint', '/v1/bookingorders')
+                : config('xs2.bookingorders_endpoint', '/v1/bookingorders');
+
             return response()->json([
                 'message' => $exception->getMessage(),
                 'data' => [
-                    'endpoint' => config('xs2.sandbox.bookingorders_endpoint', '/v1/bookingorders'),
-                    'environment' => 'sandbox',
-                    'is_sandbox' => true,
+                    'endpoint' => $endpoint,
+                    'environment' => $environment,
+                    'is_sandbox' => $isSandbox,
                 ],
             ], $status);
         }
 
+        $envLabel = ($summary['is_sandbox'] ?? false) ? 'sandbox' : 'production';
+        $apiLabel = ($summary['is_sandbox'] ?? false) ? 'XS2 Test API' : 'XS2 Production API';
+
         return response()->json([
             'message' => sprintf(
-                'Synced %d sandbox order(s) from XS2 Test API GET %s (%d created, %d updated, %d attendee row(s)).',
+                'Synced %d %s order(s) from %s GET %s (%d created, %d updated, %d attendee row(s)).',
                 $summary['fetched'],
+                $envLabel,
+                $apiLabel,
                 $summary['endpoint'],
                 $summary['created'],
                 $summary['updated'],

@@ -9,7 +9,7 @@ class SyncXs2OrdersCommand extends Command
 {
     protected $signature = 'xs2:sync-orders';
 
-    protected $description = 'Fetch XS2 Test API GET /v1/bookingorders and upsert sandbox rows into xs2_orders.';
+    protected $description = 'Fetch XS2 booking orders (GET /v1/bookingorders) and upsert rows into xs2_orders using the active Create Order API environment.';
 
     public function handle(Xs2OrderSyncService $sync): int
     {
