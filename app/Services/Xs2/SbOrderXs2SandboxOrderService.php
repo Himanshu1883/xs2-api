@@ -72,10 +72,20 @@ class SbOrderXs2SandboxOrderService
             ];
         }
 
-        if ($this->isPendingLinkedXs2Order($existing) || $this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
-            $linkedExisting = $this->linkExistingSyncedXs2Order($order, $existing);
+        $unlinkedMatch = $this->findUnlinkedXs2OrderMatchingSbBooking($order);
+
+        if ($this->isPendingLinkedXs2Order($existing) || $unlinkedMatch !== null) {
+            $linkedExisting = $this->linkExistingSyncedXs2Order($order, $existing, $unlinkedMatch);
             if ($linkedExisting !== null) {
                 return $linkedExisting;
+            }
+
+            if ($this->isPendingLinkedXs2Order($existing)) {
+                return $this->skip(
+                    $existing,
+                    'Could not link an existing synced XS2 order for booking '.$order->booking_no.'. Sync XS2 orders from the API, then retry Create manual.',
+                    $order,
+                );
             }
         }
 
@@ -745,9 +755,9 @@ class SbOrderXs2SandboxOrderService
      *     reason: string|null
      * }|null
      */
-    private function linkExistingSyncedXs2Order(SbOrder $order, ?Xs2Order $existing): ?array
+    private function linkExistingSyncedXs2Order(SbOrder $order, ?Xs2Order $existing, ?Xs2Order $unlinked = null): ?array
     {
-        $unlinked = $this->findUnlinkedXs2OrderMatchingSbBooking($order);
+        $unlinked ??= $this->findUnlinkedXs2OrderMatchingSbBooking($order);
         if ($unlinked === null) {
             return null;
         }
@@ -787,22 +797,46 @@ class SbOrderXs2SandboxOrderService
             return null;
         }
 
-        $matches = $this->queryUnlinkedXs2OrdersByBookingReference($bookingNo)
-            ->filter(fn (Xs2Order $candidate): bool => $this->xs2OrderReferencesSbBooking($candidate, $bookingNo))
+        return $this->collectUnlinkedXs2OrderCandidates($order, $bookingNo)
+            ->filter(fn (Xs2Order $candidate): bool => $this->xs2OrderMatchesSbBooking($candidate, $order, $bookingNo))
             ->sortByDesc(fn (Xs2Order $candidate): int => $this->linkExistingOrderPriority($candidate))
-            ->values();
+            ->first();
+    }
 
-        return $matches->first();
+    /** @return Collection<int, Xs2Order> */
+    private function collectUnlinkedXs2OrderCandidates(SbOrder $order, string $normalizedBookingNo): Collection
+    {
+        $candidates = $this->queryUnlinkedXs2OrdersByBookingReference($normalizedBookingNo)
+            ->merge($this->queryUnlinkedXs2OrdersByRawPayloadContains($normalizedBookingNo))
+            ->merge($this->queryUnlinkedXs2OrdersByPendingExternalPattern($normalizedBookingNo))
+            ->merge($this->queryUnlinkedXs2OrdersByEventMatch($order));
+
+        return $candidates
+            ->unique('id')
+            ->values();
+    }
+
+    /** @return \Illuminate\Database\Eloquent\Builder<Xs2Order> */
+    private function unlinkedXs2OrdersBaseQuery(bool $strictSandbox = true)
+    {
+        $query = Xs2Order::query()
+            ->whereNull('sb_order_id')
+            ->whereNotNull('xs2_booking_id')
+            ->where(function ($query): void {
+                $query->where('external_order_id', 'not like', Xs2BookingOrderIdentity::PENDING_EXTERNAL_ORDER_PREFIX.'%')
+                    ->orWhereNull('external_order_id');
+            });
+
+        if ($strictSandbox) {
+            $query->where('is_sandbox', $this->isSandboxEnvironment());
+        }
+
+        return $query;
     }
 
     /** @return Collection<int, Xs2Order> */
     private function queryUnlinkedXs2OrdersByBookingReference(string $normalizedBookingNo): Collection
     {
-        $baseQuery = Xs2Order::query()
-            ->whereNull('sb_order_id')
-            ->where('is_sandbox', $this->isSandboxEnvironment())
-            ->whereNotNull('xs2_booking_id');
-
         $referenceFields = [
             'booking_reference',
             'invoice_reference',
@@ -811,12 +845,21 @@ class SbOrderXs2SandboxOrderService
             'booking_code',
         ];
 
-        $candidates = (clone $baseQuery)
-            ->where(function ($query) use ($referenceFields, $normalizedBookingNo): void {
+        $lowerBookingNo = mb_strtolower($normalizedBookingNo);
+
+        $candidates = $this->unlinkedXs2OrdersBaseQuery()
+            ->where(function ($query) use ($referenceFields, $normalizedBookingNo, $lowerBookingNo): void {
                 foreach ($referenceFields as $field) {
                     $path = 'raw_payload->'.$field;
                     $query->orWhere($path, $normalizedBookingNo)
-                        ->orWhere($path, mb_strtolower($normalizedBookingNo));
+                        ->orWhere($path, $lowerBookingNo);
+                }
+
+                if (DB::connection()->getDriverName() === 'mysql') {
+                    $query->orWhereRaw(
+                        'UPPER(JSON_UNQUOTE(JSON_EXTRACT(raw_payload, "$.booking_reference"))) = ?',
+                        [$normalizedBookingNo],
+                    );
                 }
             })
             ->get();
@@ -825,9 +868,67 @@ class SbOrderXs2SandboxOrderService
             return $candidates;
         }
 
-        return (clone $baseQuery)
-            ->orderByDesc('id')
-            ->limit(500)
+        $relaxed = $this->unlinkedXs2OrdersBaseQuery(false)
+            ->where(function ($query) use ($referenceFields, $normalizedBookingNo, $lowerBookingNo): void {
+                foreach ($referenceFields as $field) {
+                    $path = 'raw_payload->'.$field;
+                    $query->orWhere($path, $normalizedBookingNo)
+                        ->orWhere($path, $lowerBookingNo);
+                }
+            })
+            ->get();
+
+        return $relaxed;
+    }
+
+    /** @return Collection<int, Xs2Order> */
+    private function queryUnlinkedXs2OrdersByRawPayloadContains(string $normalizedBookingNo): Collection
+    {
+        $needle = '%'.mb_strtolower($normalizedBookingNo).'%';
+        $castExpression = DB::connection()->getDriverName() === 'mysql'
+            ? 'LOWER(CAST(raw_payload AS CHAR))'
+            : 'LOWER(CAST(raw_payload AS TEXT))';
+
+        $candidates = $this->unlinkedXs2OrdersBaseQuery()
+            ->whereRaw($castExpression.' LIKE ?', [$needle])
+            ->get();
+
+        if ($candidates->isNotEmpty()) {
+            return $candidates;
+        }
+
+        return $this->unlinkedXs2OrdersBaseQuery(false)
+            ->whereRaw($castExpression.' LIKE ?', [$needle])
+            ->get();
+    }
+
+    /** @return Collection<int, Xs2Order> */
+    private function queryUnlinkedXs2OrdersByPendingExternalPattern(string $normalizedBookingNo): Collection
+    {
+        $pendingId = Xs2BookingOrderIdentity::pendingExternalOrderId($normalizedBookingNo);
+
+        return $this->unlinkedXs2OrdersBaseQuery()
+            ->where(function ($query) use ($normalizedBookingNo, $pendingId): void {
+                $query->where('external_order_id', 'like', '%'.$normalizedBookingNo.'%')
+                    ->orWhere('xs2_booking_id', 'like', '%'.$normalizedBookingNo.'%')
+                    ->orWhere('xs2_bookingorder_id', 'like', '%'.$normalizedBookingNo.'%')
+                    ->orWhere('external_order_id', $pendingId);
+            })
+            ->get();
+    }
+
+    /** @return Collection<int, Xs2Order> */
+    private function queryUnlinkedXs2OrdersByEventMatch(SbOrder $order): Collection
+    {
+        $matchName = $this->nullableString($order->match_name);
+        if ($matchName === null || $order->match_date === null) {
+            return collect();
+        }
+
+        return $this->unlinkedXs2OrdersBaseQuery()
+            ->where('order_status', 'completed')
+            ->whereDate('event_date', $order->match_date)
+            ->where('event_name', $matchName)
             ->get();
     }
 
@@ -850,6 +951,35 @@ class SbOrderXs2SandboxOrderService
         return ($priority * 1_000_000) + (int) $order->id;
     }
 
+    private function xs2OrderMatchesSbBooking(Xs2Order $xs2Order, SbOrder $order, string $normalizedBookingNo): bool
+    {
+        if ($this->xs2OrderReferencesSbBooking($xs2Order, $normalizedBookingNo)) {
+            return true;
+        }
+
+        if ($this->xs2OrderRawPayloadContainsBookingReference($xs2Order, $normalizedBookingNo)) {
+            return true;
+        }
+
+        if ($this->xs2OrderMatchesSbEvent($xs2Order, $order)) {
+            return true;
+        }
+
+        $pendingId = Xs2BookingOrderIdentity::pendingExternalOrderId($normalizedBookingNo);
+        if ($this->nullableString($xs2Order->external_order_id) === $pendingId) {
+            return false;
+        }
+
+        foreach ([$xs2Order->external_order_id, $xs2Order->xs2_booking_id, $xs2Order->xs2_bookingorder_id] as $identifier) {
+            $value = $this->nullableString($identifier);
+            if ($value !== null && str_contains(mb_strtoupper($value), $normalizedBookingNo)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function xs2OrderReferencesSbBooking(Xs2Order $xs2Order, string $normalizedBookingNo): bool
     {
         foreach (['booking_reference', 'invoice_reference', 'payment_reference', 'external_reference_id', 'booking_code'] as $field) {
@@ -860,6 +990,38 @@ class SbOrderXs2SandboxOrderService
         }
 
         return false;
+    }
+
+    private function xs2OrderRawPayloadContainsBookingReference(Xs2Order $xs2Order, string $normalizedBookingNo): bool
+    {
+        $payload = $xs2Order->raw_payload;
+        if (! is_array($payload)) {
+            return false;
+        }
+
+        $encoded = mb_strtolower((string) json_encode($payload, JSON_UNESCAPED_UNICODE));
+
+        return str_contains($encoded, mb_strtolower($normalizedBookingNo));
+    }
+
+    private function xs2OrderMatchesSbEvent(Xs2Order $xs2Order, SbOrder $order): bool
+    {
+        if (mb_strtolower((string) ($xs2Order->order_status ?? '')) !== 'completed') {
+            return false;
+        }
+
+        $matchName = $this->nullableString($order->match_name);
+        $eventName = $this->nullableString($xs2Order->event_name);
+        if ($matchName === null || $eventName === null || $order->match_date === null) {
+            return false;
+        }
+
+        if ($matchName !== $eventName) {
+            return false;
+        }
+
+        return $xs2Order->event_date !== null
+            && $xs2Order->event_date->toDateString() === $order->match_date->toDateString();
     }
 
     private function normalizedBookingReference(?string $value): ?string
