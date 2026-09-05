@@ -37,26 +37,23 @@ class SbOrderXs2SandboxOrderService
      *     order: Xs2Order|null,
      *     created: bool,
      *     updated: bool,
+     *     linked: bool,
      *     skipped: bool,
      *     reason: string|null
      * }
      */
     public function createFromSbOrder(SbOrder $order): array
     {
-        if (! $this->isEnabled()) {
-            return $this->skip(null, $this->autoOrderDisabledReason(), $order);
-        }
-
-        if (! $this->orderApiConfigured()) {
-            return $this->skip(null, $this->orderApiNotConfiguredReason(), $order);
-        }
-
         if ($this->isCancelled($order)) {
             return $this->skip(null, 'SB order is cancelled.', $order);
         }
 
         $existing = $this->existingOrder($order);
-        if ($existing !== null && filled($existing->xs2_booking_id)) {
+        if (
+            $existing !== null
+            && filled($existing->xs2_booking_id)
+            && ! Xs2BookingOrderIdentity::isPendingExternalOrderId($existing->external_order_id)
+        ) {
             $this->syncLogs->recordSkipped(
                 $order->id,
                 $this->existingOrderSkipReason(),
@@ -67,34 +64,23 @@ class SbOrderXs2SandboxOrderService
                 'order' => $existing,
                 'created' => false,
                 'updated' => false,
+                'linked' => false,
                 'skipped' => true,
                 'reason' => $this->existingOrderSkipReason(),
             ];
         }
 
-        $unlinkedMatch = $this->findUnlinkedXs2OrderMatchingSbBooking($order);
-
-        if ($this->isPendingLinkedXs2Order($existing) || $unlinkedMatch !== null) {
-            $linkedExisting = $this->linkExistingSyncedXs2Order($order, $existing, $unlinkedMatch);
-            if ($linkedExisting !== null) {
-                return $linkedExisting;
-            }
-
-            if ($this->isPendingLinkedXs2Order($existing)) {
-                return $this->skip(
-                    $existing,
-                    'Could not link an existing synced XS2 order for booking '.$order->booking_no.'. Sync XS2 orders from the API, then retry Create manual.',
-                    $order,
-                );
-            }
+        $linkedExisting = $this->tryLinkExistingSyncedXs2Order($order, $existing);
+        if ($linkedExisting !== null) {
+            return $linkedExisting;
         }
 
-        if ($this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
-            return $this->skip(
-                $existing,
-                'A matching synced XS2 order exists but could not be linked.',
-                $order,
-            );
+        if (! $this->isEnabled()) {
+            return $this->skip(null, $this->autoOrderDisabledReason(), $order);
+        }
+
+        if (! $this->orderApiConfigured()) {
+            return $this->skip(null, $this->orderApiNotConfiguredReason(), $order);
         }
 
         $ticket = $this->resolveMappedTicket($order);
@@ -208,6 +194,7 @@ class SbOrderXs2SandboxOrderService
                     'order' => $xs2Order->fresh(['attendees']),
                     'created' => $created,
                     'updated' => $updated,
+                    'linked' => false,
                     'skipped' => false,
                     'reason' => null,
                 ];
@@ -215,16 +202,21 @@ class SbOrderXs2SandboxOrderService
         } catch (\Throwable $exception) {
             $message = mb_substr($exception->getMessage(), 0, 2000);
 
-            $unlinkedMatch = $this->findUnlinkedXs2OrderMatchingSbBooking($order);
-            if ($unlinkedMatch !== null) {
-                $linkedExisting = $this->linkExistingSyncedXs2Order($order, $existing, $unlinkedMatch);
-                if ($linkedExisting !== null) {
-                    return $linkedExisting;
-                }
-            }
-
             if ($existing === null) {
                 $existing = $this->existingOrder($order);
+            }
+
+            $linkedExisting = $this->tryLinkExistingSyncedXs2Order($order, $existing);
+            if ($linkedExisting !== null) {
+                return $linkedExisting;
+            }
+
+            if ($this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
+                return $this->skip(
+                    $existing,
+                    'A matching synced XS2 order exists but could not be linked.',
+                    $order,
+                );
             }
 
             if ($existing === null) {
@@ -258,10 +250,53 @@ class SbOrderXs2SandboxOrderService
                 'order' => $existing->fresh(),
                 'created' => false,
                 'updated' => true,
+                'linked' => false,
                 'skipped' => false,
                 'reason' => $message,
             ];
         }
+    }
+
+    /**
+     * @return array{
+     *     order: Xs2Order,
+     *     created: bool,
+     *     updated: bool,
+     *     linked: bool,
+     *     skipped: bool,
+     *     reason: string|null
+     * }|null
+     */
+    private function tryLinkExistingSyncedXs2Order(SbOrder $order, ?Xs2Order $existing): ?array
+    {
+        $unlinkedMatch = $this->findUnlinkedXs2OrderMatchingSbBooking($order);
+
+        if (! $this->isPendingLinkedXs2Order($existing) && $unlinkedMatch === null) {
+            return null;
+        }
+
+        $linkedExisting = $this->linkExistingSyncedXs2Order($order, $existing, $unlinkedMatch);
+        if ($linkedExisting !== null) {
+            return $linkedExisting;
+        }
+
+        if ($this->isPendingLinkedXs2Order($existing)) {
+            return $this->skip(
+                $existing,
+                'Could not link an existing synced XS2 order for booking '.$order->booking_no.'. Sync XS2 orders from the API, then retry Create manual.',
+                $order,
+            );
+        }
+
+        if ($unlinkedMatch !== null) {
+            return $this->skip(
+                $existing,
+                'A matching synced XS2 order exists but could not be linked.',
+                $order,
+            );
+        }
+
+        return null;
     }
 
     /**
@@ -763,6 +798,7 @@ class SbOrderXs2SandboxOrderService
      *     order: Xs2Order,
      *     created: bool,
      *     updated: bool,
+     *     linked: bool,
      *     skipped: bool,
      *     reason: string|null
      * }|null
@@ -775,6 +811,8 @@ class SbOrderXs2SandboxOrderService
         }
 
         DB::transaction(function () use ($order, $existing, $unlinked): void {
+            $this->deletePendingPlaceholdersForBooking($order, $unlinked->id);
+
             if (
                 $existing !== null
                 && $existing->id !== $unlinked->id
@@ -797,6 +835,7 @@ class SbOrderXs2SandboxOrderService
             'order' => $unlinked->fresh(['attendees']),
             'created' => false,
             'updated' => true,
+            'linked' => true,
             'skipped' => false,
             'reason' => null,
         ];
@@ -811,7 +850,7 @@ class SbOrderXs2SandboxOrderService
 
         return $this->collectUnlinkedXs2OrderCandidates($order, $bookingNo)
             ->filter(fn (Xs2Order $candidate): bool => $this->xs2OrderMatchesSbBooking($candidate, $order, $bookingNo))
-            ->sortByDesc(fn (Xs2Order $candidate): int => $this->linkExistingOrderPriority($candidate))
+            ->sortByDesc(fn (Xs2Order $candidate): int => $this->linkExistingOrderPriority($candidate, $order))
             ->first();
     }
 
@@ -821,7 +860,11 @@ class SbOrderXs2SandboxOrderService
         $candidates = $this->queryUnlinkedXs2OrdersByBookingReference($normalizedBookingNo)
             ->merge($this->queryUnlinkedXs2OrdersByRawPayloadContains($normalizedBookingNo))
             ->merge($this->queryUnlinkedXs2OrdersByPendingExternalPattern($normalizedBookingNo))
-            ->merge($this->queryUnlinkedXs2OrdersByEventMatch($order));
+            ->merge($this->queryUnlinkedXs2OrdersByEventMatch($order))
+            ->merge($this->queryUnlinkedXs2OrdersByMatchId($order))
+            ->merge($this->queryUnlinkedXs2OrdersByBuyerEmail($order))
+            ->merge($this->queryUnlinkedXs2OrdersByTicketMapping($order))
+            ->merge($this->queryUnlinkedXs2OrdersByQuantityAmount($order));
 
         return $candidates
             ->unique('id')
@@ -940,11 +983,129 @@ class SbOrderXs2SandboxOrderService
         return $this->unlinkedXs2OrdersBaseQuery()
             ->where('order_status', 'completed')
             ->whereDate('event_date', $order->match_date)
-            ->where('event_name', $matchName)
+            ->get()
+            ->filter(fn (Xs2Order $candidate): bool => $this->xs2OrderMatchesSbEvent($candidate, $order))
+            ->values();
+    }
+
+    /** @return Collection<int, Xs2Order> */
+    private function queryUnlinkedXs2OrdersByMatchId(SbOrder $order): Collection
+    {
+        if ($order->match_id === null) {
+            return collect();
+        }
+
+        $mapping = EventMapping::query()
+            ->where('m_id', $order->match_id)
+            ->whereNotNull('xs2_event_id')
+            ->first();
+        if ($mapping === null) {
+            return collect();
+        }
+
+        $event = Xs2Event::query()->find($mapping->xs2_event_id);
+        if ($event === null || ! filled($event->external_event_id)) {
+            return collect();
+        }
+
+        return $this->unlinkedXs2OrdersBaseQuery()
+            ->where('external_event_id', $event->external_event_id)
             ->get();
     }
 
-    private function linkExistingOrderPriority(Xs2Order $order): int
+    /** @return Collection<int, Xs2Order> */
+    private function queryUnlinkedXs2OrdersByBuyerEmail(SbOrder $order): Collection
+    {
+        $email = mb_strtolower($this->resolveBookingEmail($order));
+        if ($email === '' || $email === 'xs2-sandbox@example.com') {
+            return collect();
+        }
+
+        return $this->unlinkedXs2OrdersBaseQuery()
+            ->where(function ($query) use ($email): void {
+                $query->whereRaw('LOWER(buyer_email) = ?', [$email])
+                    ->orWhere('raw_payload->booking_email', $email);
+
+                if (DB::connection()->getDriverName() === 'mysql') {
+                    $query->orWhereRaw('LOWER(JSON_UNQUOTE(JSON_EXTRACT(raw_payload, "$.booking_email"))) = ?', [$email]);
+                }
+            })
+            ->get();
+    }
+
+    /** @return Collection<int, Xs2Order> */
+    private function queryUnlinkedXs2OrdersByTicketMapping(SbOrder $order): Collection
+    {
+        $ticketIds = [];
+
+        $ticket = $this->resolveMappedTicket($order);
+        if ($ticket !== null && filled($ticket->external_ticket_id)) {
+            $ticketIds[] = (string) $ticket->external_ticket_id;
+        }
+
+        foreach ($this->marketplaceListingIds($order) as $listingId) {
+            $ticketIds[] = (string) $listingId;
+        }
+
+        $ticketIds = array_values(array_unique(array_filter($ticketIds)));
+        if ($ticketIds === []) {
+            return collect();
+        }
+
+        return $this->unlinkedXs2OrdersBaseQuery()
+            ->where(function ($query) use ($ticketIds): void {
+                foreach ($ticketIds as $ticketId) {
+                    $query->orWhere('external_ticket_id', $ticketId)
+                        ->orWhere('raw_payload->items->0->ticket_id', $ticketId);
+                }
+            })
+            ->get();
+    }
+
+    /** @return Collection<int, Xs2Order> */
+    private function queryUnlinkedXs2OrdersByQuantityAmount(SbOrder $order): Collection
+    {
+        if ($order->match_date === null) {
+            return collect();
+        }
+
+        $quantity = (int) ($order->quantity ?? 0);
+        if ($quantity < 1 && $order->ticket_amount === null) {
+            return collect();
+        }
+
+        return $this->unlinkedXs2OrdersBaseQuery()
+            ->where('order_status', 'completed')
+            ->whereDate('event_date', $order->match_date)
+            ->when($quantity > 0, fn ($query) => $query->where('quantity', $quantity))
+            ->get()
+            ->filter(fn (Xs2Order $candidate): bool => $this->xs2OrderMatchesSbQuantityAmount($candidate, $order))
+            ->values();
+    }
+
+    private function deletePendingPlaceholdersForBooking(SbOrder $order, int $keepOrderId): void
+    {
+        $bookingNo = $this->nullableString($order->booking_no);
+        if ($bookingNo === null) {
+            return;
+        }
+
+        $pendingId = Xs2BookingOrderIdentity::pendingExternalOrderId($bookingNo);
+
+        Xs2Order::query()
+            ->where('id', '!=', $keepOrderId)
+            ->where(function ($query) use ($pendingId, $bookingNo, $order): void {
+                $query->where('external_order_id', $pendingId)
+                    ->orWhere('external_order_id', Xs2BookingOrderIdentity::pendingExternalOrderId(mb_strtoupper($bookingNo)))
+                    ->orWhere(function ($query) use ($order): void {
+                        $query->where('sb_order_id', $order->id)
+                            ->where('external_order_id', 'like', Xs2BookingOrderIdentity::PENDING_EXTERNAL_ORDER_PREFIX.'%');
+                    });
+            })
+            ->delete();
+    }
+
+    private function linkExistingOrderPriority(Xs2Order $order, SbOrder $sbOrder): int
     {
         $priority = 0;
 
@@ -958,6 +1119,11 @@ class SbOrderXs2SandboxOrderService
 
         if (filled($order->xs2_booking_id)) {
             $priority += 10;
+        }
+
+        $sbOrder->loadMissing('attendees');
+        if ($sbOrder->attendees->isNotEmpty() && $this->xs2OrderMatchesSbEvent($order, $sbOrder)) {
+            $priority += 50;
         }
 
         return ($priority * 1_000_000) + (int) $order->id;
@@ -974,6 +1140,18 @@ class SbOrderXs2SandboxOrderService
         }
 
         if ($this->xs2OrderMatchesSbEvent($xs2Order, $order)) {
+            return true;
+        }
+
+        if ($this->xs2OrderMatchesSbBuyerEmail($xs2Order, $order)) {
+            return true;
+        }
+
+        if ($this->xs2OrderMatchesSbTicket($xs2Order, $order)) {
+            return true;
+        }
+
+        if ($this->xs2OrderMatchesSbQuantityAmount($xs2Order, $order)) {
             return true;
         }
 
@@ -1028,11 +1206,75 @@ class SbOrderXs2SandboxOrderService
             return false;
         }
 
-        if ($matchName !== $eventName) {
+        $normalizer = app(Xs2TextNormalizer::class);
+        if ($normalizer->similarity($matchName, $eventName) < 80.0) {
             return false;
         }
 
         return $xs2Order->event_date !== null
+            && $xs2Order->event_date->toDateString() === $order->match_date->toDateString();
+    }
+
+    private function xs2OrderMatchesSbBuyerEmail(Xs2Order $xs2Order, SbOrder $order): bool
+    {
+        $email = mb_strtolower($this->resolveBookingEmail($order));
+        if ($email === '' || $email === 'xs2-sandbox@example.com') {
+            return false;
+        }
+
+        $xs2Email = mb_strtolower((string) ($xs2Order->buyer_email ?? ''));
+        if ($xs2Email !== '' && $xs2Email === $email) {
+            return true;
+        }
+
+        $payloadEmail = mb_strtolower((string) data_get($xs2Order->raw_payload, 'booking_email', ''));
+
+        return $payloadEmail !== '' && $payloadEmail === $email;
+    }
+
+    private function xs2OrderMatchesSbTicket(Xs2Order $xs2Order, SbOrder $order): bool
+    {
+        $ticket = $this->resolveMappedTicket($order);
+        if ($ticket !== null && filled($ticket->external_ticket_id)) {
+            $externalTicketId = (string) $ticket->external_ticket_id;
+            if ($this->nullableString($xs2Order->external_ticket_id) === $externalTicketId) {
+                return $this->xs2OrderMatchesSbEvent($xs2Order, $order)
+                    || $this->xs2OrderSharesEventDate($xs2Order, $order);
+            }
+
+            $payloadTicketId = $this->nullableString(data_get($xs2Order->raw_payload, 'items.0.ticket_id'));
+            if ($payloadTicketId === $externalTicketId) {
+                return $this->xs2OrderMatchesSbEvent($xs2Order, $order)
+                    || $this->xs2OrderSharesEventDate($xs2Order, $order);
+            }
+        }
+
+        return false;
+    }
+
+    private function xs2OrderMatchesSbQuantityAmount(Xs2Order $xs2Order, SbOrder $order): bool
+    {
+        if (! $this->xs2OrderMatchesSbEvent($xs2Order, $order)) {
+            return false;
+        }
+
+        $sbQty = (int) ($order->quantity ?? 0);
+        $xs2Qty = (int) ($xs2Order->quantity ?? 0);
+        if ($sbQty > 0 && $xs2Qty > 0 && $sbQty !== $xs2Qty) {
+            return false;
+        }
+
+        if ($order->ticket_amount === null || $xs2Order->ticket_amount === null) {
+            return $sbQty > 0;
+        }
+
+        return abs((float) $order->ticket_amount - (float) $xs2Order->ticket_amount) < 0.02;
+    }
+
+    private function xs2OrderSharesEventDate(Xs2Order $xs2Order, SbOrder $order): bool
+    {
+        return $order->match_date !== null
+            && $xs2Order->event_date !== null
             && $xs2Order->event_date->toDateString() === $order->match_date->toDateString();
     }
 
@@ -1428,7 +1670,7 @@ class SbOrderXs2SandboxOrderService
         return Xs2BookingOrderIdentity::pendingExternalOrderId((string) $order->booking_no);
     }
 
-    /** @return array{order: Xs2Order|null, created: bool, updated: bool, skipped: bool, reason: string|null} */
+    /** @return array{order: Xs2Order|null, created: bool, updated: bool, linked: bool, skipped: bool, reason: string|null} */
     private function skip(?Xs2Order $order, string $reason, ?SbOrder $sbOrder = null): array
     {
         if ($sbOrder !== null) {
@@ -1439,6 +1681,7 @@ class SbOrderXs2SandboxOrderService
             'order' => $order,
             'created' => false,
             'updated' => false,
+            'linked' => false,
             'skipped' => true,
             'reason' => $reason,
         ];

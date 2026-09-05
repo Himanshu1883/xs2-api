@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\SbOrderIndexRequest;
 use App\Http\Resources\SbOrderResource;
 use App\Http\Resources\SbOrderXs2SyncLogResource;
-use App\Jobs\CreateXs2SandboxOrderFromSbOrder;
 use App\Models\EventMapping;
 use App\Models\SbOrder;
 use App\Models\SbOrderXs2SyncLog;
@@ -184,7 +183,11 @@ class SbOrderController extends Controller
 
         $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
 
-        if ($sbOrder->xs2Order && filled($sbOrder->xs2Order->xs2_booking_id)) {
+        if (
+            $sbOrder->xs2Order
+            && filled($sbOrder->xs2Order->xs2_booking_id)
+            && ! \App\Support\Xs2BookingOrderIdentity::isPendingExternalOrderId($sbOrder->xs2Order->external_order_id)
+        ) {
             return response()->json([
                 'message' => 'XS2 order already exists for this SB order.',
             ], 422);
@@ -198,37 +201,41 @@ class SbOrderController extends Controller
         }
 
         $this->xs2SandboxOrders->recordQueueDecision($sbOrder);
-        CreateXs2SandboxOrderFromSbOrder::dispatchSync($sbOrder->id);
+        $result = $this->xs2SandboxOrders->createFromSbOrder($sbOrder->fresh(['attendees']));
 
         $sbOrder->refresh();
         $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
-        $syncLog = SbOrderXs2SyncLog::query()->where('sb_order_id', $sbOrder->id)->first();
-
-        if ($syncLog !== null && $syncLog->status === SbOrderXs2SyncLog::STATUS_FAILED) {
+        if ($result['skipped'] ?? false) {
             return response()->json([
-                'message' => $syncLog->error ?? 'XS2 order creation failed.',
-                'data' => new SbOrderResource($sbOrder),
-            ], 422);
-        }
-
-        if ($syncLog !== null && $syncLog->status === SbOrderXs2SyncLog::STATUS_SKIPPED) {
-            return response()->json([
-                'message' => $syncLog->skip_reason ?? 'XS2 order creation was skipped.',
+                'message' => $result['reason'] ?? 'XS2 order creation was skipped.',
                 'data' => new SbOrderResource($sbOrder),
             ], 422);
         }
 
         if ($sbOrder->xs2Order === null || ! filled($sbOrder->xs2Order->xs2_booking_id)) {
             return response()->json([
-                'message' => 'XS2 order creation did not complete.',
+                'message' => $result['reason'] ?? 'XS2 order creation did not complete.',
                 'data' => new SbOrderResource($sbOrder),
             ], 422);
         }
 
         $isSandbox = $this->apiEnvironment->xs2OrdersEnvironment() === ApiEnvironmentService::ENV_SANDBOX;
         $envLabel = $isSandbox ? 'sandbox' : 'production';
+        $linked = (bool) ($result['linked'] ?? false);
+
+        if ($linked) {
+            return response()->json([
+                'message' => sprintf(
+                    'Linked to existing XS2 %s order %s for booking %s.',
+                    $envLabel,
+                    $sbOrder->xs2Order->external_order_id,
+                    $sbOrder->booking_no,
+                ),
+                'data' => new SbOrderResource($sbOrder),
+            ]);
+        }
 
         return response()->json([
             'message' => sprintf(
