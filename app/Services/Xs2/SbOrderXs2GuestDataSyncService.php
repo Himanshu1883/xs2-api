@@ -128,7 +128,7 @@ class SbOrderXs2GuestDataSyncService
             return false;
         }
 
-        if ($xs2Order->attendees->isNotEmpty()) {
+        if ($this->xs2OrderHasMeaningfulAttendees($xs2Order)) {
             if ($xs2Order->attendees_copied_from_sb_at === null) {
                 return false;
             }
@@ -136,6 +136,8 @@ class SbOrderXs2GuestDataSyncService
             if ($this->xs2AttendeeFingerprint($xs2Order) === $sbFingerprint) {
                 return false;
             }
+        } elseif ($xs2Order->attendees->isNotEmpty()) {
+            Xs2OrderAttendee::query()->where('xs2_order_id', $xs2Order->id)->delete();
         }
 
         $this->syncAttendees($xs2Order, $order);
@@ -516,6 +518,85 @@ class SbOrderXs2GuestDataSyncService
 
             return $this->failResult($xs2Order, $sbOrder->id, $message);
         }
+    }
+
+    /**
+     * Backfill attendee rows from linked SB orders for XS2 orders shown in admin lists.
+     *
+     * @param  iterable<int, Xs2Order>  $orders
+     */
+    public function backfillAttendeesForOrders(iterable $orders): void
+    {
+        foreach ($orders as $xs2Order) {
+            if (! $xs2Order instanceof Xs2Order) {
+                continue;
+            }
+
+            if ($this->xs2OrderHasMeaningfulAttendees($xs2Order)) {
+                continue;
+            }
+
+            $sbOrder = $xs2Order->sbOrder;
+            if ($sbOrder === null) {
+                continue;
+            }
+
+            $this->ensureLinkedXs2OrderHasSbAttendees($sbOrder);
+        }
+    }
+
+    public function xs2OrderHasMeaningfulAttendees(Xs2Order $xs2Order): bool
+    {
+        $xs2Order->loadMissing('attendees');
+
+        return $xs2Order->attendees->contains(
+            fn (Xs2OrderAttendee $attendee): bool => $this->xs2AttendeeHasMeaningfulData($attendee),
+        );
+    }
+
+    public function xs2AttendeeHasMeaningfulData(Xs2OrderAttendee $attendee): bool
+    {
+        foreach ([
+            $attendee->first_name,
+            $attendee->last_name,
+            $attendee->email,
+            $attendee->phone,
+            $attendee->passport,
+            $attendee->dob,
+            $attendee->nationality,
+        ] as $value) {
+            if ($this->nullableString($value) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @param array<string, mixed> $row */
+    public function attendeeRowHasMeaningfulData(array $row): bool
+    {
+        foreach ([
+            'first_name',
+            'firstname',
+            'last_name',
+            'lastname',
+            'email',
+            'phone',
+            'mobile',
+            'passport',
+            'passport_number',
+            'dob',
+            'date_of_birth',
+            'nationality',
+            'country_of_residence',
+        ] as $field) {
+            if ($this->nullableString($row[$field] ?? null) !== null) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function queueIfEligible(SbOrder $order): bool

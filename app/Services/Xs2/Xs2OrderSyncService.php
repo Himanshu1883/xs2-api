@@ -320,10 +320,15 @@ class Xs2OrderSyncService
      */
     private function attendeeRows(array $row): array
     {
+        $guestDataSync = app(SbOrderXs2GuestDataSyncService::class);
+
         foreach (['attendees', 'attendee_details', 'guests', 'guest_details'] as $key) {
             $value = $row[$key] ?? null;
             if (is_array($value)) {
-                return array_values(array_filter($value, is_array(...)));
+                return array_values(array_filter(
+                    $value,
+                    fn ($attendee): bool => is_array($attendee) && $guestDataSync->attendeeRowHasMeaningfulData($attendee),
+                ));
             }
         }
 
@@ -339,7 +344,10 @@ class Xs2OrderSyncService
 
             $guests = $item['guests'] ?? null;
             if (is_array($guests) && $guests !== []) {
-                return array_values(array_filter($guests, is_array(...)));
+                return array_values(array_filter(
+                    $guests,
+                    fn ($attendee): bool => is_array($attendee) && $guestDataSync->attendeeRowHasMeaningfulData($attendee),
+                ));
             }
         }
 

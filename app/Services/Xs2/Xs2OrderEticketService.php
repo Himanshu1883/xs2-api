@@ -72,30 +72,38 @@ class Xs2OrderEticketService
                 throw new \RuntimeException($message);
             }
 
-            $target = $targets[0];
-            $requestPayload = [
-                ...$requestPayload,
-                'bookingorder_id' => $target['bookingorder_id'],
-                'orderitem_id' => $target['orderitem_id'],
-                'download_link' => $target['download_link'],
-            ];
+            $downloadableTargets = array_values(array_filter(
+                $targets,
+                fn (array $target): bool => $target['distribution_channel'] === null
+                    || $target['distribution_channel'] === 'xs2event',
+            ));
 
-            if ($target['distribution_channel'] !== null && $target['distribution_channel'] !== 'xs2event') {
+            if ($downloadableTargets === []) {
+                $blockedChannel = $targets[0]['distribution_channel'] ?? 'unknown';
                 throw new \RuntimeException(sprintf(
                     'E-ticket download is not available for distribution channel "%s".',
-                    $target['distribution_channel'],
+                    $blockedChannel,
                 ));
             }
 
-            $response = $this->downloadPdf(
-                $xs2Order,
-                $target['bookingorder_id'],
-                $target['orderitem_id'],
-                $target['download_link'],
-            );
+            $requestPayload = [
+                ...$requestPayload,
+                'bookingorder_id' => $downloadableTargets[0]['bookingorder_id'],
+                'orderitem_id' => $downloadableTargets[0]['orderitem_id'],
+                'download_link' => $downloadableTargets[0]['download_link'],
+                'download_targets' => array_map(
+                    fn (array $target): array => [
+                        'orderitem_id' => $target['orderitem_id'],
+                        'download_link' => $target['download_link'],
+                        'type_ticket' => $target['type_ticket'],
+                    ],
+                    $downloadableTargets,
+                ),
+            ];
 
-            $filename = $this->resolveFilename($target['download_link'], $xs2Order);
-            $byteSize = strlen($response['body']);
+            $download = $this->downloadTargets($xs2Order, $downloadableTargets);
+            $filename = $download['filename'];
+            $byteSize = strlen($download['body']);
 
             $xs2Order->fill([
                 'xs2_eticket_request' => $requestPayload,
@@ -103,8 +111,8 @@ class Xs2OrderEticketService
                     'success' => true,
                     'filename' => $filename,
                     'byte_size' => $byteSize,
-                    'content_type' => $response['content_type'] ?? 'application/pdf',
-                    'http_status' => $response['status'] ?? 200,
+                    'content_type' => $download['content_type'] ?? 'application/pdf',
+                    'http_status' => $download['status'] ?? 200,
                     'fetched_at' => now()->toIso8601String(),
                 ],
                 'eticket_fetched_at' => now(),
@@ -117,8 +125,8 @@ class Xs2OrderEticketService
                 'order' => $xs2Order->fresh(['attendees', 'sbOrder', 'latestGuestDataLog']),
                 'filename' => $filename,
                 'byte_size' => $byteSize,
-                'body' => $response['body'],
-                'content_type' => $response['content_type'] ?? 'application/pdf',
+                'body' => $download['body'],
+                'content_type' => $download['content_type'] ?? 'application/pdf',
             ];
         } catch (Throwable $exception) {
             if (! $xs2Order->wasChanged() && $xs2Order->eticket_error !== $exception->getMessage()) {
@@ -192,9 +200,89 @@ class Xs2OrderEticketService
     }
 
     /**
-     * @return array{status: int, body: string, content_type: string|null}
+     * @param  list<array{
+     *     bookingorder_id: string,
+     *     orderitem_id: string,
+     *     download_link: string,
+     *     distribution_channel: string|null,
+     *     ticket_id: string|null,
+     *     type_ticket: string|null
+     * }>  $targets
+     * @return array{status: int, body: string, content_type: string|null, filename: string}
      */
-    private function downloadPdf(Xs2Order $xs2Order, string $bookingOrderId, string $orderItemId, string $downloadLink): array
+    private function downloadTargets(Xs2Order $xs2Order, array $targets): array
+    {
+        if ($targets === []) {
+            throw new \RuntimeException('No downloadable e-ticket links were found in the XS2 booking response.');
+        }
+
+        if (count($targets) === 1) {
+            $target = $targets[0];
+            $response = $this->downloadEticket(
+                $xs2Order,
+                $target['bookingorder_id'],
+                $target['orderitem_id'],
+                $target['download_link'],
+            );
+            $contentType = $this->firstHeaderValue($response['headers'], 'Content-Type')
+                ?? $this->guessContentType($target['download_link']);
+
+            return [
+                'status' => $response['status'],
+                'body' => $response['body'],
+                'content_type' => $contentType,
+                'filename' => $this->resolveFilename($target['download_link'], $xs2Order, $contentType),
+            ];
+        }
+
+        $zip = new \ZipArchive;
+        $tmpPath = tempnam(sys_get_temp_dir(), 'xs2-etickets-');
+        if ($tmpPath === false) {
+            throw new \RuntimeException('Could not create a temporary file for the XS2 ticket download.');
+        }
+
+        $opened = $zip->open($tmpPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+        if ($opened !== true) {
+            @unlink($tmpPath);
+
+            throw new \RuntimeException('Could not create a ZIP archive for the XS2 ticket download.');
+        }
+
+        $usedNames = [];
+        foreach ($targets as $index => $target) {
+            $response = $this->downloadEticket(
+                $xs2Order,
+                $target['bookingorder_id'],
+                $target['orderitem_id'],
+                $target['download_link'],
+            );
+            $contentType = $this->firstHeaderValue($response['headers'], 'Content-Type')
+                ?? $this->guessContentType($target['download_link']);
+            $filename = $this->resolveFilename($target['download_link'], $xs2Order, $contentType, $index + 1);
+            while (isset($usedNames[$filename])) {
+                $filename = $this->resolveFilename($target['download_link'], $xs2Order, $contentType, $index + 1, true);
+                break;
+            }
+            $usedNames[$filename] = true;
+            $zip->addFromString($filename, $response['body']);
+        }
+
+        $zip->close();
+        $body = (string) file_get_contents($tmpPath);
+        @unlink($tmpPath);
+
+        return [
+            'status' => 200,
+            'body' => $body,
+            'content_type' => 'application/zip',
+            'filename' => 'xs2-order-'.$xs2Order->id.'-tickets.zip',
+        ];
+    }
+
+    /**
+     * @return array{status: int, body: string, headers: array<string, list<string>>}
+     */
+    private function downloadEticket(Xs2Order $xs2Order, string $bookingOrderId, string $orderItemId, string $downloadLink): array
     {
         if ((bool) $xs2Order->is_sandbox) {
             $response = $this->sandbox->downloadEticketPdf($bookingOrderId, $orderItemId, $downloadLink);
@@ -202,7 +290,7 @@ class Xs2OrderEticketService
             return [
                 'status' => $response['status'],
                 'body' => $response['body'],
-                'content_type' => $this->firstHeaderValue($response['headers'], 'Content-Type'),
+                'headers' => is_array($response['headers'] ?? null) ? $response['headers'] : [],
             ];
         }
 
@@ -217,7 +305,7 @@ class Xs2OrderEticketService
         return [
             'status' => $response['status'],
             'body' => $response['body'],
-            'content_type' => $this->firstHeaderValue($response['headers'], 'Content-Type'),
+            'headers' => is_array($response['headers'] ?? null) ? $response['headers'] : [],
         ];
     }
 
@@ -227,7 +315,8 @@ class Xs2OrderEticketService
      *     orderitem_id: string,
      *     download_link: string,
      *     distribution_channel: string|null,
-     *     ticket_id: string|null
+     *     ticket_id: string|null,
+     *     type_ticket: string|null
      * }>
      */
     private function collectEticketTargets(array $bookingPayload, string $fallbackBookingId, ?string $preferredTicketId): array
@@ -261,6 +350,7 @@ class Xs2OrderEticketService
 
             $orderItemId = $this->nullableString($item['orderitem_id'] ?? $item['order_item_id'] ?? $item['ticket_id'] ?? null);
             $distributionChannel = $this->nullableString($item['distribution_channel'] ?? null);
+            $typeTicket = $this->nullableString($item['type_ticket'] ?? $item['ticket_type'] ?? null);
 
             foreach ($this->downloadLinksForItem($item) as $downloadLink) {
                 if ($orderItemId === null) {
@@ -273,11 +363,57 @@ class Xs2OrderEticketService
                     'download_link' => $downloadLink,
                     'distribution_channel' => $distributionChannel,
                     'ticket_id' => $ticketId,
+                    'type_ticket' => $typeTicket,
                 ];
             }
         }
 
+        return $this->sortEticketTargets($targets);
+    }
+
+    /**
+     * Prefer mobile/appticket PKPASS files first, then PDFs, so Get ticket works for both formats.
+     *
+     * @param  list<array{
+     *     bookingorder_id: string,
+     *     orderitem_id: string,
+     *     download_link: string,
+     *     distribution_channel: string|null,
+     *     ticket_id: string|null,
+     *     type_ticket: string|null
+     * }>  $targets
+     * @return list<array{
+     *     bookingorder_id: string,
+     *     orderitem_id: string,
+     *     download_link: string,
+     *     distribution_channel: string|null,
+     *     ticket_id: string|null,
+     *     type_ticket: string|null
+     * }>
+     */
+    private function sortEticketTargets(array $targets): array
+    {
+        usort($targets, function (array $left, array $right): int {
+            return $this->eticketTargetPriority($right) <=> $this->eticketTargetPriority($left);
+        });
+
         return $targets;
+    }
+
+    private function eticketTargetPriority(array $target): int
+    {
+        $link = strtolower($target['download_link']);
+        $typeTicket = strtolower((string) ($target['type_ticket'] ?? ''));
+
+        if (str_ends_with($link, '.pkpass') || $typeTicket === 'appticket') {
+            return 3;
+        }
+
+        if (str_ends_with($link, '.pdf') || $typeTicket === 'eticket') {
+            return 2;
+        }
+
+        return 1;
     }
 
     /** @param array<string, mixed> $item @return list<string> */
@@ -332,15 +468,55 @@ class Xs2OrderEticketService
         return ltrim($link, '/');
     }
 
-    private function resolveFilename(string $downloadLink, Xs2Order $order): string
+    private function resolveFilename(string $downloadLink, Xs2Order $order, ?string $contentType = null, int $sequence = 1, bool $forceSequence = false): string
     {
         $base = basename($downloadLink);
 
-        if ($base !== '' && $base !== '/' && str_contains($base, '.')) {
+        if (! $forceSequence && $base !== '' && $base !== '/' && str_contains($base, '.')) {
             return $base;
         }
 
-        return 'xs2-order-'.$order->id.'-eticket.pdf';
+        $extension = $this->extensionForContentType($contentType)
+            ?? $this->extensionForDownloadLink($downloadLink)
+            ?? 'pdf';
+
+        $suffix = $sequence > 1 || $forceSequence ? '-'.$sequence : '';
+
+        return 'xs2-order-'.$order->id.'-eticket'.$suffix.'.'.$extension;
+    }
+
+    private function extensionForDownloadLink(string $downloadLink): ?string
+    {
+        $extension = strtolower((string) pathinfo($downloadLink, PATHINFO_EXTENSION));
+
+        return $extension !== '' ? $extension : null;
+    }
+
+    private function extensionForContentType(?string $contentType): ?string
+    {
+        if ($contentType === null) {
+            return null;
+        }
+
+        $normalized = strtolower(trim(explode(';', $contentType)[0]));
+
+        return match ($normalized) {
+            'application/pdf' => 'pdf',
+            'application/vnd.apple.pkpass' => 'pkpass',
+            'application/zip' => 'zip',
+            default => null,
+        };
+    }
+
+    private function guessContentType(string $downloadLink): string
+    {
+        $extension = $this->extensionForDownloadLink($downloadLink);
+
+        return match ($extension) {
+            'pkpass' => 'application/vnd.apple.pkpass',
+            'zip' => 'application/zip',
+            default => 'application/pdf',
+        };
     }
 
     /** @param array<string, list<string>> $headers */

@@ -278,6 +278,56 @@ class AdminOrderAttendeeWorkflowTest extends TestCase
         $this->assertTrue((bool) data_get($xs2Order->xs2_eticket_response, 'success'));
     }
 
+    public function test_get_ticket_downloads_mobile_pkpass_ticket(): void
+    {
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+
+        Http::fake([
+            'https://sandbox.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID => Http::response([
+                'bookingorder_id' => self::BOOKINGORDER_ID,
+                'logistic_status' => 'completed',
+                'items' => [[
+                    'ticket_id' => self::TICKET_ID,
+                    'orderitem_id' => 'orderitem-1',
+                    'type_ticket' => 'appticket',
+                    'distribution_channel' => 'xs2event',
+                    'download_link' => 'ticket-mobile.pkpass',
+                ]],
+            ]),
+            'https://sandbox.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-1/url/ticket-mobile.pkpass' => Http::response(
+                'PKPASS-BINARY',
+                200,
+                [
+                    'Content-Type' => 'application/vnd.apple.pkpass',
+                    'Content-Disposition' => 'attachment; filename="ticket-mobile.pkpass"',
+                ],
+            ),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->post("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket")
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/vnd.apple.pkpass')
+            ->assertHeader('Content-Disposition', 'attachment; filename="ticket-mobile.pkpass"');
+    }
+
+    public function test_xs2_orders_index_backfills_attendees_from_linked_sb_order(): void
+    {
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        Xs2OrderAttendee::query()->where('xs2_order_id', $xs2Order->id)->delete();
+        $xs2Order->fill(['attendees_copied_from_sb_at' => null])->save();
+
+        $this->withToken($this->adminToken())
+            ->getJson('/api/admin/xs2-orders?search='.$sbOrder->booking_no)
+            ->assertOk()
+            ->assertJsonPath('data.0.attendees_count', 1)
+            ->assertJsonPath('data.0.attendees.0.first_name', 'Jane');
+
+        $this->assertNotNull($xs2Order->fresh()->attendees_copied_from_sb_at);
+    }
+
     public function test_get_ticket_requires_bookingorder_id(): void
     {
         $sbOrder = $this->seedLinkedOrder(withAttendees: true);

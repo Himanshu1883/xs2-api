@@ -375,19 +375,39 @@ class Xs2InventoryController extends Controller
                         });
                 });
             })
-            ->tap(fn ($query) => $this->applyStockFilter($query, $validated['stock_filter'] ?? null));
+            ->tap(fn ($query) => $this->applyUnpublishedStockExclusion($query, $validated['mapping_status'] ?? null))
+            ->tap(fn ($query) => $this->applyStockFilter($query, $validated['stock_filter'] ?? null, $validated['mapping_status'] ?? null));
+    }
+
+    /**
+     * Unpublished listings only represent sellable inventory — tickets with no stock are excluded.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\Xs2Ticket>  $query
+     */
+    private function applyUnpublishedStockExclusion($query, ?string $mappingStatus)
+    {
+        if ($mappingStatus === 'unpublished') {
+            $query->where('stock', '>', 0);
+        }
+
+        return $query;
     }
 
     /**
      * @param  \Illuminate\Database\Eloquent\Builder<\App\Models\Xs2Ticket>  $query
      */
-    private function applyStockFilter($query, ?string $stockFilter)
+    private function applyStockFilter($query, ?string $stockFilter, ?string $mappingStatus = null)
     {
         if ($stockFilter === null || $stockFilter === '') {
             return $query;
         }
 
         if ($stockFilter === 'no_stock') {
+            // Zero-stock rows are not unpublished listings; this filter always returns nothing.
+            if ($mappingStatus === 'unpublished') {
+                return $query->whereRaw('1 = 0');
+            }
+
             return $query->where(fn ($inner) => $inner->whereNull('stock')->orWhere('stock', '<=', 0));
         }
 
@@ -444,7 +464,8 @@ class Xs2InventoryController extends Controller
         $lowStockMax = max(1, (int) config('xs2.inventory.low_stock_max', 10));
         $scoped = Xs2Ticket::query()
             ->tap(fn ($query) => $this->constrainToFutureEvents($query))
-            ->tap(fn ($query) => $this->applyTicketMappingStatusFilter($query, $validated['mapping_status'] ?? null));
+            ->tap(fn ($query) => $this->applyTicketMappingStatusFilter($query, $validated['mapping_status'] ?? null))
+            ->tap(fn ($query) => $this->applyUnpublishedStockExclusion($query, $validated['mapping_status'] ?? null));
 
         $publishedQuery = (clone $scoped)->whereHas(
             'mappingState',

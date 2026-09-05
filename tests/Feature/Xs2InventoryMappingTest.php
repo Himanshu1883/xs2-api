@@ -708,8 +708,15 @@ class Xs2InventoryMappingTest extends TestCase
                 'stock_filter' => 'no_stock',
             ]))
             ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        $this->withToken($this->adminToken())
+            ->getJson('/api/admin/xs2/tickets?'.http_build_query([
+                'mapping_status' => 'unpublished',
+            ]))
+            ->assertOk()
             ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.external_ticket_id', 'ticket-stock-filter-no-stock');
+            ->assertJsonPath('data.0.external_ticket_id', 'ticket-stock-filter-with-stock');
 
         $this->withToken($this->adminToken())
             ->getJson('/api/admin/xs2/tickets?'.http_build_query([

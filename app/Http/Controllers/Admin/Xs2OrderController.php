@@ -23,14 +23,14 @@ class Xs2OrderController extends Controller
         private readonly ApiEnvironmentService $apiEnvironment,
     ) {}
 
-    public function index(Xs2OrderIndexRequest $request)
+    public function index(Xs2OrderIndexRequest $request, SbOrderXs2GuestDataSyncService $guestData)
     {
         $this->authorize('viewAny', EventMapping::class);
 
         $filters = $request->validated();
         $search = trim((string) ($filters['search'] ?? ''));
 
-        $query = Xs2Order::query()->with(['attendees', 'sbOrder', 'latestGuestDataLog'])->withCount('attendees');
+        $query = Xs2Order::query()->with(['attendees', 'sbOrder.attendees', 'latestGuestDataLog'])->withCount('attendees');
 
         if ($search !== '') {
             $like = '%'.$search.'%';
@@ -64,17 +64,23 @@ class Xs2OrderController extends Controller
             $query->whereDate('event_date', '<=', $filters['date_to']);
         }
 
-        return Xs2OrderResource::collection(
-            $query->orderByDesc('synced_at')->orderByDesc('id')->paginate($filters['per_page'] ?? 20)
-        )->additional([
+        $paginator = $query->orderByDesc('synced_at')->orderByDesc('id')->paginate($filters['per_page'] ?? 20);
+        $guestData->backfillAttendeesForOrders($paginator->getCollection());
+        foreach ($paginator->getCollection() as $order) {
+            $order->load(['attendees', 'sbOrder', 'latestGuestDataLog'])->loadCount('attendees');
+        }
+
+        return Xs2OrderResource::collection($paginator)->additional([
             'create_order_environment' => $this->apiEnvironment->xs2OrdersEnvironment(),
         ]);
     }
 
-    public function show(Xs2Order $xs2Order): Xs2OrderResource
+    public function show(Xs2Order $xs2Order, SbOrderXs2GuestDataSyncService $guestData): Xs2OrderResource
     {
         $this->authorize('viewAny', EventMapping::class);
 
+        $xs2Order->load(['attendees', 'sbOrder.attendees', 'latestGuestDataLog', 'guestDataLogs'])->loadCount('attendees');
+        $guestData->backfillAttendeesForOrders([$xs2Order]);
         $xs2Order->load(['attendees', 'sbOrder', 'latestGuestDataLog', 'guestDataLogs'])->loadCount('attendees');
 
         return new Xs2OrderResource($xs2Order);
