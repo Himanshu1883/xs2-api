@@ -54,11 +54,13 @@ class SbNewListingPublishService
             'deferred' => 0,
             'published_inline' => 0,
             'skipped' => 0,
+            'failed' => 0,
             'skip_reasons' => [
                 'event_not_sellable' => 0,
                 'mapping_not_ready' => 0,
                 'validation_failed' => 0,
                 'already_published_on_sb' => 0,
+                'publish_failed' => 0,
             ],
             'dry_run' => $dryRun,
             'errors' => [],
@@ -90,6 +92,13 @@ class SbNewListingPublishService
                 if (! $mappingAllowed) {
                     $summary['skipped']++;
                     $summary['skip_reasons']['mapping_not_ready']++;
+
+                    continue;
+                }
+
+                if ($this->hasPublishFailure($ticket)) {
+                    $summary['skipped']++;
+                    $summary['skip_reasons']['publish_failed']++;
 
                     continue;
                 }
@@ -164,13 +173,16 @@ class SbNewListingPublishService
                         $queueIndex++;
                     }
                 } catch (Throwable $exception) {
-                    $summary['errors'][] = $ticket->external_ticket_id.': '.$this->safeMessage($exception);
+                    $message = $this->safeMessage($exception);
+                    $this->mappingStatuses->markPublishFailed($ticket, $message);
+                    $summary['failed']++;
+                    $summary['errors'][] = $ticket->external_ticket_id.': '.$message;
                     Log::channel(config('services.seller_api.log_channel', 'stack'))->warning(
                         'Seats Broker new listing publish could not be queued or completed.',
                         [
                             'ticket_id' => $ticket->id,
                             'external_ticket_id' => $ticket->external_ticket_id,
-                            'error' => $this->safeMessage($exception),
+                            'error' => $message,
                         ],
                     );
                 }
@@ -278,15 +290,20 @@ class SbNewListingPublishService
             $errors[] = $fatalError;
         }
 
-        $failed = $errors !== [];
+        $cronFailed = $fatalError !== null;
+        $ticketFailures = (int) ($summary['failed'] ?? 0);
 
         if (Schema::hasTable('xs2_sync_states')) {
             $state = Xs2SyncState::query()->firstOrCreate(['resource' => self::SYNC_RESOURCE]);
             $state->update([
-                'status' => $failed ? 'failed' : 'completed',
+                'status' => $cronFailed ? 'failed' : 'completed',
                 'last_attempted_at' => now(),
-                'last_successful_at' => $failed ? $state->last_successful_at : now(),
-                'last_error' => $failed ? mb_substr(implode('; ', $errors), 0, 5000) : null,
+                'last_successful_at' => $cronFailed ? $state->last_successful_at : now(),
+                'last_error' => $cronFailed
+                    ? mb_substr((string) $fatalError, 0, 5000)
+                    : ($ticketFailures > 0
+                        ? mb_substr(implode('; ', $errors), 0, 5000)
+                        : null),
                 'metadata' => [
                     'eligible_tickets' => (int) ($summary['eligible_tickets'] ?? 0),
                     'needs_publish' => (int) ($summary['needs_publish'] ?? 0),
@@ -294,6 +311,7 @@ class SbNewListingPublishService
                     'deferred' => (int) ($summary['deferred'] ?? 0),
                     'published_inline' => (int) ($summary['published_inline'] ?? 0),
                     'skipped' => (int) ($summary['skipped'] ?? 0),
+                    'failed' => $ticketFailures,
                     'skip_reasons' => is_array($summary['skip_reasons'] ?? null)
                         ? $summary['skip_reasons']
                         : [],
@@ -303,10 +321,19 @@ class SbNewListingPublishService
         }
 
         $summary['errors'] = $errors;
-        $summary['status'] = $failed ? 'failed' : 'completed';
+        $summary['status'] = $cronFailed ? 'failed' : 'completed';
         $summary['completed_at'] = now()->toIso8601String();
 
         return $summary;
+    }
+
+    private function hasPublishFailure(Xs2Ticket $ticket): bool
+    {
+        if ($ticket->sync_status === 'failed') {
+            return true;
+        }
+
+        return $ticket->split_sync_status === 'failed';
     }
 
     private function safeMessage(Throwable $exception): string

@@ -146,6 +146,21 @@ class Xs2TicketMappingStatusService
         return $this->status($eventMapping, $stadiumMapping, $categoryMapping);
     }
 
+    public function markPublishFailed(Xs2Ticket $ticket, string $message): void
+    {
+        $message = mb_substr(trim($message), 0, 5000);
+
+        $ticket->update([
+            'sync_status' => 'failed',
+            'sync_error' => $message,
+        ]);
+
+        if (Schema::hasTable('xs2_ticket_mapping_states')) {
+            $ticket->loadMissing('mappingState');
+            $ticket->mappingState?->update(['mapping_error' => $message]);
+        }
+    }
+
     public function resolve(Xs2Ticket $ticket): Xs2TicketMappingState
     {
         $ticket->loadMissing('xs2Event.mapping');

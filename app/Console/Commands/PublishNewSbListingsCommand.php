@@ -73,6 +73,6 @@ class PublishNewSbListingsCommand extends Command
             $this->error($error);
         }
 
-        return ($summary['errors'] ?? []) === [] ? self::SUCCESS : self::FAILURE;
+        return ($summary['status'] ?? 'completed') === 'failed' ? self::FAILURE : self::SUCCESS;
     }
 }

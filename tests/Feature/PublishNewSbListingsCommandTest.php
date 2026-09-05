@@ -11,6 +11,7 @@ use App\Models\Xs2Ticket;
 use App\Models\Xs2TicketMappingState;
 use App\Services\SellerApi\SbNewListingPublishService;
 use App\Services\Xs2\ListingPublishReadinessService;
+use App\Services\Xs2\MappedListingPublishService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
@@ -211,6 +212,97 @@ class PublishNewSbListingsCommandTest extends TestCase
         $this->assertFalse($service->isPublishedOnSb($ticket->fresh()));
     }
 
+    public function test_one_publish_failure_does_not_stop_batch(): void
+    {
+        config()->set('listing_publish_rules.enabled', false);
+
+        $failedTicket = $this->mappedTicket(stock: 4);
+        $successTicket = $this->mappedTicket(stock: 6);
+        foreach ([$failedTicket, $successTicket] as $ticket) {
+            Xs2TicketMappingState::query()->create([
+                'xs2_ticket_id' => $ticket->id,
+                'event_mapping_id' => $ticket->xs2Event->mapping->id,
+                'mapping_status' => 'ready_to_publish',
+            ]);
+        }
+
+        $readiness = Mockery::mock(ListingPublishReadinessService::class);
+        $readiness->shouldReceive('assess')
+            ->twice()
+            ->andReturn(['ready' => true, 'error' => null]);
+        $this->instance(ListingPublishReadinessService::class, $readiness);
+
+        $publisher = Mockery::mock(MappedListingPublishService::class);
+        $publisher->shouldReceive('publishTicket')
+            ->once()
+            ->with($failedTicket->id, false, true)
+            ->andThrow(new \RuntimeException('Seller API unavailable'));
+        $publisher->shouldReceive('publishTicket')
+            ->once()
+            ->with($successTicket->id, false, true);
+        $this->instance(MappedListingPublishService::class, $publisher);
+
+        $this->app->forgetInstance(SbNewListingPublishService::class);
+        $summary = app(SbNewListingPublishService::class)->run(inline: true);
+
+        $this->assertSame('completed', $summary['status']);
+        $this->assertSame(1, $summary['failed']);
+        $this->assertSame(1, $summary['published_inline']);
+        $this->assertCount(1, $summary['errors']);
+    }
+
+    public function test_failed_ticket_is_marked_and_skipped_on_next_run(): void
+    {
+        config()->set('listing_publish_rules.enabled', false);
+
+        $ticket = $this->mappedTicket(stock: 4);
+        Xs2TicketMappingState::query()->create([
+            'xs2_ticket_id' => $ticket->id,
+            'event_mapping_id' => $ticket->xs2Event->mapping->id,
+            'mapping_status' => 'ready_to_publish',
+        ]);
+
+        $readiness = Mockery::mock(ListingPublishReadinessService::class);
+        $readiness->shouldReceive('assess')
+            ->once()
+            ->andReturn(['ready' => true, 'error' => null]);
+        $this->instance(ListingPublishReadinessService::class, $readiness);
+
+        $publisher = Mockery::mock(MappedListingPublishService::class);
+        $publisher->shouldReceive('publishTicket')
+            ->once()
+            ->with($ticket->id, false, true)
+            ->andThrow(new \RuntimeException('Category does not match SB dropdown.'));
+        $this->instance(MappedListingPublishService::class, $publisher);
+
+        $this->app->forgetInstance(SbNewListingPublishService::class);
+        $summary = app(SbNewListingPublishService::class)->run(inline: true);
+
+        $this->assertSame(1, $summary['failed']);
+        $ticket->refresh();
+        $this->assertSame('failed', $ticket->sync_status);
+        $this->assertSame('Category does not match SB dropdown.', $ticket->sync_error);
+        $this->assertSame(
+            'Category does not match SB dropdown.',
+            $ticket->mappingState->fresh()->mapping_error,
+        );
+
+        $readiness = Mockery::mock(ListingPublishReadinessService::class);
+        $readiness->shouldReceive('assess')->never();
+        $this->instance(ListingPublishReadinessService::class, $readiness);
+
+        $publisher = Mockery::mock(MappedListingPublishService::class);
+        $publisher->shouldReceive('publishTicket')->never();
+        $this->instance(MappedListingPublishService::class, $publisher);
+
+        $this->app->forgetInstance(SbNewListingPublishService::class);
+        $rerun = app(SbNewListingPublishService::class)->run(inline: true);
+
+        $this->assertSame(1, $rerun['skip_reasons']['publish_failed']);
+        $this->assertSame(0, $rerun['needs_publish']);
+        $this->assertSame(0, $rerun['failed']);
+    }
+
     private function mappedTicket(int $stock): Xs2Ticket
     {
         $event = Xs2Event::query()->create([
@@ -283,6 +375,9 @@ class PublishNewSbListingsCommandTest extends TestCase
             $table->string('currency_code')->nullable();
             $table->unsignedBigInteger('net_rate')->nullable();
             $table->boolean('split_enabled')->default(false);
+            $table->string('sync_status')->nullable();
+            $table->text('sync_error')->nullable();
+            $table->string('split_sync_status')->nullable();
             $table->json('raw_payload')->nullable();
             $table->timestamps();
         });

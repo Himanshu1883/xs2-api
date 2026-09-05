@@ -46,6 +46,20 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
         return 'xs2-listing:'.$this->ticketId;
     }
 
+    public function failed(?\Throwable $exception): void
+    {
+        $ticket = Xs2Ticket::query()->find($this->ticketId);
+        if (! $ticket || $ticket->sync_status === 'failed') {
+            return;
+        }
+
+        $message = trim($exception?->getMessage() ?? '') !== ''
+            ? mb_substr($exception->getMessage(), 0, 5000)
+            : 'Seller listing publish failed.';
+
+        app(Xs2TicketMappingStatusService::class)->markPublishFailed($ticket, $message);
+    }
+
     /** @return list<WithoutOverlapping> */
     public function middleware(): array
     {
