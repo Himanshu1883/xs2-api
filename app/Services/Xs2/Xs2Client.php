@@ -509,7 +509,7 @@ class Xs2Client
         try {
             $response = Http::baseUrl(rtrim((string) $this->setting('base_url'), '/'))
                 ->withHeaders($requestHeaders)
-                ->accept('application/pdf, application/octet-stream, */*')
+                ->accept('application/pdf, application/vnd.apple.pkpass, application/zip, application/octet-stream, */*')
                 ->connectTimeout((int) $this->setting('connect_timeout', 10))
                 ->timeout((int) $this->setting('timeout', 30))
                 ->get($uri);
@@ -576,7 +576,7 @@ class Xs2Client
         try {
             $response = Http::baseUrl(rtrim((string) $this->ordersSetting('base_url'), '/'))
                 ->withHeaders($requestHeaders)
-                ->accept('application/pdf, application/octet-stream, */*')
+                ->accept('application/pdf, application/vnd.apple.pkpass, application/zip, application/octet-stream, */*')
                 ->connectTimeout((int) $this->setting('connect_timeout', 10))
                 ->timeout((int) $this->setting('timeout', 30))
                 ->get($uri);
@@ -617,6 +617,145 @@ class Xs2Client
             'body' => $body,
             'headers' => $response->headers(),
         ];
+    }
+
+    /**
+     * Resolve a secured CDN URL for all e-tickets in a booking order zip.
+     *
+     * @return array{status: int, download_url: string, headers: array<string, list<string>>}
+     */
+    public function resolveEticketZipDownloadUrlViaOrdersApi(string $bookingOrderId): array
+    {
+        foreach (['base_url', 'api_key'] as $key) {
+            if (blank($this->ordersSetting($key))) {
+                throw new Xs2ConfigurationException('XS2 orders API is not configured.');
+            }
+        }
+
+        $uri = $this->endpoint('eticket_zip_download_endpoint', [
+            'bookingorder_id' => $bookingOrderId,
+        ]);
+        $url = $this->ordersAbsoluteUrl($uri);
+        $requestHeaders = $this->ordersRequestHeaders();
+
+        try {
+            $response = Http::baseUrl(rtrim((string) $this->ordersSetting('base_url'), '/'))
+                ->withHeaders($requestHeaders)
+                ->accept('text/plain, application/json, */*')
+                ->connectTimeout((int) $this->setting('connect_timeout', 10))
+                ->timeout((int) $this->setting('timeout', 30))
+                ->get($uri);
+        } catch (ConnectionException) {
+            throw new Xs2RequestException('XS2 e-ticket zip request could not connect.');
+        }
+
+        $this->debugger->record(
+            'resolve_eticket_zip_orders',
+            'GET',
+            $url,
+            $requestHeaders,
+            ['bookingorder_id' => $bookingOrderId],
+            $response,
+        );
+
+        if (! $response->successful()) {
+            $json = $response->json();
+
+            throw Xs2RequestException::fromHttpResponse(
+                $response->status(),
+                is_array($json) ? $json : null,
+                $url,
+            );
+        }
+
+        $downloadUrl = $this->extractDownloadUrl($response->body(), $response->json());
+        if ($downloadUrl === null) {
+            throw new Xs2ResponseException('XS2 e-ticket zip response did not include a download URL.');
+        }
+
+        return [
+            'status' => $response->status(),
+            'download_url' => $downloadUrl,
+            'headers' => $response->headers(),
+        ];
+    }
+
+    /**
+     * Download a zip archive from a secured CDN URL returned by resolveEticketZipDownloadUrlViaOrdersApi.
+     *
+     * @return array{status: int, body: string, headers: array<string, list<string>>}
+     */
+    public function downloadEticketZipFromUrl(string $downloadUrl): array
+    {
+        try {
+            $response = Http::accept('application/zip, application/octet-stream, */*')
+                ->connectTimeout((int) $this->setting('connect_timeout', 10))
+                ->timeout((int) $this->setting('timeout', 60))
+                ->get($downloadUrl);
+        } catch (ConnectionException) {
+            throw new Xs2RequestException('XS2 e-ticket zip CDN request could not connect.');
+        }
+
+        $this->debugger->record(
+            'download_eticket_zip_cdn',
+            'GET',
+            $downloadUrl,
+            [],
+            [],
+            $response,
+        );
+
+        if (! $response->successful()) {
+            $json = $response->json();
+
+            throw Xs2RequestException::fromHttpResponse(
+                $response->status(),
+                is_array($json) ? $json : null,
+                $downloadUrl,
+            );
+        }
+
+        $body = $response->body();
+        if ($body === '') {
+            throw new Xs2ResponseException('XS2 e-ticket zip download was empty.');
+        }
+
+        return [
+            'status' => $response->status(),
+            'body' => $body,
+            'headers' => $response->headers(),
+        ];
+    }
+
+    /** @param mixed $json */
+    private function extractDownloadUrl(string $body, mixed $json): ?string
+    {
+        if (is_array($json)) {
+            foreach (['download_url', 'url', 'link'] as $key) {
+                $candidate = $this->nullableString($json[$key] ?? null);
+                if ($candidate !== null && str_contains($candidate, '://')) {
+                    return $candidate;
+                }
+            }
+        }
+
+        $trimmed = trim($body);
+        if ($trimmed !== '' && str_contains($trimmed, '://')) {
+            return trim($trimmed, "\"'");
+        }
+
+        return null;
+    }
+
+    private function nullableString(mixed $value): ?string
+    {
+        if (! is_scalar($value)) {
+            return null;
+        }
+
+        $string = trim((string) $value);
+
+        return $string === '' ? null : $string;
     }
 
     /** @return array<string, mixed> */

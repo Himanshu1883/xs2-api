@@ -312,6 +312,155 @@ class AdminOrderAttendeeWorkflowTest extends TestCase
             ->assertHeader('Content-Disposition', 'attachment; filename="ticket-mobile.pkpass"');
     }
 
+    public function test_get_ticket_downloads_pkpass_from_download_items(): void
+    {
+        config()->set('xs2.base_url', 'https://api.xs2.test');
+        config()->set('xs2.api_key', 'production-key');
+        config()->set('xs2.bookingorder_detail_endpoint', '/v1/bookingorders/{bookingorder_id}');
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill(['is_sandbox' => false])->save();
+
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID => Http::response([
+                'bookingorder_id' => self::BOOKINGORDER_ID,
+                'logistic_status' => 'completed',
+                'orderitems' => [[
+                    'ticket_id' => self::TICKET_ID,
+                    'orderitem_id' => 'orderitem-roma-1',
+                    'type_ticket' => 'appticket',
+                    'distribution_channel' => 'xs2event',
+                    'download_link' => '',
+                    'download_items' => [[
+                        'download_link' => 'https://cdn.xs2.test/tickets/ticket-roma.pkpass',
+                        'label' => 'mobile-ticket',
+                    ]],
+                ]],
+            ]),
+            'https://api.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-roma-1/url/ticket-roma.pkpass' => Http::response(
+                'PKPASS-BINARY',
+                200,
+                [
+                    'Content-Type' => 'application/vnd.apple.pkpass',
+                    'Content-Disposition' => 'attachment; filename="ticket-roma.pkpass"',
+                ],
+            ),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->post("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket")
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/vnd.apple.pkpass');
+    }
+
+    public function test_get_ticket_falls_back_when_external_ticket_id_mismatch(): void
+    {
+        config()->set('xs2.base_url', 'https://api.xs2.test');
+        config()->set('xs2.api_key', 'production-key');
+        config()->set('xs2.bookingorder_detail_endpoint', '/v1/bookingorders/{bookingorder_id}');
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill([
+            'is_sandbox' => false,
+            'external_ticket_id' => 'stale-ticket-id_spt',
+        ])->save();
+
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID => Http::response([
+                'bookingorder_id' => self::BOOKINGORDER_ID,
+                'logistic_status' => 'completed',
+                'items' => [[
+                    'ticket_id' => self::TICKET_ID,
+                    'orderitem_id' => 'orderitem-1',
+                    'distribution_channel' => 'xs2event',
+                    'download_link' => 'ticket-abc.pdf',
+                ]],
+            ]),
+            'https://api.xs2.test/v1/etickets/download/'.self::BOOKINGORDER_ID.'/orderitem-1/url/ticket-abc.pdf' => Http::response(
+                '%PDF-1.4 fallback-ticket',
+                200,
+                ['Content-Type' => 'application/pdf'],
+            ),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->post("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket")
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/pdf');
+    }
+
+    public function test_get_ticket_downloads_zip_when_item_links_missing(): void
+    {
+        config()->set('xs2.base_url', 'https://api.xs2.test');
+        config()->set('xs2.api_key', 'production-key');
+        config()->set('xs2.bookingorder_detail_endpoint', '/v1/bookingorders/{bookingorder_id}');
+        config()->set('xs2.eticket_zip_download_endpoint', '/v1/etickets/download/zip/{bookingorder_id}');
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill(['is_sandbox' => false])->save();
+
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders/'.self::BOOKINGORDER_ID => Http::response([
+                'bookingorder_id' => self::BOOKINGORDER_ID,
+                'logistic_status' => 'completed',
+                'zip_sha' => 'abc123',
+                'items' => [[
+                    'ticket_id' => self::TICKET_ID,
+                    'orderitem_id' => 'orderitem-1',
+                    'type_ticket' => 'appticket',
+                    'distribution_channel' => 'xs2event',
+                    'download_link' => '',
+                    'download_items' => [],
+                ]],
+            ]),
+            'https://api.xs2.test/v1/etickets/download/zip/'.self::BOOKINGORDER_ID => Http::response(
+                'https://cdn.xs2.test/tickets/roma.zip',
+                200,
+                ['Content-Type' => 'text/plain'],
+            ),
+            'https://cdn.xs2.test/tickets/roma.zip' => Http::response(
+                'ZIP-BINARY',
+                200,
+                ['Content-Type' => 'application/zip'],
+            ),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->post("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket")
+            ->assertOk()
+            ->assertHeader('Content-Type', 'application/zip');
+    }
+
     public function test_xs2_orders_index_backfills_attendees_from_linked_sb_order(): void
     {
         $sbOrder = $this->seedLinkedOrder(withAttendees: true);

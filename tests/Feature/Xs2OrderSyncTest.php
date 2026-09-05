@@ -146,6 +146,43 @@ class Xs2OrderSyncTest extends TestCase
         ]);
     }
 
+    public function test_sync_links_production_order_to_sb_order_by_case_insensitive_booking_reference(): void
+    {
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders*' => Http::response([
+                'bookingorders' => [[
+                    'bookingorder_id' => self::PRODUCTION_BOOKINGORDER_ID,
+                    'booking_id' => self::PRODUCTION_BOOKING_ID,
+                    'booking_reference' => '1bx67678',
+                    'logistic_status' => 'confirmed',
+                    'items' => [[
+                        'ticket_id' => 'production-ticket-sync_tck',
+                        'quantity' => 1,
+                    ]],
+                ]],
+                'pagination' => ['total_pages' => 1],
+            ]),
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67678',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'quantity' => 1,
+            'match_name' => 'AS Roma vs Atalanta',
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->postJson('/api/admin/xs2-orders/sync')
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true);
+
+        $this->assertDatabaseHas('xs2_orders', [
+            'external_order_id' => self::PRODUCTION_BOOKINGORDER_ID,
+            'sb_order_id' => $sbOrder->id,
+            'is_sandbox' => false,
+        ]);
+    }
+
     public function test_sync_links_production_order_to_sb_order_by_booking_email(): void
     {
         Http::fake([

@@ -26,6 +26,7 @@ return [
     'bookingorder_detail_endpoint' => env('XS2_BOOKINGORDER_DETAIL_ENDPOINT', '/v1/bookingorders/{bookingorder_id}'),
     'booking_detail_endpoint' => env('XS2_BOOKING_DETAIL_ENDPOINT', '/v1/bookings/{booking_id}'),
     'eticket_download_endpoint' => env('XS2_ETICKET_DOWNLOAD_ENDPOINT', '/v1/etickets/download/{bookingorder_id}/{orderitem_id}/url/{url}'),
+    'eticket_zip_download_endpoint' => env('XS2_ETICKET_ZIP_DOWNLOAD_ENDPOINT', '/v1/etickets/download/zip/{bookingorder_id}'),
     'team_detail_endpoint' => env('XS2_TEAM_DETAIL_ENDPOINT', '/v1/teams/{team_id}'),
     'reservations_endpoint' => env('XS2_RESERVATIONS_ENDPOINT', '/v1/reservations'),
     'bookings_endpoint' => env('XS2_BOOKINGS_ENDPOINT', '/v1/bookings'),

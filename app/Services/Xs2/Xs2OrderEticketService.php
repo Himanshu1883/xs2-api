@@ -45,11 +45,61 @@ class Xs2OrderEticketService
 
         try {
             $bookingPayload = $this->resolveBookingPayload($xs2Order, $bookingOrderId, $bookingId);
+            $preferredTicketId = $this->nullableString($xs2Order->external_ticket_id);
             $targets = $this->collectEticketTargets(
                 $bookingPayload,
                 $bookingOrderId ?? $bookingId ?? '',
-                $this->nullableString($xs2Order->external_ticket_id),
+                $preferredTicketId,
             );
+
+            if ($targets === [] && $bookingId !== null && $bookingOrderId !== null) {
+                $supplementalPayload = $this->fetchSupplementalBookingOrderPayload(
+                    $xs2Order,
+                    $bookingId,
+                    $bookingOrderId,
+                );
+                if ($supplementalPayload !== null) {
+                    $bookingPayload = $supplementalPayload;
+                    $targets = $this->collectEticketTargets(
+                        $bookingPayload,
+                        $bookingOrderId,
+                        $preferredTicketId,
+                    );
+                }
+            }
+
+            if ($targets === []) {
+                $zipDownload = $this->tryDownloadZipArchive($xs2Order, $bookingPayload, $bookingOrderId ?? $bookingId);
+                if ($zipDownload !== null) {
+                    $byteSize = strlen($zipDownload['body']);
+                    $xs2Order->fill([
+                        'xs2_eticket_request' => [
+                            ...$requestPayload,
+                            'download_mode' => 'zip',
+                        ],
+                        'xs2_eticket_response' => [
+                            'success' => true,
+                            'filename' => $zipDownload['filename'],
+                            'byte_size' => $byteSize,
+                            'content_type' => 'application/zip',
+                            'http_status' => $zipDownload['status'] ?? 200,
+                            'fetched_at' => now()->toIso8601String(),
+                        ],
+                        'eticket_fetched_at' => now(),
+                        'eticket_error' => null,
+                    ])->save();
+
+                    return [
+                        'ok' => true,
+                        'message' => sprintf('Ticket fetched (%s, %s).', $zipDownload['filename'], $this->formatBytes($byteSize)),
+                        'order' => $xs2Order->fresh(['attendees', 'sbOrder', 'latestGuestDataLog']),
+                        'filename' => $zipDownload['filename'],
+                        'byte_size' => $byteSize,
+                        'body' => $zipDownload['body'],
+                        'content_type' => 'application/zip',
+                    ];
+                }
+            }
 
             if ($targets === []) {
                 $logisticStatus = $this->nullableString($bookingPayload['logistic_status'] ?? null);
@@ -63,6 +113,7 @@ class Xs2OrderEticketService
                         'success' => false,
                         'error' => $message,
                         'logistic_status' => $logisticStatus,
+                        'debug' => $this->buildMissingLinkDebug($bookingPayload, $preferredTicketId),
                         'fetched_at' => now()->toIso8601String(),
                     ],
                     'eticket_fetched_at' => null,
@@ -152,7 +203,10 @@ class Xs2OrderEticketService
     {
         if ($bookingOrderId !== null) {
             try {
-                return $this->fetchBookingOrder($xs2Order, $bookingOrderId);
+                return $this->normalizeBookingPayload(
+                    $this->fetchBookingOrder($xs2Order, $bookingOrderId),
+                    $bookingOrderId,
+                );
             } catch (Xs2RequestException $exception) {
                 if ($exception->status !== 404 || $bookingId === null) {
                     throw $exception;
@@ -164,7 +218,172 @@ class Xs2OrderEticketService
             throw new \RuntimeException('Could not load the XS2 booking order for this ticket.');
         }
 
-        return $this->fetchBooking($xs2Order, $bookingId);
+        return $this->normalizeBookingPayload(
+            $this->fetchBooking($xs2Order, $bookingId),
+            $bookingOrderId,
+            $bookingId,
+        );
+    }
+
+    /**
+     * XS2 may return booking-order items on the parent booking payload even when the
+     * bookingorder detail response has no download links yet.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function fetchSupplementalBookingOrderPayload(
+        Xs2Order $xs2Order,
+        string $bookingId,
+        string $bookingOrderId,
+    ): ?array {
+        try {
+            $bookingPayload = $this->normalizeBookingPayload(
+                $this->fetchBooking($xs2Order, $bookingId),
+                $bookingOrderId,
+                $bookingId,
+            );
+        } catch (Throwable) {
+            return null;
+        }
+
+        if ($this->resolveOrderItems($bookingPayload) === []) {
+            return null;
+        }
+
+        return $bookingPayload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function normalizeBookingPayload(array $payload, ?string $bookingOrderId = null, ?string $bookingId = null): array
+    {
+        foreach (['bookingorder', 'data', 'result'] as $wrapperKey) {
+            $wrapped = $payload[$wrapperKey] ?? null;
+            if (is_array($wrapped)) {
+                $payload = $wrapped;
+                break;
+            }
+        }
+
+        if ($this->resolveOrderItems($payload) !== []) {
+            return $payload;
+        }
+
+        $bookingOrders = $payload['bookingorders'] ?? null;
+        if (! is_array($bookingOrders)) {
+            return $payload;
+        }
+
+        $matched = null;
+        foreach ($bookingOrders as $bookingOrder) {
+            if (! is_array($bookingOrder)) {
+                continue;
+            }
+
+            $candidateBookingOrderId = $this->nullableString($bookingOrder['bookingorder_id'] ?? null);
+            if ($bookingOrderId !== null && $candidateBookingOrderId !== null && $candidateBookingOrderId !== $bookingOrderId) {
+                continue;
+            }
+
+            if ($bookingId !== null) {
+                $candidateBookingId = $this->nullableString($bookingOrder['booking_id'] ?? null);
+                if ($candidateBookingId !== null && $candidateBookingId !== $bookingId) {
+                    continue;
+                }
+            }
+
+            if ($this->resolveOrderItems($bookingOrder) !== []) {
+                $matched = $bookingOrder;
+                break;
+            }
+
+            if ($matched === null) {
+                $matched = $bookingOrder;
+            }
+        }
+
+        return is_array($matched) ? $matched : $payload;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return list<array<string, mixed>>
+     */
+    private function resolveOrderItems(array $payload): array
+    {
+        foreach (['items', 'orderitems', 'order_items', 'tickets'] as $key) {
+            $items = $payload[$key] ?? null;
+            if (! is_array($items)) {
+                continue;
+            }
+
+            return array_values(array_filter($items, is_array(...)));
+        }
+
+        return [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $bookingPayload
+     * @return array{status: int, body: string, filename: string}|null
+     */
+    private function tryDownloadZipArchive(Xs2Order $xs2Order, array $bookingPayload, ?string $bookingOrderId): ?array
+    {
+        $zipSha = $this->nullableString($bookingPayload['zip_sha'] ?? null);
+        $resolvedBookingOrderId = $this->nullableString(
+            $bookingPayload['bookingorder_id']
+            ?? $bookingOrderId
+            ?? $xs2Order->xs2_bookingorder_id
+            ?? $xs2Order->external_order_id,
+        );
+
+        if ($zipSha === null || $resolvedBookingOrderId === null) {
+            return null;
+        }
+
+        if ((bool) $xs2Order->is_sandbox || ! $this->client->isOrdersConfigured()) {
+            return null;
+        }
+
+        $zipUrlResponse = $this->client->resolveEticketZipDownloadUrlViaOrdersApi($resolvedBookingOrderId);
+        $zipResponse = $this->client->downloadEticketZipFromUrl($zipUrlResponse['download_url']);
+
+        return [
+            'status' => $zipResponse['status'],
+            'body' => $zipResponse['body'],
+            'filename' => 'xs2-order-'.$xs2Order->id.'-tickets.zip',
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $bookingPayload
+     * @return array<string, mixed>
+     */
+    private function buildMissingLinkDebug(array $bookingPayload, ?string $preferredTicketId): array
+    {
+        $items = $this->resolveOrderItems($bookingPayload);
+
+        return [
+            'bookingorder_id' => $this->nullableString($bookingPayload['bookingorder_id'] ?? null),
+            'item_count' => count($items),
+            'preferred_ticket_id' => $preferredTicketId,
+            'zip_sha' => $this->nullableString($bookingPayload['zip_sha'] ?? null),
+            'items' => array_map(function (array $item): array {
+                return [
+                    'orderitem_id' => $this->nullableString($item['orderitem_id'] ?? $item['order_item_id'] ?? null),
+                    'ticket_id' => $this->nullableString($item['ticket_id'] ?? null),
+                    'type_ticket' => $this->nullableString($item['type_ticket'] ?? $item['ticket_type'] ?? null),
+                    'distribution_channel' => $this->nullableString($item['distribution_channel'] ?? null),
+                    'download_link' => $this->nullableString($item['download_link'] ?? null),
+                    'download_item_count' => is_array($item['download_items'] ?? null)
+                        ? count($item['download_items'])
+                        : 0,
+                    'has_external_activation_link' => $this->nullableString($item['external_activation_link'] ?? null) !== null,
+                ];
+            }, $items),
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -331,24 +550,46 @@ class Xs2OrderEticketService
             return [];
         }
 
-        $items = $bookingPayload['items'] ?? $bookingPayload['tickets'] ?? [];
-        if (! is_array($items)) {
+        $items = $this->resolveOrderItems($bookingPayload);
+        if ($items === []) {
             return [];
         }
 
+        $targets = $this->buildEticketTargets($items, $bookingOrderId, $preferredTicketId);
+        if ($targets !== [] || $preferredTicketId === null) {
+            return $this->sortEticketTargets($targets);
+        }
+
+        return $this->sortEticketTargets($this->buildEticketTargets($items, $bookingOrderId, null));
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $items
+     * @return list<array{
+     *     bookingorder_id: string,
+     *     orderitem_id: string,
+     *     download_link: string,
+     *     distribution_channel: string|null,
+     *     ticket_id: string|null,
+     *     type_ticket: string|null
+     * }>
+     */
+    private function buildEticketTargets(array $items, string $bookingOrderId, ?string $preferredTicketId): array
+    {
         $targets = [];
 
         foreach ($items as $item) {
-            if (! is_array($item)) {
-                continue;
-            }
-
             $ticketId = $this->nullableString($item['ticket_id'] ?? null);
             if ($preferredTicketId !== null && $ticketId !== null && $ticketId !== $preferredTicketId) {
                 continue;
             }
 
-            $orderItemId = $this->nullableString($item['orderitem_id'] ?? $item['order_item_id'] ?? $item['ticket_id'] ?? null);
+            $orderItemId = $this->nullableString(
+                $item['orderitem_id']
+                ?? $item['order_item_id']
+                ?? $item['downloaditem_id']
+                ?? null,
+            );
             $distributionChannel = $this->nullableString($item['distribution_channel'] ?? null);
             $typeTicket = $this->nullableString($item['type_ticket'] ?? $item['ticket_type'] ?? null);
 
@@ -368,7 +609,7 @@ class Xs2OrderEticketService
             }
         }
 
-        return $this->sortEticketTargets($targets);
+        return $targets;
     }
 
     /**
@@ -420,28 +661,52 @@ class Xs2OrderEticketService
     private function downloadLinksForItem(array $item): array
     {
         $links = [];
-        $itemDownloadLink = $this->normalizeDownloadLink($item['download_link'] ?? null);
-        if ($itemDownloadLink !== null) {
-            $links[] = $itemDownloadLink;
+
+        foreach ([
+            'download_link',
+            'download_url',
+            'pkpass_link',
+            'mobile_download_link',
+            'ticket_url',
+            'file_name',
+            'filename',
+        ] as $field) {
+            $downloadLink = $this->normalizeDownloadLink($item[$field] ?? null);
+            if ($downloadLink !== null) {
+                $links[] = $downloadLink;
+            }
         }
 
         $downloadItems = $item['download_items'] ?? [];
         if (is_array($downloadItems)) {
             foreach ($downloadItems as $downloadItem) {
+                if (is_string($downloadItem)) {
+                    $downloadLink = $this->normalizeDownloadLink($downloadItem);
+                    if ($downloadLink !== null) {
+                        $links[] = $downloadLink;
+                    }
+
+                    continue;
+                }
+
                 if (! is_array($downloadItem)) {
                     continue;
                 }
-                $downloadLink = $this->normalizeDownloadLink($downloadItem['download_link'] ?? null);
-                if ($downloadLink !== null) {
-                    $links[] = $downloadLink;
-                }
-            }
-        }
 
-        if ($links === []) {
-            $legacyUrl = $this->normalizeDownloadLink($item['download_url'] ?? null);
-            if ($legacyUrl !== null) {
-                $links[] = $legacyUrl;
+                foreach ([
+                    'download_link',
+                    'download_url',
+                    'pkpass_link',
+                    'mobile_download_link',
+                    'ticket_url',
+                    'file_name',
+                    'filename',
+                ] as $field) {
+                    $downloadLink = $this->normalizeDownloadLink($downloadItem[$field] ?? null);
+                    if ($downloadLink !== null) {
+                        $links[] = $downloadLink;
+                    }
+                }
             }
         }
 

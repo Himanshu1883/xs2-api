@@ -275,7 +275,9 @@ class Xs2OrderSyncService
                 continue;
             }
 
-            $sbOrder = SbOrder::query()->where('booking_no', $reference)->first();
+            $sbOrder = SbOrder::query()
+                ->whereRaw('UPPER(booking_no) = ?', [mb_strtoupper($reference)])
+                ->first();
             if ($sbOrder !== null) {
                 return $sbOrder->id;
             }
@@ -285,7 +287,18 @@ class Xs2OrderSyncService
         if ($bookingCode !== null) {
             $sbOrder = SbOrder::query()
                 ->whereDoesntHave('xs2Order')
-                ->where('booking_no', $bookingCode)
+                ->whereRaw('UPPER(booking_no) = ?', [mb_strtoupper($bookingCode)])
+                ->first();
+            if ($sbOrder !== null) {
+                return $sbOrder->id;
+            }
+        }
+
+        $externalReference = $this->nullableString($row['external_reference_id'] ?? null);
+        if ($externalReference !== null) {
+            $sbOrder = SbOrder::query()
+                ->whereDoesntHave('xs2Order')
+                ->whereRaw('UPPER(booking_no) = ?', [mb_strtoupper($externalReference)])
                 ->first();
             if ($sbOrder !== null) {
                 return $sbOrder->id;
