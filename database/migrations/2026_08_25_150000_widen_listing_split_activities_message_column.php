@@ -1,26 +1,29 @@
 <?php
 
 use Illuminate\Database\Migrations\Migration;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
     public function up(): void
     {
-        if (! Schema::hasTable('listing_split_activities')) {
+        if (! Schema::hasTable('listing_split_activities') || ! Schema::hasColumn('listing_split_activities', 'message')) {
             return;
         }
 
-        DB::statement('ALTER TABLE listing_split_activities MODIFY message TEXT NULL');
+        Schema::table('listing_split_activities', function ($table): void {
+            $table->text('message')->nullable()->change();
+        });
     }
 
     public function down(): void
     {
-        if (! Schema::hasTable('listing_split_activities')) {
+        if (! Schema::hasTable('listing_split_activities') || ! Schema::hasColumn('listing_split_activities', 'message')) {
             return;
         }
 
-        DB::statement('ALTER TABLE listing_split_activities MODIFY message VARCHAR(255) NULL');
+        Schema::table('listing_split_activities', function ($table): void {
+            $table->string('message', 255)->nullable()->change();
+        });
     }
 };

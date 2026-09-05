@@ -28,6 +28,8 @@ return [
     'eticket_download_endpoint' => env('XS2_ETICKET_DOWNLOAD_ENDPOINT', '/v1/etickets/download/{bookingorder_id}/{orderitem_id}/url/{url}'),
     'team_detail_endpoint' => env('XS2_TEAM_DETAIL_ENDPOINT', '/v1/teams/{team_id}'),
     'reservations_endpoint' => env('XS2_RESERVATIONS_ENDPOINT', '/v1/reservations'),
+    'bookings_endpoint' => env('XS2_BOOKINGS_ENDPOINT', '/v1/bookings'),
+    'bookingorders_endpoint' => env('XS2_BOOKINGORDERS_ENDPOINT', '/v1/bookingorders'),
     // Expected list endpoint when XS2 exposes supplier orders/bookings (not in current catalog OpenAPI).
     'orders_endpoint' => env('XS2_ORDERS_ENDPOINT', '/v1/orders'),
 

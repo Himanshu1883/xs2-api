@@ -349,7 +349,88 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             ->assertJsonPath('data.reservation_response.reservation_id', 'sandbox-reservation-sb_rsv');
     }
 
-    public function test_service_skips_order_creation_when_create_order_environment_is_production(): void
+    public function test_service_creates_xs2_production_order_in_xs2_orders_table(): void
+    {
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_PRODUCTION,
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        config()->set('xs2.bookings_endpoint', '/v1/bookings');
+        config()->set('xs2.bookingorders_endpoint', '/v1/bookingorders');
+        config()->set('xs2.bookingorder_detail_endpoint', '/v1/bookingorders/{bookingorder_id}');
+
+        Http::fake([
+            'https://api.xs2.test/v1/reservations' => Http::response([
+                'reservation_id' => 'production-reservation-sb_rsv',
+            ], 201),
+            'https://api.xs2.test/v1/bookings' => Http::response([
+                'booking_id' => 'production-booking-sb_bkn',
+                'booking_code' => 'PRD9001',
+            ], 201),
+            'https://api.xs2.test/v1/bookingorders*' => Http::sequence()
+                ->push([
+                    'bookingorders' => [[
+                        'booking_id' => 'production-booking-sb_bkn',
+                        'bookingorder_id' => 'production-bookingorder-sb_bko',
+                    ]],
+                ])
+                ->push([
+                    'bookingorder_id' => 'production-bookingorder-sb_bko',
+                    'booking_id' => 'production-booking-sb_bkn',
+                    'event_name' => 'Real Madrid vs Test',
+                    'booking_status' => 'confirmed',
+                ]),
+        ]);
+
+        $ticket = $this->seedProductionTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-PROD-9001',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 2,
+            'match_name' => 'Real Madrid vs Test',
+            'stadium_name' => 'Bernabeu',
+            'match_date' => '2026-10-01',
+        ]);
+
+        $result = app(SbOrderXs2SandboxOrderService::class)->createFromSbOrder($sbOrder);
+
+        $this->assertTrue($result['created']);
+        $this->assertFalse($result['skipped']);
+        $this->assertDatabaseHas('xs2_orders', [
+            'sb_order_id' => $sbOrder->id,
+            'is_sandbox' => false,
+            'external_order_id' => 'production-bookingorder-sb_bko',
+            'xs2_booking_id' => 'production-booking-sb_bkn',
+            'external_ticket_id' => $ticket->external_ticket_id,
+        ]);
+        $this->assertDatabaseHas('sb_order_xs2_sync_logs', [
+            'sb_order_id' => $sbOrder->id,
+            'status' => 'success',
+        ]);
+
+        Http::assertSent(function ($request): bool {
+            if ($request->method() !== 'POST' || ! str_contains($request->url(), '/v1/bookings')) {
+                return false;
+            }
+
+            return ! array_key_exists('is_test_booking', $request->data());
+        });
+    }
+
+    public function test_service_skips_sandbox_ticket_when_create_order_environment_is_production(): void
     {
         app(IntegrationSettingService::class)->set(
             ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
@@ -370,7 +451,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $result = app(SbOrderXs2SandboxOrderService::class)->createFromSbOrder($sbOrder);
 
         $this->assertTrue($result['skipped']);
-        $this->assertStringContainsString('production order creation is not implemented', strtolower((string) $result['reason']));
+        $this->assertStringContainsString('is marked is_sandbox', strtolower((string) $result['reason']));
         $this->assertDatabaseMissing('xs2_orders', ['sb_order_id' => $sbOrder->id]);
     }
 
@@ -475,6 +556,41 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'seatsbroker_listing_id' => $seatsbrokerListingId,
             'status' => 'active',
             'sync_status' => 'synced',
+        ]);
+
+        return $ticket;
+    }
+
+    private function seedProductionTicketMapping(string $sellerListingId): Xs2Ticket
+    {
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'production-event-madrid',
+            'event_name' => 'Real Madrid vs Test',
+            'sport_type' => 'soccer',
+            'event_status' => 'notstarted',
+            'raw_payload' => [],
+        ]);
+
+        $ticket = Xs2Ticket::query()->create([
+            'external_ticket_id' => 'production-ticket-madrid_tck',
+            'external_event_id' => $event->external_event_id,
+            'xs2_event_id' => $event->id,
+            'is_sandbox' => false,
+            'ticket_status' => 'available',
+            'stock' => 10,
+            'net_rate' => 15000,
+            'currency_code' => 'EUR',
+            'category_name' => 'Category A',
+            'sync_status' => 'pending',
+            'raw_payload' => [],
+        ]);
+
+        ExternalListingMapping::query()->create([
+            'provider' => 'xs2event',
+            'xs2_ticket_id' => $ticket->id,
+            'seller_listing_id' => $sellerListingId,
+            'seller_reference' => 'XS2-ref',
+            'status' => 'active',
         ]);
 
         return $ticket;

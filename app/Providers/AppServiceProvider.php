@@ -3,7 +3,7 @@
 namespace App\Providers;
 
 use App\Contracts\MarketplaceListingPublisher;
-use App\Contracts\Xs2ReservationService;
+use App\Contracts\Xs2ReservationService as Xs2ReservationServiceContract;
 use App\Listeners\CronCommandInstrumentationListener;
 use App\Services\Admin\CronControlService;
 use App\Services\Admin\CronExecutionContext;
@@ -13,7 +13,7 @@ use App\Services\Admin\CronExecutionLogService;
 use App\Services\SellerApi\SellerApiDebugRecorder;
 use App\Services\SellerApi\SellerApiRequestDebugger;
 use App\Services\SplitListings\SeatsBrokerListingPublisher;
-use App\Services\Xs2\UnsupportedXs2ReservationService;
+use App\Services\Xs2\Xs2ReservationService;
 use App\Services\Xs2\Xs2ApiDebugRecorder;
 use App\Services\Xs2\Xs2ApiRequestDebugger;
 use Illuminate\Console\Events\CommandFinished;
@@ -29,7 +29,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        $this->app->bind(Xs2ReservationService::class, UnsupportedXs2ReservationService::class);
+        $this->app->bind(Xs2ReservationServiceContract::class, Xs2ReservationService::class);
         $this->app->bind(MarketplaceListingPublisher::class, SeatsBrokerListingPublisher::class);
         $this->app->singleton(SellerApiDebugRecorder::class);
         $this->app->singleton(SellerApiRequestDebugger::class);

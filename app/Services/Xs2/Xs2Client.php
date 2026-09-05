@@ -381,6 +381,17 @@ class Xs2Client
     }
 
     /** @return array<string, mixed> */
+    public function getBookingOrderViaOrdersApi(string $bookingOrderId): array
+    {
+        return $this->sendOrders(
+            'GET',
+            $this->endpoint('bookingorder_detail_endpoint', ['bookingorder_id' => $bookingOrderId]),
+            [],
+            'get_bookingorder_orders',
+        );
+    }
+
+    /** @return array<string, mixed> */
     public function getBooking(string $bookingId): array
     {
         return $this->send(
@@ -389,6 +400,82 @@ class Xs2Client
             [],
             'get_booking',
         );
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{
+     *     success: bool,
+     *     status: int|null,
+     *     data: array<string, mixed>,
+     *     headers: array<string, list<string>>,
+     *     message: string|null
+     * }
+     */
+    public function createReservationDetailed(array $payload): array
+    {
+        return $this->sendOrdersDetailed(
+            'POST',
+            $this->endpoint('reservations_endpoint'),
+            ['json' => $payload],
+            'create_reservation',
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{
+     *     success: bool,
+     *     status: int|null,
+     *     data: array<string, mixed>,
+     *     headers: array<string, list<string>>,
+     *     message: string|null
+     * }
+     */
+    public function createBookingDetailed(array $payload): array
+    {
+        return $this->sendOrdersDetailed(
+            'POST',
+            $this->endpoint('bookings_endpoint', []),
+            ['json' => $payload],
+            'create_booking',
+        );
+    }
+
+    /**
+     * @param  array<string, scalar|null>  $query
+     * @return array<string, mixed>
+     */
+    public function fetchBookingOrders(array $query = []): array
+    {
+        $filteredQuery = array_filter(
+            $query,
+            static fn (mixed $value): bool => $value !== null && $value !== '',
+        );
+
+        return $this->sendOrders(
+            'GET',
+            $this->endpoint('bookingorders_endpoint', []),
+            ['query' => $filteredQuery],
+            'list_bookingorders',
+        );
+    }
+
+    /** @return array<string, mixed> */
+    public function fetchBookingOrdersByBookingId(string $bookingId): array
+    {
+        return $this->fetchBookingOrders(['booking_id' => $bookingId]);
+    }
+
+    public function isOrdersConfigured(): bool
+    {
+        foreach (['base_url', 'api_key'] as $key) {
+            if (blank($this->ordersSetting($key))) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -548,6 +635,197 @@ class Xs2Client
     private function backoff(int $attempt): void
     {
         usleep((int) $this->setting('retry_delay_ms', 1500) * 1000 * $attempt);
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @return array<string, mixed>|list<mixed>
+     */
+    private function sendOrders(string $method, string $uri, array $options = [], string $operation = 'xs2_orders_api'): array
+    {
+        $result = $this->sendOrdersDetailed($method, $uri, $options, $operation);
+        if (! $result['success']) {
+            throw Xs2RequestException::fromHttpResponse(
+                (int) ($result['status'] ?? 0),
+                $result['data'] ?? null,
+                null,
+            );
+        }
+
+        return $result['data'];
+    }
+
+    /**
+     * @param  array<string, mixed>  $options
+     * @return array{
+     *     success: bool,
+     *     status: int|null,
+     *     data: array<string, mixed>,
+     *     headers: array<string, list<string>>,
+     *     message: string|null
+     * }
+     */
+    private function sendOrdersDetailed(string $method, string $uri, array $options = [], string $operation = 'xs2_orders_api'): array
+    {
+        $attempts = max(1, (int) $this->setting('retry_times', 4));
+        $retryableStatuses = [429, 500, 502, 503, 504];
+        $url = $this->ordersAbsoluteUrl($uri);
+        $requestHeaders = $this->ordersRequestHeaders();
+        $payload = $options['query'] ?? $options['json'] ?? $options['body'] ?? [];
+        if (! is_array($payload)) {
+            $payload = ['body' => $payload];
+        }
+        if (($options['query'] ?? null) && is_array($options['query']) && $options['query'] !== []) {
+            $url .= (str_contains($url, '?') ? '&' : '?').http_build_query($options['query']);
+        }
+
+        for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+            $this->consumeRateLimit();
+
+            try {
+                $response = $this->ordersHttp()->send($method, $uri, $options);
+            } catch (ConnectionException $exception) {
+                if ($attempt === $attempts) {
+                    $this->debugger->recordTransportFailure(
+                        $operation,
+                        $method,
+                        $url,
+                        $requestHeaders,
+                        $payload,
+                        null,
+                        $exception->getMessage(),
+                    );
+
+                    return [
+                        'success' => false,
+                        'status' => null,
+                        'data' => [],
+                        'headers' => [],
+                        'message' => 'XS2 request could not connect.',
+                    ];
+                }
+
+                $this->backoff($attempt);
+
+                continue;
+            }
+
+            $this->debugger->record($operation, $method, $url, $requestHeaders, $payload, $response);
+            $headers = $response->headers();
+            $json = $response->json();
+            $body = is_array($json) ? $json : [];
+
+            if ($response->successful()) {
+                if (! is_array($json)) {
+                    return [
+                        'success' => false,
+                        'status' => $response->status(),
+                        'data' => [],
+                        'headers' => $headers,
+                        'message' => 'XS2 response is not a JSON object or array.',
+                    ];
+                }
+
+                return [
+                    'success' => true,
+                    'status' => $response->status(),
+                    'data' => $json,
+                    'headers' => $headers,
+                    'message' => null,
+                ];
+            }
+
+            if (! in_array($response->status(), $retryableStatuses, true)) {
+                return [
+                    'success' => false,
+                    'status' => $response->status(),
+                    'data' => $body,
+                    'headers' => $headers,
+                    'message' => Xs2RequestException::formatMessage(
+                        $response->status(),
+                        $body,
+                        $url,
+                    ),
+                ];
+            }
+
+            if ($attempt === $attempts) {
+                return [
+                    'success' => false,
+                    'status' => $response->status(),
+                    'data' => $body,
+                    'headers' => $headers,
+                    'message' => Xs2RequestException::formatMessage(
+                        $response->status(),
+                        $body,
+                        $url,
+                    ),
+                ];
+            }
+
+            $this->backoff($attempt);
+        }
+
+        return [
+            'success' => false,
+            'status' => null,
+            'data' => [],
+            'headers' => [],
+            'message' => 'XS2 request failed.',
+        ];
+    }
+
+    private function ordersHttp(): PendingRequest
+    {
+        foreach (['base_url', 'api_key'] as $key) {
+            if (blank($this->ordersSetting($key))) {
+                throw new Xs2ConfigurationException('XS2 orders API is not configured.');
+            }
+        }
+
+        return Http::baseUrl(rtrim((string) $this->ordersSetting('base_url'), '/'))
+            ->acceptJson()
+            ->asJson()
+            ->withHeaders($this->ordersRequestHeaders())
+            ->connectTimeout((int) $this->setting('connect_timeout', 10))
+            ->timeout((int) $this->setting('timeout', 30));
+    }
+
+    /** @return array<string, string> */
+    private function ordersRequestHeaders(): array
+    {
+        return [
+            (string) $this->setting('api_key_header') => (string) $this->ordersSetting('api_key'),
+        ];
+    }
+
+    private function ordersAbsoluteUrl(string $uri): string
+    {
+        $base = rtrim((string) $this->ordersSetting('base_url'), '/');
+        if (str_starts_with($uri, 'http://') || str_starts_with($uri, 'https://')) {
+            return $uri;
+        }
+
+        return $base.'/'.ltrim($uri, '/');
+    }
+
+    private function ordersSetting(string $key, mixed $default = null): mixed
+    {
+        if ($key === 'base_url') {
+            $resolved = app(ApiEnvironmentService::class)->xs2OrdersBaseUrl();
+            if (filled($resolved)) {
+                return $resolved;
+            }
+        }
+
+        if ($key === 'api_key') {
+            $resolved = app(ApiEnvironmentService::class)->xs2OrdersApiKey();
+            if (filled($resolved)) {
+                return $resolved;
+            }
+        }
+
+        return $this->setting($key, $default);
     }
 
     private function setting(string $key, mixed $default = null): mixed

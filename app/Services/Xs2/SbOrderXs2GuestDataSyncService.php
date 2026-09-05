@@ -609,7 +609,47 @@ class SbOrderXs2GuestDataSyncService
             return $this->resolveSandboxBookingOrderIdFromApi($bookingId, $xs2Order);
         }
 
+        if (! (bool) $xs2Order->is_sandbox && $this->client->isOrdersConfigured()) {
+            return $this->resolveProductionBookingOrderIdFromApi($bookingId, $xs2Order);
+        }
+
         return $stored;
+    }
+
+    private function resolveProductionBookingOrderIdFromApi(string $bookingId, ?Xs2Order $xs2Order = null): ?string
+    {
+        try {
+            $response = $this->client->fetchBookingOrdersByBookingId($bookingId);
+        } catch (Xs2RequestException) {
+            return null;
+        }
+
+        $orders = $response['bookingorders'] ?? [];
+        if (! is_array($orders)) {
+            return null;
+        }
+
+        foreach ($orders as $order) {
+            if (! is_array($order)) {
+                continue;
+            }
+
+            $responseBookingId = $this->nullableString($order['booking_id'] ?? null);
+            if ($responseBookingId !== null && $responseBookingId !== $bookingId) {
+                continue;
+            }
+
+            $bookingOrderId = $this->nullableString($order['bookingorder_id'] ?? null);
+            if ($bookingOrderId !== null) {
+                if ($xs2Order !== null) {
+                    $xs2Order->fill(['xs2_bookingorder_id' => $bookingOrderId])->save();
+                }
+
+                return $bookingOrderId;
+            }
+        }
+
+        return null;
     }
 
     private function resolveSandboxBookingOrderIdFromApi(string $bookingId, ?Xs2Order $xs2Order = null): ?string

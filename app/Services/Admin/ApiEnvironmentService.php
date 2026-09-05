@@ -72,13 +72,13 @@ class ApiEnvironmentService
             $this->buildPoint(
                 self::POINT_XS2_CREATE_ORDER,
                 'XS2 Create Order API',
-                'SB→XS2 order creation (reservation + booking) when SB bookings sync. Production uses api.xs2event.com when implemented.',
+                'SB→XS2 order creation (reservation + booking) when SB bookings sync.',
                 self::XS2_ORDERS_ACTIVE_ENVIRONMENT,
                 fn (): array => $this->xs2OrdersConnection(),
                 [
                     $this->endpoint('POST', config('xs2.reservations_endpoint', '/v1/reservations'), 'XS2_RESERVATIONS_ENDPOINT'),
-                    $this->endpoint('POST', config('xs2.sandbox.bookings_endpoint', '/v1/bookings'), 'XS2_SANDBOX_BOOKINGS_ENDPOINT'),
-                    $this->endpoint('GET', config('xs2.sandbox.bookingorders_endpoint', '/v1/bookingorders'), 'XS2_SANDBOX_BOOKINGORDERS_ENDPOINT'),
+                    $this->endpoint('POST', config('xs2.bookings_endpoint', '/v1/bookings'), 'XS2_BOOKINGS_ENDPOINT'),
+                    $this->endpoint('GET', config('xs2.bookingorders_endpoint', '/v1/bookingorders'), 'XS2_BOOKINGORDERS_ENDPOINT'),
                 ],
             ),
             $this->buildPoint(
@@ -138,6 +138,24 @@ class ApiEnvironmentService
     public function xs2ApiKey(): ?string
     {
         if ($this->xs2Environment() === self::ENV_SANDBOX) {
+            return $this->effectiveSandboxXs2ApiKey();
+        }
+
+        return $this->effectiveProductionXs2ApiKey();
+    }
+
+    public function xs2OrdersBaseUrl(): ?string
+    {
+        if ($this->xs2OrdersEnvironment() === self::ENV_SANDBOX) {
+            return $this->effectiveSandboxXs2BaseUrl();
+        }
+
+        return $this->effectiveProductionXs2BaseUrl();
+    }
+
+    public function xs2OrdersApiKey(): ?string
+    {
+        if ($this->xs2OrdersEnvironment() === self::ENV_SANDBOX) {
             return $this->effectiveSandboxXs2ApiKey();
         }
 
