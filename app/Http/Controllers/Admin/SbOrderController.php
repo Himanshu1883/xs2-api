@@ -6,9 +6,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\SbOrderIndexRequest;
 use App\Http\Resources\SbOrderResource;
 use App\Http\Resources\SbOrderXs2SyncLogResource;
+use App\Jobs\CreateXs2SandboxOrderFromSbOrder;
 use App\Models\EventMapping;
 use App\Models\SbOrder;
 use App\Models\SbOrderXs2SyncLog;
+use App\Services\Admin\ApiEnvironmentService;
 use App\Services\SellerApi\SellerBookingSyncService;
 use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
 use App\Services\Xs2\SbOrderXs2SandboxOrderService;
@@ -18,6 +20,7 @@ class SbOrderController extends Controller
 {
     public function __construct(
         private readonly SbOrderXs2SandboxOrderService $xs2SandboxOrders,
+        private readonly ApiEnvironmentService $apiEnvironment,
     ) {}
 
     public function index(SbOrderIndexRequest $request)
@@ -175,7 +178,7 @@ class SbOrderController extends Controller
         ]);
     }
 
-    public function createXs2Order(SbOrder $sbOrder, SbOrderXs2SandboxOrderService $sandboxOrder): JsonResponse
+    public function createXs2Order(SbOrder $sbOrder): JsonResponse
     {
         $this->authorize('viewAny', EventMapping::class);
 
@@ -187,40 +190,32 @@ class SbOrderController extends Controller
             ], 422);
         }
 
-        $result = $sandboxOrder->createFromSbOrder($sbOrder);
-
-        if ($result['skipped'] ?? false) {
+        $skipReason = $this->xs2SandboxOrders->resolveManualCreateSkipReason($sbOrder);
+        if ($skipReason !== null) {
             return response()->json([
-                'message' => $result['reason'] ?? 'Could not create XS2 order.',
+                'message' => $skipReason,
             ], 422);
         }
 
-        $xs2Order = $result['order'];
-        if ($xs2Order === null || ! filled($xs2Order->xs2_booking_id)) {
-            return response()->json([
-                'message' => $result['reason'] ?? 'XS2 order creation failed.',
-            ], 422);
-        }
+        $this->xs2SandboxOrders->recordQueueDecision($sbOrder);
+        CreateXs2SandboxOrderFromSbOrder::dispatch($sbOrder->id);
 
-        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
-        $message = ($result['created'] ?? false)
-            ? sprintf(
-                'Created XS2 sandbox order %s for booking %s.',
-                $xs2Order->external_order_id,
-                $sbOrder->booking_no,
-            )
-            : sprintf(
-                'Updated XS2 sandbox order %s for booking %s.',
-                $xs2Order->external_order_id,
-                $sbOrder->booking_no,
-            );
+        $isSandbox = $this->apiEnvironment->xs2OrdersEnvironment() === ApiEnvironmentService::ENV_SANDBOX;
+        $envLabel = $isSandbox ? 'sandbox' : 'production';
 
         return response()->json([
-            'message' => $message,
-            'data' => new SbOrderResource($sbOrder),
-        ]);
+            'message' => sprintf(
+                'XS2 %s order creation queued for booking %s. Reservation and booking will complete in the background.',
+                $envLabel,
+                $sbOrder->booking_no,
+            ),
+            'data' => [
+                'queued' => true,
+                'sb_order' => new SbOrderResource($sbOrder),
+            ],
+        ], 202);
     }
 
     public function moveToXs2Order(SbOrder $sbOrder, SbOrderXs2GuestDataSyncService $guestData): JsonResponse

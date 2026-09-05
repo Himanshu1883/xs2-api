@@ -465,6 +465,30 @@ class SbOrderXs2SandboxOrderService
         return null;
     }
 
+    /**
+     * Synchronous validation for manual Create XS2 order (mapping + net_rate).
+     * XS2 reservation/booking API calls run in CreateXs2SandboxOrderFromSbOrder.
+     */
+    public function resolveManualCreateSkipReason(SbOrder $order): ?string
+    {
+        $reason = $this->resolveQueueSkipReason($order);
+        if ($reason !== null) {
+            return $reason;
+        }
+
+        $ticket = $this->resolveMappedTicket($order);
+        if ($ticket === null) {
+            return $this->noTicketMappingSkipReason();
+        }
+
+        $netRate = $this->resolveReservationNetRate($order, $ticket);
+        if ($netRate === null || $netRate <= 0) {
+            return 'Mapped XS2 ticket is missing net_rate.';
+        }
+
+        return null;
+    }
+
     public function resolveTicketMappingSkipReason(SbOrder $order): ?string
     {
         foreach ($this->marketplaceListingIds($order) as $listingId) {

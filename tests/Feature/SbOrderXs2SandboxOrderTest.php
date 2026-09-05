@@ -234,6 +234,13 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
     public function test_admin_can_manually_create_xs2_order_from_sb_order(): void
     {
+        Queue::fake();
+
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_SANDBOX,
+        );
+
         Http::fake([
             'https://sandbox.xs2.test/v1/reservations' => Http::response([
                 'reservation_id' => 'sandbox-reservation-manual_rsv',
@@ -274,9 +281,21 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $this->withToken($token)
             ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
-            ->assertOk()
-            ->assertJsonPath('data.xs2_order.xs2_booking_id', self::SANDBOX_BOOKING_ID)
-            ->assertJsonPath('data.xs2_order.external_order_id', self::SANDBOX_BOOKINGORDER_ID);
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true)
+            ->assertJsonPath('data.sb_order.id', $sbOrder->id);
+
+        Queue::assertPushed(CreateXs2SandboxOrderFromSbOrder::class, function (CreateXs2SandboxOrderFromSbOrder $job) use ($sbOrder): bool {
+            return $job->sbOrderId === $sbOrder->id;
+        });
+
+        $this->assertDatabaseHas('sb_order_xs2_sync_logs', [
+            'sb_order_id' => $sbOrder->id,
+            'status' => 'queued',
+        ]);
+
+        app(CreateXs2SandboxOrderFromSbOrder::class, ['sbOrderId' => $sbOrder->id])
+            ->handle(app(SbOrderXs2SandboxOrderService::class));
 
         $this->assertDatabaseHas('xs2_orders', [
             'sb_order_id' => $sbOrder->id,
@@ -557,6 +576,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
     public function test_admin_can_manually_create_xs2_order_for_past_event_via_event_mapping(): void
     {
+        Queue::fake();
+
         app(IntegrationSettingService::class)->set(
             ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
             ApiEnvironmentService::ENV_PRODUCTION,
@@ -637,19 +658,30 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $this->withToken($token)
             ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
-            ->assertOk()
-            ->assertJsonPath('data.xs2_order.xs2_booking_id', 'production-booking-past_bkn')
-            ->assertJsonPath('data.xs2_order.external_order_id', 'production-bookingorder-past_bko');
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true)
+            ->assertJsonPath('data.sb_order.id', $sbOrder->id);
+
+        Queue::assertPushed(CreateXs2SandboxOrderFromSbOrder::class, function (CreateXs2SandboxOrderFromSbOrder $job) use ($sbOrder): bool {
+            return $job->sbOrderId === $sbOrder->id;
+        });
+
+        app(CreateXs2SandboxOrderFromSbOrder::class, ['sbOrderId' => $sbOrder->id])
+            ->handle(app(SbOrderXs2SandboxOrderService::class));
 
         $this->assertDatabaseHas('xs2_orders', [
             'sb_order_id' => $sbOrder->id,
             'is_sandbox' => false,
             'external_ticket_id' => $ticket->external_ticket_id,
+            'xs2_booking_id' => 'production-booking-past_bkn',
+            'external_order_id' => 'production-bookingorder-past_bko',
         ]);
     }
 
     public function test_admin_can_manually_create_xs2_order_when_ticket_missing_net_rate_uses_sb_ticket_amount(): void
     {
+        Queue::fake();
+
         app(IntegrationSettingService::class)->set(
             ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
             ApiEnvironmentService::ENV_PRODUCTION,
@@ -736,9 +768,11 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $this->withToken($token)
             ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
-            ->assertOk()
-            ->assertJsonPath('data.xs2_order.xs2_booking_id', 'production-booking-roma_bkn')
-            ->assertJsonPath('data.xs2_order.external_order_id', 'production-bookingorder-roma_bko');
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true);
+
+        app(CreateXs2SandboxOrderFromSbOrder::class, ['sbOrderId' => $sbOrder->id])
+            ->handle(app(SbOrderXs2SandboxOrderService::class));
 
         Http::assertSent(function ($request): bool {
             if ($request->method() !== 'POST' || ! str_contains($request->url(), '/v1/reservations')) {
@@ -753,7 +787,70 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'sb_order_id' => $sbOrder->id,
             'is_sandbox' => false,
             'external_ticket_id' => $ticket->external_ticket_id,
+            'xs2_booking_id' => 'production-booking-roma_bkn',
+            'external_order_id' => 'production-bookingorder-roma_bko',
         ]);
+    }
+
+    public function test_manual_create_xs2_order_rejects_when_mapped_ticket_has_no_net_rate(): void
+    {
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_PRODUCTION,
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'production-event-no-rate',
+            'event_name' => 'AS Roma vs Atalanta',
+            'sport_type' => 'soccer',
+            'event_status' => 'closed',
+            'date_start_local' => '2026-09-05 20:45:00',
+            'raw_payload' => [],
+        ]);
+
+        Xs2Ticket::query()->create([
+            'external_ticket_id' => 'production-ticket-no-rate_tck',
+            'external_event_id' => $event->external_event_id,
+            'xs2_event_id' => $event->id,
+            'is_sandbox' => false,
+            'ticket_status' => 'available',
+            'stock' => 0,
+            'net_rate' => null,
+            'face_value' => null,
+            'currency_code' => 'EUR',
+            'category_name' => 'Distinti Laterale',
+            'sync_status' => 'pending',
+            'raw_payload' => [],
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67677',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'ticket_id' => 999999,
+            'listing_id' => '888888',
+            'quantity' => 1,
+            'match_name' => 'AS Roma vs Atalanta',
+            'match_date' => '2026-09-05',
+            'seat_category' => 'Distinti Laterale',
+        ]);
+
+        Queue::fake();
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Mapped XS2 ticket is missing net_rate.');
+
+        Queue::assertNothingPushed();
     }
 
     public function test_resolve_reservation_net_rate_prefers_ticket_face_value_over_sb_order_amount(): void
