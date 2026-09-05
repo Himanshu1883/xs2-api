@@ -29,6 +29,7 @@ class CronConfigService
         private readonly QueueManagementService $queues,
         private readonly CronIntervalService $intervals,
         private readonly CronToggleService $cronToggles,
+        private readonly CronControlService $cronControl,
     ) {}
 
     /** @return array{scheduler: array<string, mixed>, tasks: list<array<string, mixed>>} */
@@ -37,8 +38,15 @@ class CronConfigService
         $xs2Enabled = (bool) config('xs2.enabled', true);
         $xs2Configured = $this->xs2CredentialsConfigured();
         // Heal cron UI / telemetry when credentials were fixed after prior failed runs.
-        if ($xs2Configured) {
-            $this->clearResolvedXs2ConfigurationErrors();
+        if ($xs2Configured && Schema::hasTable('xs2_event_inventory_sync_states')) {
+            $hasResolvableFailures = Xs2EventInventorySyncState::query()
+                ->where('tickets_sync_status', 'failed')
+                ->whereNotNull('tickets_sync_error')
+                ->exists();
+
+            if ($hasResolvableFailures) {
+                $this->clearResolvedXs2ConfigurationErrors();
+            }
         }
 
         $states = $this->syncStatesByResource();
@@ -110,10 +118,10 @@ class CronConfigService
                 'xs2_enabled' => $xs2Enabled,
                 'xs2_configured' => $xs2Configured,
                 'xs2_base_url' => $this->effectiveXs2BaseUrl(),
-                'scheduler_enabled' => app(CronControlService::class)->schedulerEnabled(),
+                'scheduler_enabled' => $this->cronControl->schedulerEnabled(),
                 'start_all_enabled' => $this->cronToggles->startAllEnabled(),
-                'low_load_mode' => app(CronControlService::class)->lowLoadModeEnabled(),
-                'cron_control' => app(CronControlService::class)->status(),
+                'low_load_mode' => $this->cronControl->lowLoadModeEnabled(),
+                'cron_control' => $this->cronControl->status(),
                 'aws_emergency_steps' => AwsEmergencyStopGuide::steps(),
                 'schedule_health' => $health,
                 'generated_at' => now()->toIso8601String(),

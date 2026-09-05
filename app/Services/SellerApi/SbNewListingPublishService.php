@@ -200,34 +200,14 @@ class SbNewListingPublishService
     public function telemetry(): array
     {
         $eligible = $this->eligibleTickets(null)->count();
-        $pendingPublish = 0;
-
-        foreach ($this->eligibleTickets(null)->cursor() as $ticket) {
-            if (! ($ticket->xs2Event?->isSellable() ?? false)) {
-                continue;
-            }
-
-            $state = Schema::hasTable('xs2_ticket_mapping_states')
-                ? $this->mappingStatuses->resolveIfStale($ticket)
-                : null;
-
-            if (! $this->mappingStatuses->canAutoPublish($ticket, $state?->mapping_status)) {
-                continue;
-            }
-
-            $readiness = $this->readiness->assess($ticket);
-            if (! $readiness['ready']) {
-                continue;
-            }
-
-            if (! $this->isPublishedOnSb($ticket)) {
-                $pendingPublish++;
-            }
-        }
 
         $state = Schema::hasTable('xs2_sync_states')
             ? Xs2SyncState::query()->where('resource', self::SYNC_RESOURCE)->first()
             : null;
+
+        $metadata = is_array($state?->metadata) ? $state->metadata : [];
+        // Dashboard reads must stay fast — full per-ticket publish scans run only in the cron itself.
+        $pendingPublish = (int) ($metadata['needs_publish'] ?? 0);
 
         $rawStatus = $state?->status ?? 'never_run';
 

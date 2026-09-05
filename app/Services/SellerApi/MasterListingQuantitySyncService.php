@@ -152,12 +152,14 @@ class MasterListingQuantitySyncService
         }
 
         $eligible = $this->eligibleTickets()->count();
-        $pendingSync = 0;
-        foreach ($this->eligibleTickets()->get() as $ticket) {
-            if ($this->ticketNeedsSync($ticket)) {
-                $pendingSync++;
-            }
-        }
+
+        $state = Schema::hasTable('xs2_sync_states')
+            ? Xs2SyncState::query()->where('resource', self::SYNC_RESOURCE)->first()
+            : null;
+
+        $metadata = is_array($state?->metadata) ? $state->metadata : [];
+        // Dashboard reads must stay fast — per-ticket qty diff scans run only in the cron itself.
+        $pendingSync = (int) ($metadata['needs_sync'] ?? 0);
 
         $activeListings = (int) ExternalListingMapping::query()
             ->where('provider', 'xs2event')
@@ -171,10 +173,6 @@ class MasterListingQuantitySyncService
             ->where('status', 'failed')
             ->whereHas('ticket', fn (Builder $ticket) => $ticket->where('split_enabled', false))
             ->count();
-
-        $state = Schema::hasTable('xs2_sync_states')
-            ? Xs2SyncState::query()->where('resource', self::SYNC_RESOURCE)->first()
-            : null;
 
         $rawStatus = $state?->status ?? 'never_run';
 

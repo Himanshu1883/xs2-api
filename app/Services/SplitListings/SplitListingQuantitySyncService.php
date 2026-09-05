@@ -208,16 +208,13 @@ class SplitListingQuantitySyncService
             ->whereHas('masterListing', fn (Builder $ticket) => $ticket->where('split_enabled', true))
             ->count();
 
-        $pendingSync = 0;
-        foreach ($this->eligibleTickets()->get() as $ticket) {
-            if ($this->ticketNeedsSync($ticket)) {
-                $pendingSync++;
-            }
-        }
-
         $state = Schema::hasTable('xs2_sync_states')
             ? Xs2SyncState::query()->where('resource', self::SYNC_RESOURCE)->first()
             : null;
+
+        $metadata = is_array($state?->metadata) ? $state->metadata : [];
+        // Dashboard reads must stay fast — per-ticket split diff scans run only in the cron itself.
+        $pendingSync = (int) ($metadata['needs_sync'] ?? 0);
 
         $rawStatus = $state?->status ?? 'never_run';
 
