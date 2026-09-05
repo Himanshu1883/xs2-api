@@ -10,6 +10,7 @@ use App\Models\Xs2OrderAttendee;
 use App\Models\Xs2OrderGuestDataLog;
 use App\Models\Xs2SyncState;
 use App\Models\Xs2Ticket;
+use App\Support\Xs2BookingOrderIdentity;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
@@ -721,8 +722,10 @@ class SbOrderXs2GuestDataSyncService
     private function resolveBookingOrderId(Xs2Order $xs2Order): ?string
     {
         $bookingId = $this->nullableString($xs2Order->xs2_booking_id);
-        $stored = $this->nullableString($xs2Order->xs2_bookingorder_id)
-            ?? $this->nullableString($xs2Order->external_order_id);
+        $stored = Xs2BookingOrderIdentity::resolvedBookingOrderId(
+            $this->nullableString($xs2Order->xs2_bookingorder_id),
+            $this->nullableString($xs2Order->external_order_id),
+        );
 
         if ($stored !== null && ($bookingId === null || $stored !== $bookingId)) {
             return $stored;

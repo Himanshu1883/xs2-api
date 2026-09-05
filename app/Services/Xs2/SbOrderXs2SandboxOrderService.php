@@ -12,6 +12,7 @@ use App\Models\Xs2Event;
 use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
 use App\Models\Xs2Ticket;
+use App\Support\Xs2BookingOrderIdentity;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -711,7 +712,7 @@ class SbOrderXs2SandboxOrderService
                 && $existing->id !== $unlinked->id
                 && (
                     ! filled($existing->xs2_booking_id)
-                    || str_starts_with((string) $existing->external_order_id, 'sb-pending:')
+                    || Xs2BookingOrderIdentity::isPendingExternalOrderId($existing->external_order_id)
                 )
             ) {
                 $existing->delete();
@@ -1156,7 +1157,7 @@ class SbOrderXs2SandboxOrderService
 
     private function pendingExternalOrderId(SbOrder $order): string
     {
-        return 'sb-pending:'.$order->booking_no;
+        return Xs2BookingOrderIdentity::pendingExternalOrderId((string) $order->booking_no);
     }
 
     /** @return array{order: Xs2Order|null, created: bool, updated: bool, skipped: bool, reason: string|null} */

@@ -9,6 +9,7 @@ use App\Models\Xs2Order;
 use App\Models\Xs2OrderAttendee;
 use App\Services\Admin\ApiEnvironmentService;
 use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
+use App\Support\Xs2BookingOrderIdentity;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -203,12 +204,13 @@ class Xs2OrderSyncService
         $attributes = $this->orderAttributes($row, $isSandbox);
 
         DB::transaction(function () use ($externalId, $attributes, $attendees, $row, &$summary): void {
-            $existing = Xs2Order::query()
-                ->where('external_order_id', $externalId)
-                ->orWhere('xs2_bookingorder_id', $externalId)
-                ->first();
+            $existing = $this->findExistingOrder($externalId, $row);
 
             $attributes['sb_order_id'] = $existing?->sb_order_id ?? $this->resolveSbOrderId($row);
+
+            if ($existing !== null && Xs2BookingOrderIdentity::orderHasPendingBookingOrderId($existing)) {
+                $attributes['external_order_id'] = $externalId;
+            }
 
             if ($existing === null) {
                 $order = Xs2Order::query()->create([
@@ -251,6 +253,30 @@ class Xs2OrderSyncService
                 }
             }
         });
+    }
+
+    /** @param  array<string, mixed>  $row */
+    private function findExistingOrder(string $externalId, array $row): ?Xs2Order
+    {
+        $existing = Xs2Order::query()
+            ->where('external_order_id', $externalId)
+            ->orWhere('xs2_bookingorder_id', $externalId)
+            ->first();
+
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        $sbOrderId = $this->resolveSbOrderId($row);
+        if ($sbOrderId === null) {
+            return null;
+        }
+
+        return Xs2Order::query()
+            ->where('sb_order_id', $sbOrderId)
+            ->where('external_order_id', 'like', Xs2BookingOrderIdentity::PENDING_EXTERNAL_ORDER_PREFIX.'%')
+            ->orderByDesc('id')
+            ->first();
     }
 
     /** @param  array<string, mixed>  $row */

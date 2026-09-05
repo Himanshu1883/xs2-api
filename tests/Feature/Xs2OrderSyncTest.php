@@ -390,6 +390,59 @@ class Xs2OrderSyncTest extends TestCase
         ]);
     }
 
+    public function test_sync_replaces_sb_pending_placeholder_for_linked_sb_order(): void
+    {
+        Http::fake([
+            'https://api.xs2.test/v1/bookingorders*' => Http::response([
+                'bookingorders' => [[
+                    'bookingorder_id' => self::PRODUCTION_BOOKINGORDER_ID,
+                    'booking_id' => self::PRODUCTION_BOOKING_ID,
+                    'booking_reference' => '1BX67678',
+                    'logistic_status' => 'completed',
+                    'event_name' => 'AS Roma vs Test',
+                    'items' => [[
+                        'ticket_id' => 'production-ticket-sync_tck',
+                        'quantity' => 1,
+                    ]],
+                ]],
+                'pagination' => ['total_pages' => 1],
+            ]),
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67678',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'quantity' => 1,
+            'match_name' => 'AS Roma vs Test',
+        ]);
+
+        $pendingOrder = Xs2Order::query()->create([
+            'external_order_id' => 'sb-pending:1BX67678',
+            'is_sandbox' => false,
+            'sb_order_id' => $sbOrder->id,
+            'order_status' => 'failed',
+            'sandbox_sync_error' => 'XS2 booking failed.',
+            'synced_at' => now()->subHour(),
+        ]);
+
+        app(Xs2OrderSyncService::class)->sync();
+
+        $this->assertDatabaseMissing('xs2_orders', [
+            'id' => $pendingOrder->id,
+            'external_order_id' => 'sb-pending:1BX67678',
+        ]);
+        $this->assertDatabaseHas('xs2_orders', [
+            'id' => $pendingOrder->id,
+            'sb_order_id' => $sbOrder->id,
+            'external_order_id' => self::PRODUCTION_BOOKINGORDER_ID,
+            'xs2_bookingorder_id' => self::PRODUCTION_BOOKINGORDER_ID,
+            'xs2_booking_id' => self::PRODUCTION_BOOKING_ID,
+            'sandbox_sync_error' => null,
+            'order_status' => 'completed',
+        ]);
+        $this->assertSame(1, Xs2Order::query()->where('sb_order_id', $sbOrder->id)->count());
+    }
+
     public function test_admin_sync_queues_background_job_without_blocking_http(): void
     {
         Queue::fake();

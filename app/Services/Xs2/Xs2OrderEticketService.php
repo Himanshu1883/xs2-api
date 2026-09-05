@@ -4,6 +4,7 @@ namespace App\Services\Xs2;
 
 use App\Exceptions\Integrations\Xs2RequestException;
 use App\Models\Xs2Order;
+use App\Support\Xs2BookingOrderIdentity;
 use Throwable;
 
 /**
@@ -31,8 +32,14 @@ class Xs2OrderEticketService
     {
         $ticketFormat = $this->normalizeTicketFormat($format);
 
-        $bookingOrderId = $this->nullableString($xs2Order->xs2_bookingorder_id)
-            ?? $this->nullableString($xs2Order->external_order_id);
+        if (Xs2BookingOrderIdentity::orderHasPendingBookingOrderId($xs2Order)) {
+            throw new \RuntimeException(Xs2BookingOrderIdentity::pendingTicketMessage($xs2Order));
+        }
+
+        $bookingOrderId = Xs2BookingOrderIdentity::resolvedBookingOrderId(
+            $this->nullableString($xs2Order->xs2_bookingorder_id),
+            $this->nullableString($xs2Order->external_order_id),
+        );
         $bookingId = $this->nullableString($xs2Order->xs2_booking_id);
 
         if ($bookingOrderId === null && $bookingId === null) {

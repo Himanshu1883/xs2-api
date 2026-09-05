@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Support\Xs2BookingOrderIdentity;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -20,6 +21,7 @@ class Xs2OrderResource extends JsonResource
             'xs2_reservation_id' => $this->xs2_reservation_id,
             'xs2_booking_id' => $this->xs2_booking_id,
             'xs2_bookingorder_id' => $this->xs2_bookingorder_id,
+            'bookingorder_id_pending' => Xs2BookingOrderIdentity::orderHasPendingBookingOrderId($this->resource),
             'sandbox_sync_error' => $this->sandbox_sync_error,
             'order_status' => $this->order_status,
             'order_status_text' => $this->order_status_text,

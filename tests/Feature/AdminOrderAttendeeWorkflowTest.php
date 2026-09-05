@@ -675,6 +675,30 @@ class AdminOrderAttendeeWorkflowTest extends TestCase
             ->assertJsonPath('message', 'Unsupported ticket format "paper". Use pdf, eticket, mobile, or appticket.');
     }
 
+    public function test_get_ticket_rejects_pending_bookingorder_id(): void
+    {
+        $sbOrder = $this->seedLinkedOrder(withAttendees: true);
+        $xs2Order = Xs2Order::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $xs2Order->fill([
+            'external_order_id' => 'sb-pending:'.$sbOrder->booking_no,
+            'xs2_bookingorder_id' => null,
+            'xs2_booking_id' => null,
+            'order_status' => 'failed',
+            'sandbox_sync_error' => 'XS2 booking failed.',
+        ])->save();
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/xs2-orders/{$xs2Order->id}/get-ticket")
+            ->assertStatus(422)
+            ->assertJsonPath(
+                'message',
+                'Complete Create manual first to obtain the real XS2 bookingorder_id.',
+            )
+            ->assertJsonPath('data.bookingorder_id_pending', true);
+
+        Http::fake();
+    }
+
     private function seedLinkedOrder(bool $withAttendees): SbOrder
     {
         $event = Xs2Event::query()->create([
