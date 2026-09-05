@@ -47,6 +47,11 @@ class CronTaskIdentifier
             return 'xs2-sb-new-listing-publish';
         }
 
+        if (str_contains($normalized, 'xs2:retry-failed-listing-publish')
+            || str_contains($command, 'xs2:retry-failed-listing-publish')) {
+            return 'xs2-sb-failed-listing-publish-retry';
+        }
+
         if (str_contains($normalized, 'xs2:sync-sb-listing-inventory')
             || str_contains($command, 'xs2:sync-sb-listing-inventory')) {
             return 'xs2-sb-listing-inventory';

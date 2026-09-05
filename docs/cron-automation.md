@@ -43,7 +43,13 @@ Bootstrap sequence (when each cron flag is enabled):
 
 After bootstrap, the OS scheduler (`php artisan schedule:run` every minute) continues each job on its configured interval. Schedule definitions always register in `routes/console.php`; runtime `->when()` gates honour Stop/Start without restarting PHP workers.
 
-**Manual-only crons** (never in Start All bootstrap): `xs2-events-sync`, `sb-events-sync`.
+**Manual-only crons** (never in Start All bootstrap): `xs2-events-sync`, `sb-events-sync`, `xs2-sb-failed-listing-publish-retry` (opt-in via admin toggle).
+
+| Interval | Cron job | Command |
+|----------|----------|---------|
+| 30m (default) | `xs2-sb-failed-listing-publish-retry` | `xs2:retry-failed-listing-publish` |
+
+The main **xs2-sb-new-listing-publish** cron permanently skips tickets with `sync_status=failed` or `split_sync_status=failed`. Use the retry cron to re-attempt those tickets.
 
 ## 502 prevention
 
@@ -66,6 +72,7 @@ XS2_ENABLED=true
 SELLER_API_ENABLED=true
 XS2_SB_LISTING_INVENTORY_SYNC_ENABLED=true
 XS2_SB_NEW_LISTING_PUBLISH_ENABLED=true
+XS2_SB_FAILED_LISTING_PUBLISH_RETRY_ENABLED=false
 XS2_SB_BOOKINGS_SYNC_ENABLED=true   # enable for order sync cron
 XS2_SB_ORDER_GUEST_DATA_SYNC_ENABLED=true
 ```

@@ -19,6 +19,7 @@ class CronControlService
         'services.seller_api.enabled' => IntegrationSettingService::SELLER_API_ENABLED,
         'xs2.sb_listing_inventory.enabled' => IntegrationSettingService::XS2_SB_LISTING_INVENTORY_SYNC_ENABLED,
         'xs2.sb_new_listing_publish.enabled' => IntegrationSettingService::XS2_SB_NEW_LISTING_PUBLISH_ENABLED,
+        'xs2.sb_failed_listing_publish_retry.enabled' => IntegrationSettingService::XS2_SB_FAILED_LISTING_PUBLISH_RETRY_ENABLED,
         'xs2.sb_bookings_sync.enabled' => IntegrationSettingService::SB_BOOKINGS_SYNC_ENABLED,
         'xs2.sb_order_guest_data_sync.enabled' => IntegrationSettingService::XS2_SB_ORDER_GUEST_DATA_SYNC_ENABLED,
     ];

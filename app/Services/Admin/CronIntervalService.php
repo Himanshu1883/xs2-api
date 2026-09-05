@@ -41,6 +41,13 @@ class CronIntervalService
                 'max' => 60,
                 'presets' => self::DEFAULT_PRESETS,
             ],
+            'xs2-sb-failed-listing-publish-retry' => [
+                'config_key' => 'xs2.sb_failed_listing_publish_retry.sync_interval_minutes',
+                'setting_key' => IntegrationSettingService::XS2_SB_FAILED_LISTING_PUBLISH_RETRY_INTERVAL_MINUTES,
+                'min' => 1,
+                'max' => 60,
+                'presets' => self::DEFAULT_PRESETS,
+            ],
             'xs2-sb-listing-inventory' => [
                 'config_key' => 'xs2.sb_listing_inventory.sync_interval_minutes',
                 'setting_key' => IntegrationSettingService::XS2_SB_LISTING_INVENTORY_SYNC_INTERVAL_MINUTES,

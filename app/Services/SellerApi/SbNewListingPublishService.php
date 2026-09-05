@@ -22,6 +22,8 @@ class SbNewListingPublishService
 {
     public const SYNC_RESOURCE = 'sb-listings:new-publish';
 
+    public const SYNC_RESOURCE_FAILED_RETRY = 'sb-listings:failed-publish-retry';
+
     public function __construct(
         private readonly MappedListingPublishService $publisher,
         private readonly Xs2TicketMappingStatusService $mappingStatuses,
@@ -38,9 +40,12 @@ class SbNewListingPublishService
         bool $dryRun = false,
         ?int $maxDispatch = null,
         bool $manualPublish = false,
+        bool $failedOnly = false,
     ): array {
+        $syncResource = $failedOnly ? self::SYNC_RESOURCE_FAILED_RETRY : self::SYNC_RESOURCE;
+
         if (Schema::hasTable('xs2_sync_states')) {
-            Xs2SyncState::query()->firstOrCreate(['resource' => self::SYNC_RESOURCE])->update([
+            Xs2SyncState::query()->firstOrCreate(['resource' => $syncResource])->update([
                 'status' => 'running',
                 'last_attempted_at' => now(),
                 'last_error' => null,
@@ -67,7 +72,7 @@ class SbNewListingPublishService
         ];
 
         try {
-            $tickets = $this->eligibleTickets($ticketId)->get();
+            $tickets = $this->eligibleTickets($ticketId, $failedOnly)->get();
             $summary['eligible_tickets'] = $tickets->count();
 
             $dispatchSpacingSeconds = max(1, (int) config('xs2.sb_new_listing_publish.dispatch_interval_seconds', 2));
@@ -96,7 +101,14 @@ class SbNewListingPublishService
                     continue;
                 }
 
-                if ($this->hasPublishFailure($ticket)) {
+                if ($failedOnly) {
+                    if (! $this->hasPublishFailure($ticket)) {
+                        $summary['skipped']++;
+                        $summary['skip_reasons']['publish_failed']++;
+
+                        continue;
+                    }
+                } elseif ($this->hasPublishFailure($ticket)) {
                     $summary['skipped']++;
                     $summary['skip_reasons']['publish_failed']++;
 
@@ -188,21 +200,22 @@ class SbNewListingPublishService
                 }
             }
 
-            return $this->finalizeRun($summary);
+            return $this->finalizeRun($summary, syncResource: $syncResource);
         } catch (Throwable $exception) {
-            return $this->finalizeRun($summary, $exception->getMessage());
+            return $this->finalizeRun($summary, $exception->getMessage(), syncResource: $syncResource);
         }
     }
 
     /**
      * @return array<string, mixed>
      */
-    public function telemetry(): array
+    public function telemetry(bool $failedOnly = false): array
     {
-        $eligible = $this->eligibleTickets(null)->count();
+        $syncResource = $failedOnly ? self::SYNC_RESOURCE_FAILED_RETRY : self::SYNC_RESOURCE;
+        $eligible = $this->eligibleTickets(null, $failedOnly)->count();
 
         $state = Schema::hasTable('xs2_sync_states')
-            ? Xs2SyncState::query()->where('resource', self::SYNC_RESOURCE)->first()
+            ? Xs2SyncState::query()->where('resource', $syncResource)->first()
             : null;
 
         $metadata = is_array($state?->metadata) ? $state->metadata : [];
@@ -241,7 +254,7 @@ class SbNewListingPublishService
     }
 
     /** @return Builder<Xs2Ticket> */
-    private function eligibleTickets(?int $ticketId = null): Builder
+    private function eligibleTickets(?int $ticketId = null, bool $failedOnly = false): Builder
     {
         $query = Xs2Ticket::query()
             ->with(['xs2Event.mapping', 'mappingState', 'listingMapping', 'listingSplits'])
@@ -251,6 +264,18 @@ class SbNewListingPublishService
             ->whereHas('xs2Event.mapping', fn ($mapping) => $mapping
                 ->whereIn('status', ['mapped', 'created'])
                 ->whereNotNull('m_id'));
+
+        if ($failedOnly) {
+            $query->where(function (Builder $failed): void {
+                $failed->where('sync_status', 'failed')
+                    ->orWhere('split_sync_status', 'failed');
+            });
+        } else {
+            $query->where(function (Builder $healthy): void {
+                $healthy->where(fn (Builder $q) => $q->whereNull('sync_status')->orWhere('sync_status', '!=', 'failed'))
+                    ->where(fn (Builder $q) => $q->whereNull('split_sync_status')->orWhere('split_sync_status', '!=', 'failed'));
+            });
+        }
 
         if ($ticketId !== null) {
             $query->whereKey($ticketId);
@@ -263,8 +288,11 @@ class SbNewListingPublishService
      * @param  array<string, mixed>  $summary
      * @return array<string, mixed>
      */
-    private function finalizeRun(array $summary, ?string $fatalError = null): array
-    {
+    private function finalizeRun(
+        array $summary,
+        ?string $fatalError = null,
+        string $syncResource = self::SYNC_RESOURCE,
+    ): array {
         $errors = $summary['errors'] ?? [];
         if ($fatalError !== null) {
             $errors[] = $fatalError;
@@ -274,7 +302,7 @@ class SbNewListingPublishService
         $ticketFailures = (int) ($summary['failed'] ?? 0);
 
         if (Schema::hasTable('xs2_sync_states')) {
-            $state = Xs2SyncState::query()->firstOrCreate(['resource' => self::SYNC_RESOURCE]);
+            $state = Xs2SyncState::query()->firstOrCreate(['resource' => $syncResource]);
             $state->update([
                 'status' => $cronFailed ? 'failed' : 'completed',
                 'last_attempted_at' => now(),
@@ -309,11 +337,8 @@ class SbNewListingPublishService
 
     private function hasPublishFailure(Xs2Ticket $ticket): bool
     {
-        if ($ticket->sync_status === 'failed') {
-            return true;
-        }
-
-        return $ticket->split_sync_status === 'failed';
+        return $ticket->sync_status === 'failed'
+            || $ticket->split_sync_status === 'failed';
     }
 
     private function safeMessage(Throwable $exception): string

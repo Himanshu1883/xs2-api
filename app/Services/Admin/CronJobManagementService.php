@@ -14,6 +14,7 @@ class CronJobManagementService
         'xs2-inventory-incremental',
         'xs2-inventory-full',
         'xs2-sb-new-listing-publish',
+        'xs2-sb-failed-listing-publish-retry',
         'xs2-sb-listing-inventory',
         'xs2-sb-order-sync',
         'xs2-sb-order-guest-data-sync',
@@ -162,6 +163,7 @@ class CronJobManagementService
             'xs2-inventory-full',
             'xs2-events-sync',
             'xs2-sb-new-listing-publish',
+            'xs2-sb-failed-listing-publish-retry',
             'xs2-sb-listing-inventory',
             'xs2-sb-order-sync',
             'xs2-sb-order-guest-data-sync',
@@ -258,6 +260,24 @@ class CronJobManagementService
                 'command' => 'xs2:publish-new-sb-listings',
                 'exit_code' => $exitCode,
                 'message' => trim(Artisan::output()) ?: 'Seats Broker new listing publish completed.',
+            ];
+        }
+
+        if ($cronJobId === 'xs2-sb-failed-listing-publish-retry') {
+            $params = [];
+            if ($force) {
+                $params['--force'] = true;
+            }
+            $exitCode = Artisan::call('xs2:retry-failed-listing-publish', $params);
+            if ($exitCode !== 0) {
+                throw new \RuntimeException(trim(Artisan::output()) ?: 'Seats Broker failed listing publish retry failed.');
+            }
+
+            return [
+                'action' => 'command',
+                'command' => 'xs2:retry-failed-listing-publish',
+                'exit_code' => $exitCode,
+                'message' => trim(Artisan::output()) ?: 'Seats Broker failed listing publish retry completed.',
             ];
         }
 

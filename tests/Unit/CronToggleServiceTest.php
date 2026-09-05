@@ -115,4 +115,16 @@ class CronToggleServiceTest extends TestCase
 
         $this->assertFalse($service->shouldRun('xs2-sb-order-sync', false));
     }
+
+    public function test_opt_in_retry_cron_does_not_run_with_start_all_unless_explicitly_enabled(): void
+    {
+        $service = app(CronToggleService::class);
+        $service->setStartAllEnabled(true);
+
+        $this->assertFalse($service->shouldRun('xs2-sb-failed-listing-publish-retry', true));
+
+        $service->setCronEnabled('xs2-sb-failed-listing-publish-retry', true);
+
+        $this->assertTrue($service->shouldRun('xs2-sb-failed-listing-publish-retry', true));
+    }
 }

@@ -87,6 +87,16 @@ $sbPublishSchedule
     ->withoutOverlapping($overlapMinutes)
     ->onOneServer();
 
+$sbFailedRetryInterval = $intervals->minutesFor('xs2-sb-failed-listing-publish-retry');
+Schedule::command('xs2:retry-failed-listing-publish')
+    ->cron($intervals->staggeredExpression($sbFailedRetryInterval, 27))
+    ->when(fn (): bool => $shouldRun(
+        'xs2-sb-failed-listing-publish-retry',
+        $sellerApiEnabled() && (bool) config('xs2.sb_failed_listing_publish_retry.enabled', false),
+    ))
+    ->withoutOverlapping($overlapMinutes)
+    ->onOneServer();
+
 $sbBookingsInterval = $intervals->minutesFor('xs2-sb-order-sync');
 $sbBookingsSchedule = Schedule::command('seller-api:sync-bookings');
 if ($sbBookingsInterval <= 1) {

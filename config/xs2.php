@@ -161,6 +161,16 @@ return [
         'dispatch_interval_seconds' => max(1, (int) env('XS2_SB_NEW_LISTING_PUBLISH_DISPATCH_INTERVAL_SECONDS', 2)),
     ],
 
+    'sb_failed_listing_publish_retry' => [
+        // Scheduled xs2:retry-failed-listing-publish (opt-in via admin cron toggle).
+        'enabled' => (bool) env('XS2_SB_FAILED_LISTING_PUBLISH_RETRY_ENABLED', false),
+        'sync_interval_minutes' => max(1, min(60, (int) env(
+            'XS2_SB_FAILED_LISTING_PUBLISH_RETRY_INTERVAL_MINUTES',
+            30,
+        ))),
+        'dispatch_interval_seconds' => max(1, (int) env('XS2_SB_FAILED_LISTING_PUBLISH_RETRY_DISPATCH_INTERVAL_SECONDS', 2)),
+    ],
+
     /*
     |--------------------------------------------------------------------------
     | XS2 sandbox API (testapi.xs2event.com)

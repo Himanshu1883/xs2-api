@@ -56,6 +56,7 @@ class CronConfigService
         $tasks = array_merge(
             $this->inventoryTasks($inventoryTelemetry, $scheduleByTaskId, $xs2Enabled),
             $this->sbNewListingPublishTasks($scheduleByTaskId),
+            $this->sbFailedListingPublishRetryTasks($scheduleByTaskId),
             $this->sbListingInventoryTasks($scheduleByTaskId),
             $this->sbEventsSyncTasks(),
             [
@@ -520,6 +521,62 @@ class CronConfigService
                     category: 'sb',
                 ),
                 $scheduleByTaskId['xs2-sb-new-listing-publish'] ?? null,
+                statusOverride: $telemetry['status'] ?? null,
+                lastRunAt: $telemetry['last_run_at'] ?? null,
+                lastSuccessfulAt: $telemetry['last_successful_at'] ?? null,
+                lastError: $telemetry['last_error'] ?? null,
+                isRunningOverride: (bool) ($telemetry['is_running'] ?? false),
+            ),
+        ];
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $scheduleByTaskId
+     * @return list<array<string, mixed>>
+     */
+    private function sbFailedListingPublishRetryTasks(array $scheduleByTaskId): array
+    {
+        $enabled = (bool) config('xs2.sb_failed_listing_publish_retry.enabled', false)
+            && (bool) config('services.seller_api.enabled', true)
+            && $this->sellerApiListingConfigured();
+        $telemetry = app(SbNewListingPublishService::class)->telemetry(failedOnly: true);
+        $interval = max(1, min(59, (int) config('xs2.sb_failed_listing_publish_retry.sync_interval_minutes', 30)));
+        $state = $this->syncStatesByResource()[SbNewListingPublishService::SYNC_RESOURCE_FAILED_RETRY] ?? null;
+
+        return [
+            $this->finalizeTask(
+                $this->task(
+                    id: 'xs2-sb-failed-listing-publish-retry',
+                    name: 'Seats Broker failed listing publish retry',
+                    type: 'command',
+                    command: 'xs2:retry-failed-listing-publish',
+                    schedule: 'Every '.$interval.' minutes',
+                    scheduleDetail: 'Retries XS2 tickets that previously failed Seats Broker publish (sync_status or split_sync_status failed). Opt-in only — does not run with Start All unless explicitly enabled. The main new listing publish cron never retries failed tickets.',
+                    queue: (string) config('services.seller_api.queue', 'seller-api'),
+                    syncResource: SbNewListingPublishService::SYNC_RESOURCE_FAILED_RETRY,
+                    state: $state,
+                    extra: [
+                        'cron_role' => 'failed_listing_publish_retry',
+                        'cron_role_label' => 'Failed publish retry only',
+                        'what_it_does' => 'Re-attempts Seats Broker publish for tickets marked publish-failed. On success, clears the failed state and marks published as normal.',
+                        'does_not_do' => 'Does not pick new/unpublished tickets — use Seats Broker new listing publish for first-time publish.',
+                        'algorithm' => [
+                            'Find available XS2 tickets with sync_status=failed or split_sync_status=failed on mapped events.',
+                            'Re-run the same publish pipeline as the main new listing cron.',
+                            'On success: ticket sync_status becomes synced and mapping_error is cleared by the publish job.',
+                            'On failure: keeps failed state and moves to the next ticket.',
+                        ],
+                        'manual_command' => 'php artisan xs2:retry-failed-listing-publish --sync --ticket={id}',
+                        'worker_hint' => 'php artisan queue:work --queue='.(string) config('services.seller_api.queue', 'seller-api'),
+                        'sync_interval_minutes' => $interval,
+                        'eligible_tickets' => $telemetry['eligible_tickets'] ?? 0,
+                        'pending_publish' => $telemetry['pending_publish'] ?? 0,
+                        'opt_in' => true,
+                    ],
+                    enabled: $enabled,
+                    category: 'sb',
+                ),
+                $scheduleByTaskId['xs2-sb-failed-listing-publish-retry'] ?? null,
                 statusOverride: $telemetry['status'] ?? null,
                 lastRunAt: $telemetry['last_run_at'] ?? null,
                 lastSuccessfulAt: $telemetry['last_successful_at'] ?? null,

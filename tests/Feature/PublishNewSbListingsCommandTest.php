@@ -298,9 +298,33 @@ class PublishNewSbListingsCommandTest extends TestCase
         $this->app->forgetInstance(SbNewListingPublishService::class);
         $rerun = app(SbNewListingPublishService::class)->run(inline: true);
 
-        $this->assertSame(1, $rerun['skip_reasons']['publish_failed']);
+        $this->assertSame(0, $rerun['eligible_tickets']);
+        $this->assertSame(0, $rerun['skip_reasons']['publish_failed']);
         $this->assertSame(0, $rerun['needs_publish']);
         $this->assertSame(0, $rerun['failed']);
+    }
+
+    public function test_cron_skips_ticket_with_split_sync_status_failed_at_query_level(): void
+    {
+        Queue::fake();
+
+        $ticket = $this->mappedTicket(stock: 4);
+        $ticket->update(['split_sync_status' => 'failed', 'sync_error' => 'Split publish failed']);
+        Xs2TicketMappingState::query()->create([
+            'xs2_ticket_id' => $ticket->id,
+            'event_mapping_id' => $ticket->xs2Event->mapping->id,
+            'mapping_status' => 'ready_to_publish',
+        ]);
+
+        $readiness = Mockery::mock(ListingPublishReadinessService::class);
+        $readiness->shouldReceive('assess')->never();
+        $this->instance(ListingPublishReadinessService::class, $readiness);
+
+        $summary = app(SbNewListingPublishService::class)->run();
+
+        $this->assertSame(0, $summary['eligible_tickets']);
+        $this->assertSame(0, $summary['needs_publish']);
+        Queue::assertNothingPushed();
     }
 
     private function mappedTicket(int $stock): Xs2Ticket

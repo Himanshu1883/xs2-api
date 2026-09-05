@@ -327,6 +327,7 @@ class CronExecutionLogService
             'xs2-inventory-incremental' => 'xs2:sync-inventory --mode=incremental',
             'xs2-inventory-full' => 'xs2:sync-inventory --mode=full',
             'xs2-sb-new-listing-publish' => 'xs2:publish-new-sb-listings',
+            'xs2-sb-failed-listing-publish-retry' => 'xs2:retry-failed-listing-publish',
             'xs2-sb-listing-inventory' => 'xs2:sync-sb-listing-inventory',
             'xs2-sb-order-sync' => 'seller-api:sync-bookings',
             'xs2-sb-order-guest-data-sync' => 'xs2:sync-order-guest-data',

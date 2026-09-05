@@ -17,11 +17,21 @@ class CronToggleService
         'xs2-inventory-incremental',
         'xs2-inventory-full',
         'xs2-sb-new-listing-publish',
+        'xs2-sb-failed-listing-publish-retry',
         'xs2-sb-listing-inventory',
         'xs2-sb-order-sync',
         'xs2-sb-order-guest-data-sync',
         'xs2-events-sync',
         'sanctum-prune-expired',
+    ];
+
+    /**
+     * Opt-in crons only run when explicitly toggled ON — never auto-enabled by Start All.
+     *
+     * @var list<string>
+     */
+    public const OPT_IN_CRON_JOB_IDS = [
+        'xs2-sb-failed-listing-publish-retry',
     ];
 
     public function __construct(
@@ -59,6 +69,10 @@ class CronToggleService
             return false;
         }
 
+        if ($this->isOptIn($cronJobId)) {
+            return $this->explicitToggle($cronJobId) === true;
+        }
+
         if (! $this->isToggleable($cronJobId)) {
             return true;
         }
@@ -77,6 +91,10 @@ class CronToggleService
      */
     public function isCronEnabled(string $cronJobId): bool
     {
+        if ($this->isOptIn($cronJobId)) {
+            return $this->explicitToggle($cronJobId) === true;
+        }
+
         if (! $this->isToggleable($cronJobId)) {
             return true;
         }
@@ -170,6 +188,11 @@ class CronToggleService
     public function isToggleable(string $cronJobId): bool
     {
         return in_array($cronJobId, self::TOGGLEABLE_CRON_JOB_IDS, true);
+    }
+
+    public function isOptIn(string $cronJobId): bool
+    {
+        return in_array($cronJobId, self::OPT_IN_CRON_JOB_IDS, true);
     }
 
     private function explicitToggle(string $cronJobId): ?bool
