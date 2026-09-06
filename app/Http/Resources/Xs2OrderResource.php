@@ -62,6 +62,7 @@ class Xs2OrderResource extends JsonResource
             'sb_order' => $this->whenLoaded('sbOrder', fn () => $this->sbOrder === null ? null : [
                 'id' => $this->sbOrder->id,
                 'booking_no' => $this->sbOrder->booking_no,
+                'ticket_types_name' => $this->sbOrder->ticket_types_name,
             ]),
         ];
     }

@@ -51,6 +51,7 @@ class SbOrderResource extends JsonResource
                 'external_order_id' => $this->xs2Order->external_order_id,
                 'is_sandbox' => (bool) $this->xs2Order->is_sandbox,
                 'xs2_booking_id' => $this->xs2Order->xs2_booking_id,
+                'xs2_bookingorder_id' => $this->xs2Order->xs2_bookingorder_id,
             ]),
         ];
     }
