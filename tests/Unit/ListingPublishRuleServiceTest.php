@@ -60,6 +60,7 @@ class ListingPublishRuleServiceTest extends TestCase
         $this->service = new ListingPublishRuleService(
             $settings,
             app(SplitListingService::class),
+            app(\App\Services\Xs2\ListingPublishPricePreviewService::class),
         );
     }
 

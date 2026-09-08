@@ -11,7 +11,9 @@ use App\Models\Xs2Ticket;
 use App\Services\Currency\CurrencyConversionService;
 use App\Services\SellerApi\ListingSalesService;
 use App\Services\SellerApi\SellerApiClient;
+use App\Services\Xs2\ListingPublishRuleSettingService;
 use App\Services\Xs2\ListingPublishValidator;
+use App\Services\Xs2\PriceIncrementResolver;
 use App\Services\Xs2\Xs2SellerListingTransformer;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Support\Facades\DB;
@@ -886,7 +888,7 @@ class SplitListingService
         array $plan,
     ): array {
         $planPriceMajor = (float) $plan['price'];
-        $convertedPlanMajor = $this->sellerMajorPriceForPlan($ticket, $mapping, $planPriceMajor);
+        $convertedPlanMajor = $this->sellerMajorPriceForPlan($ticket, $mapping, $planPriceMajor, $plan);
         $sellerCurrency = $this->sellerCurrencyForTicket($ticket);
 
         if ($sellerCurrency !== null) {
@@ -907,7 +909,7 @@ class SplitListingService
         return $payload;
     }
 
-    private function sellerMajorPriceForPlan(Xs2Ticket $ticket, EventMapping $mapping, float $planPriceMajor): float
+    private function sellerMajorPriceForPlan(Xs2Ticket $ticket, EventMapping $mapping, float $planPriceMajor, array $plan = []): float
     {
         $ticketCurrency = strtoupper(trim((string) ($ticket->currency_code ?? '')));
         $eventCurrency = $this->currencyConversion()->eventCurrency($mapping, $ticketCurrency);
@@ -917,11 +919,96 @@ class SplitListingService
             return $planPriceMajor;
         }
 
+        $sellerCurrency = $converter->normalizeCurrency($eventCurrency) ?? $ticketCurrency;
+        $splitOrder = max(1, (int) ($plan['split_order'] ?? 1));
+        $index = $splitOrder - 1;
+
+        if ($index > 0) {
+            $incrementType = (string) ($ticket->price_increment_type ?? '');
+            $settings = $this->publishIncrementSettings($ticket);
+            if ($incrementType === '' || $incrementType === 'fixed') {
+                $incrementType = (string) ($settings['default_price_increment_type'] ?? 'fixed');
+            }
+
+            if ($incrementType === 'fixed') {
+                $sellerIncrement = app(PriceIncrementResolver::class)
+                    ->incrementForCurrency($settings, $sellerCurrency);
+                $baseMajor = $this->basePriceMajor($ticket) ?? $planPriceMajor;
+                $baseSeller = $converter->convertMajor($baseMajor, $ticketCurrency, $sellerCurrency);
+
+                return round($baseSeller + ($index * $sellerIncrement), 2);
+            }
+        }
+
         return $converter->convertMajor(
             $planPriceMajor,
             $ticketCurrency,
-            $converter->normalizeCurrency($eventCurrency) ?? $ticketCurrency,
+            $sellerCurrency,
         );
+    }
+
+    /**
+     * Preview XS2 major price converted to the mapped SB event currency.
+     *
+     * @return array{seller_price: float, seller_currency: string|null, converted: bool}
+     */
+    public function sellerPricePreview(Xs2Ticket $ticket, float $xs2PriceMajor): array
+    {
+        $ticket->loadMissing(['xs2Event.mapping']);
+        $mapping = $ticket->xs2Event?->mapping;
+        $ticketCurrency = $this->currencyConversion()->normalizeCurrency($ticket->currency_code)
+            ?? strtoupper(trim((string) ($ticket->currency_code ?? '')));
+
+        if ($mapping === null || $ticketCurrency === '') {
+            return [
+                'seller_price' => round($xs2PriceMajor, 2),
+                'seller_currency' => $ticketCurrency ?: null,
+                'converted' => false,
+            ];
+        }
+
+        $sellerCurrency = $this->sellerCurrencyForTicket($ticket);
+        $sellerPrice = $this->sellerMajorPriceForPlan($ticket, $mapping, $xs2PriceMajor, [
+            'price' => $xs2PriceMajor,
+            'split_order' => $this->splitOrderForPrice($ticket, $xs2PriceMajor),
+        ]);
+
+        return [
+            'seller_price' => round($sellerPrice, 2),
+            'seller_currency' => $sellerCurrency,
+            'converted' => $this->currencyConversion()->needsConversion($ticketCurrency, $sellerCurrency),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function publishIncrementSettings(Xs2Ticket $ticket): array
+    {
+        $settings = app(ListingPublishRuleSettingService::class)->get();
+
+        if ($ticket->price_increment_type !== null) {
+            $settings['default_price_increment_type'] = (string) $ticket->price_increment_type;
+        }
+
+        if ($ticket->price_increment_value !== null) {
+            $settings['default_price_increment_value'] = (float) $ticket->price_increment_value;
+        }
+
+        return $settings;
+    }
+
+    private function splitOrderForPrice(Xs2Ticket $ticket, float $xs2PriceMajor): int
+    {
+        if (! $ticket->relationLoaded('listingSplits')) {
+            return 1;
+        }
+
+        foreach ($ticket->listingSplits as $split) {
+            if ($split->price !== null && abs((float) $split->price - $xs2PriceMajor) < 0.001) {
+                return (int) $split->split_order;
+            }
+        }
+
+        return 1;
     }
 
     private function sellerCurrencyForTicket(Xs2Ticket $ticket): ?string

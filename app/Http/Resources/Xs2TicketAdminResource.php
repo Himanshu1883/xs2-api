@@ -3,6 +3,7 @@
 namespace App\Http\Resources;
 
 use App\Services\Currency\CurrencyConversionService;
+use App\Services\SplitListings\SplitListingService;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
@@ -61,12 +62,9 @@ class Xs2TicketAdminResource extends JsonResource
             'split_listings_count' => (int) ($this->split_listings_count
                 ?? $this->listingSplits?->where('status', 'active')->count()
                 ?? 0),
-            'split_listings' => ListingSplitResource::collection(
-                $this->whenLoaded(
-                    'listingSplits',
-                    fn () => $this->listingSplits->sortBy('split_order')->values(),
-                    collect(),
-                ),
+            'split_listings' => $this->when(
+                $this->relationLoaded('listingSplits'),
+                fn () => $this->splitListingsPayload($divisor) ?? [],
             ),
             'split_sales' => $this->split_sales ?? [],
         ];
@@ -116,5 +114,43 @@ class Xs2TicketAdminResource extends JsonResource
                 'rate' => $summary['rate'],
             ],
         ];
+    }
+
+    /** @return array<int, array<string, mixed>>|null */
+    private function splitListingsPayload(int $divisor): ?array
+    {
+        if (! $this->relationLoaded('listingSplits')) {
+            return null;
+        }
+
+        $splits = $this->listingSplits->sortBy('split_order')->values();
+        if ($splits->isEmpty()) {
+            return [];
+        }
+
+        $splitService = app(SplitListingService::class);
+
+        return $splits->map(function ($split) use ($splitService): array {
+            $price = $split->price !== null ? (float) $split->price : null;
+            $sellerPreview = $price !== null
+                ? $splitService->sellerPricePreview($this->resource, $price)
+                : null;
+
+            return [
+                'id' => $split->id,
+                'split_order' => $split->split_order,
+                'quantity' => (int) $split->quantity,
+                'price' => $price,
+                'seller_price' => $sellerPreview['seller_price'] ?? $price,
+                'seller_currency' => $sellerPreview['seller_currency'] ?? null,
+                'seatsbroker_listing_id' => $split->seatsbroker_listing_id,
+                'xs2_listing_id' => $split->xs2ListingId(),
+                'seller_reference' => $split->seller_reference,
+                'status' => $split->status,
+                'sync_status' => $split->sync_status,
+                'last_synced_at' => $split->last_synced_at,
+                'last_error' => $split->last_error,
+            ];
+        })->all();
     }
 }

@@ -10,6 +10,7 @@ class ListingPublishRuleService
     public function __construct(
         private readonly ListingPublishRuleSettingService $settings,
         private readonly SplitListingService $splitListings,
+        private readonly ListingPublishPricePreviewService $pricePreview,
     ) {}
 
     public function rulesEnabled(): bool
@@ -90,6 +91,7 @@ class ListingPublishRuleService
                     'split_quantity' => $splitSize,
                     'price_increment_type' => (string) $settings['default_price_increment_type'],
                     'price_increment_value' => (float) $settings['default_price_increment_value'],
+                    'price_increment_by_currency' => $settings['price_increment_by_currency'] ?? [],
                     'pairs_only' => (bool) ($action['pairs_only'] ?? false),
                 ],
             ];
@@ -143,7 +145,8 @@ class ListingPublishRuleService
             ];
         }
 
-        return [
+        $settings = $this->settings->get();
+        $preview = [
             'stock' => $stock,
             'matched' => true,
             'rule_id' => $plan['rule_id'],
@@ -154,6 +157,13 @@ class ListingPublishRuleService
             'listings' => $plan['listings'],
             'summary' => $this->summarisePlan($plan),
         ];
+
+        if (($plan['mode'] ?? '') === 'split') {
+            $splitSize = (int) ($plan['split_config']['split_quantity'] ?? 2);
+            $preview = $this->pricePreview->attachPriceExample($preview, $settings, $splitSize);
+        }
+
+        return $preview;
     }
 
     /** @return list<array<string, mixed>> */

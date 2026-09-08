@@ -12,6 +12,7 @@ class ListingPublishRuleSettingService
 
     public function __construct(
         private readonly IntegrationSettingService $integrationSettings,
+        private readonly PriceIncrementResolver $priceIncrements,
     ) {}
 
     /** @return array<string, mixed> */
@@ -37,11 +38,25 @@ class ListingPublishRuleSettingService
 
         $this->integrationSettings->set(
             self::SETTING_KEY,
-            json_encode($normalised, JSON_THROW_ON_ERROR),
+            json_encode($this->persistableSettings($normalised), JSON_THROW_ON_ERROR),
             secret: false,
         );
 
         return $normalised;
+    }
+
+    /** @param  array<string, mixed>  $normalised */
+    private function persistableSettings(array $normalised): array
+    {
+        return [
+            'enabled' => $normalised['enabled'],
+            'default_price_increment_type' => $normalised['default_price_increment_type'],
+            'default_price_increment_value' => $normalised['default_price_increment_value'],
+            'price_increment_by_currency' => $this->normaliseIncrementOverrides(
+                $normalised['price_increment_by_currency'] ?? null,
+            ),
+            'rules' => $normalised['rules'],
+        ];
     }
 
     /** @return array<string, mixed> */
@@ -123,15 +138,41 @@ class ListingPublishRuleSettingService
             ->all();
 
         $incrementType = (string) ($payload['default_price_increment_type'] ?? $defaults['default_price_increment_type'] ?? 'percentage');
+        $baseValue = max(0, (float) ($payload['default_price_increment_value'] ?? $defaults['default_price_increment_value'] ?? 0));
+        $incrementOverrides = $this->normaliseIncrementOverrides(
+            $payload['price_increment_by_currency'] ?? $defaults['price_increment_by_currency'] ?? null,
+        );
 
-        return [
+        $normalised = [
             'enabled' => (bool) ($payload['enabled'] ?? $defaults['enabled'] ?? true),
             'default_price_increment_type' => in_array($incrementType, ['percentage', 'fixed'], true)
                 ? $incrementType
                 : 'percentage',
-            'default_price_increment_value' => max(0, (float) ($payload['default_price_increment_value'] ?? $defaults['default_price_increment_value'] ?? 0)),
+            'default_price_increment_value' => $baseValue,
+            'price_increment_by_currency' => $incrementOverrides,
             'rules' => $rules,
         ];
+
+        return array_merge($normalised, $this->priceIncrements->settingsMetadata($normalised));
+    }
+
+    /** @return array<string, float> */
+    private function normaliseIncrementOverrides(mixed $overrides): array
+    {
+        if (! is_array($overrides)) {
+            return [];
+        }
+
+        $normalised = [];
+        foreach (PriceIncrementResolver::SUPPORTED_CURRENCIES as $currency) {
+            if (! array_key_exists($currency, $overrides) || ! is_numeric($overrides[$currency])) {
+                continue;
+            }
+
+            $normalised[$currency] = round(max(0, (float) $overrides[$currency]), 2);
+        }
+
+        return $normalised;
     }
 
     /** @param  array<string, mixed>  $settings */
