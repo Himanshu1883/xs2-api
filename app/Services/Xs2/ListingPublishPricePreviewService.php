@@ -30,6 +30,7 @@ class ListingPublishPricePreviewService
         $sellerIncrement = $this->increments->incrementForCurrency($settings, $sellerCurrency);
 
         $baseSeller = null;
+        $baseXs2 = $listings !== [] ? (float) $listings[0]['price'] : null;
         if ($listings !== [] && $this->currency->needsConversion($ticketCurrency, $sellerCurrency)) {
             $baseSeller = $this->currency->convertMajor((float) $listings[0]['price'], $ticketCurrency, $sellerCurrency);
         }
@@ -41,6 +42,7 @@ class ListingPublishPricePreviewService
             $incrementValue,
             $sellerIncrement,
             $baseSeller,
+            $baseXs2,
         ): array {
             $xs2Price = (float) $listing['price'];
             $splitOrder = (int) ($listing['split_order'] ?? 1);
@@ -62,6 +64,7 @@ class ListingPublishPricePreviewService
                 ...$listing,
                 'xs2_price' => round($xs2Price, 2),
                 'xs2_currency' => $ticketCurrency,
+                'original_price' => $baseXs2 !== null ? round($baseXs2, 2) : round($xs2Price, 2),
                 'seller_price' => round($sellerPrice, 2),
                 'seller_currency' => $sellerCurrency,
             ];

@@ -79,6 +79,32 @@ class SplitListingServiceTest extends TestCase
         ], $listings);
     }
 
+    public function test_admin_split_listing_price_preview_exposes_original_and_increment(): void
+    {
+        $ticket = $this->ticket([
+            'net_rate' => 5000,
+            'currency_code' => 'EUR',
+            'stock' => 6,
+            'split_enabled' => true,
+            'split_quantity' => 2,
+            'price_increment_type' => 'fixed',
+            'price_increment_value' => 5.0,
+        ]);
+
+        $first = $this->service->adminSplitListingPricePreview($ticket, 50.0, 1);
+        $second = $this->service->adminSplitListingPricePreview($ticket, 55.0, 2);
+
+        $this->assertSame(50.0, $first['original_price']);
+        $this->assertNull($first['increment_applied']);
+        $this->assertSame('EUR', $first['xs2_currency']);
+
+        $this->assertSame(50.0, $second['original_price']);
+        $this->assertNotNull($second['increment_applied']);
+        $this->assertSame('fixed', $second['increment_applied']['type']);
+        $this->assertSame(5.0, $second['increment_applied']['xs2']);
+        $this->assertSame('EUR', $second['increment_applied']['xs2_currency']);
+    }
+
     public function test_preview_totals_include_count_remaining_and_price_range(): void
     {
         $ticket = $this->ticket(['stock' => 9, 'net_rate' => 10000]);
@@ -1049,6 +1075,7 @@ class SplitListingServiceTest extends TestCase
             $table->unsignedInteger('stock')->default(0);
             $table->unsignedBigInteger('net_rate')->nullable();
             $table->unsignedBigInteger('face_value')->nullable();
+            $table->string('currency_code', 10)->nullable();
             $table->json('raw_payload')->nullable();
             $table->string('sync_status')->nullable();
             $table->text('sync_error')->nullable();

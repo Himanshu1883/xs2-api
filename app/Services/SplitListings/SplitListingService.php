@@ -948,6 +948,81 @@ class SplitListingService
     }
 
     /**
+     * Admin preview for a split row: XS2 base (original), increment, and SB publish price.
+     *
+     * @return array{
+     *   xs2_currency: string,
+     *   original_price: float,
+     *   seller_price: float,
+     *   seller_currency: string|null,
+     *   converted: bool,
+     *   increment_applied: array{type: string, xs2: float, xs2_currency: string, seller: float, seller_currency: string}|null
+     * }
+     */
+    public function adminSplitListingPricePreview(Xs2Ticket $ticket, float $xs2PriceMajor, int $splitOrder): array
+    {
+        $ticket->loadMissing(['xs2Event.mapping']);
+        $converter = $this->currencyConversion();
+        $ticketCurrency = $converter->normalizeCurrency($ticket->currency_code)
+            ?? strtoupper(trim((string) ($ticket->currency_code ?? '')));
+        $basePrice = $this->basePriceMajor($ticket) ?? $xs2PriceMajor;
+        $index = max(0, $splitOrder - 1);
+
+        $incrementType = (string) ($ticket->price_increment_type ?? '');
+        $settings = $this->publishIncrementSettings($ticket);
+        if ($incrementType === '' || $incrementType === 'fixed') {
+            $incrementType = (string) ($settings['default_price_increment_type'] ?? 'fixed');
+        }
+        $incrementValue = (float) ($ticket->price_increment_value ?? $settings['default_price_increment_value'] ?? 0);
+
+        $sellerPreview = $this->sellerPricePreview($ticket, $xs2PriceMajor);
+        $sellerCurrency = $sellerPreview['seller_currency'] ?? $ticketCurrency;
+
+        $preview = [
+            'xs2_currency' => $ticketCurrency,
+            'original_price' => round($basePrice, 2),
+            'seller_price' => $sellerPreview['seller_price'],
+            'seller_currency' => $sellerCurrency,
+            'converted' => $sellerPreview['converted'],
+            'increment_applied' => null,
+        ];
+
+        if ($index <= 0) {
+            return $preview;
+        }
+
+        if ($incrementType === 'fixed') {
+            $sellerIncrement = app(PriceIncrementResolver::class)
+                ->incrementForCurrency($settings, $sellerCurrency);
+
+            $preview['increment_applied'] = [
+                'type' => 'fixed',
+                'xs2' => round($incrementValue * $index, 2),
+                'xs2_currency' => $ticketCurrency,
+                'seller' => round($sellerIncrement * $index, 2),
+                'seller_currency' => $sellerCurrency,
+            ];
+
+            return $preview;
+        }
+
+        $xs2Increment = round($xs2PriceMajor - $basePrice, 2);
+        $baseSeller = $sellerPreview['converted']
+            ? $converter->convertMajor($basePrice, $ticketCurrency, (string) $sellerCurrency)
+            : $basePrice;
+
+        $preview['increment_applied'] = [
+            'type' => 'percentage',
+            'xs2' => $xs2Increment,
+            'xs2_currency' => $ticketCurrency,
+            'seller' => round($sellerPreview['seller_price'] - $baseSeller, 2),
+            'seller_currency' => $sellerCurrency,
+        ];
+
+        return $preview;
+    }
+
+    /**
      * Preview XS2 major price converted to the mapped SB event currency.
      *
      * @return array{seller_price: float, seller_currency: string|null, converted: bool}

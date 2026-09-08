@@ -132,8 +132,12 @@ class Xs2TicketAdminResource extends JsonResource
 
         return $splits->map(function ($split) use ($splitService): array {
             $price = $split->price !== null ? (float) $split->price : null;
-            $sellerPreview = $price !== null
-                ? $splitService->sellerPricePreview($this->resource, $price)
+            $pricePreview = $price !== null
+                ? $splitService->adminSplitListingPricePreview(
+                    $this->resource,
+                    $price,
+                    (int) $split->split_order,
+                )
                 : null;
 
             return [
@@ -141,8 +145,11 @@ class Xs2TicketAdminResource extends JsonResource
                 'split_order' => $split->split_order,
                 'quantity' => (int) $split->quantity,
                 'price' => $price,
-                'seller_price' => $sellerPreview['seller_price'] ?? $price,
-                'seller_currency' => $sellerPreview['seller_currency'] ?? null,
+                'xs2_currency' => $pricePreview['xs2_currency'] ?? null,
+                'original_price' => $pricePreview['original_price'] ?? null,
+                'increment_applied' => $pricePreview['increment_applied'] ?? null,
+                'seller_price' => $pricePreview['seller_price'] ?? $price,
+                'seller_currency' => $pricePreview['seller_currency'] ?? null,
                 'seatsbroker_listing_id' => $split->seatsbroker_listing_id,
                 'xs2_listing_id' => $split->xs2ListingId(),
                 'seller_reference' => $split->seller_reference,
