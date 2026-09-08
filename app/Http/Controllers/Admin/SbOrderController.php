@@ -182,15 +182,21 @@ class SbOrderController extends Controller
         $this->authorize('viewAny', EventMapping::class);
 
         $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
-        if (
-            $sbOrder->xs2Order
-            && filled($sbOrder->xs2Order->xs2_booking_id)
-            && ! \App\Support\Xs2BookingOrderIdentity::isPendingExternalOrderId($sbOrder->xs2Order->external_order_id)
-        ) {
+        if ($sbOrder->xs2Order && $this->xs2SandboxOrders->orderIsComplete($sbOrder->xs2Order)) {
+            $isSandbox = $this->apiEnvironment->xs2OrdersEnvironment() === ApiEnvironmentService::ENV_SANDBOX;
+            $envLabel = $isSandbox ? 'sandbox' : 'production';
+
             return response()->json([
-                'message' => 'XS2 order already exists for this SB order.',
-            ], 422);
+                'message' => sprintf(
+                    'Already linked to XS2 %s order %s for booking %s.',
+                    $envLabel,
+                    $sbOrder->xs2Order->external_order_id,
+                    $sbOrder->booking_no,
+                ),
+                'data' => new SbOrderResource($sbOrder),
+            ]);
         }
 
         $skipReason = $this->xs2SandboxOrders->resolveManualCreateSkipReason($sbOrder);
@@ -212,6 +218,21 @@ class SbOrderController extends Controller
                 'message' => $result['reason'] ?? 'XS2 order creation was skipped.',
                 'data' => new SbOrderResource($sbOrder),
             ], 422);
+        }
+
+        if ($result['already_exists'] ?? false) {
+            $isSandbox = $this->apiEnvironment->xs2OrdersEnvironment() === ApiEnvironmentService::ENV_SANDBOX;
+            $envLabel = $isSandbox ? 'sandbox' : 'production';
+
+            return response()->json([
+                'message' => sprintf(
+                    'Already linked to XS2 %s order %s for booking %s.',
+                    $envLabel,
+                    $sbOrder->xs2Order?->external_order_id,
+                    $sbOrder->booking_no,
+                ),
+                'data' => new SbOrderResource($sbOrder),
+            ]);
         }
 
         if (

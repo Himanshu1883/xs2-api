@@ -92,6 +92,8 @@ return [
         ))),
     ],
     'log_channel' => env('XS2_LOG_CHANNEL', 'stack'),
+    // Used for XS2 reservation/booking when SB order raw_payload has no buyer email.
+    'default_booking_email' => env('XS2_DEFAULT_BOOKING_EMAIL', 'xs2-sandbox@example.com'),
 
     'mapping' => [
         'event_auto_map_threshold' => (float) env('XS2_EVENT_AUTO_MAP_THRESHOLD', 100),

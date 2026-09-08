@@ -39,6 +39,7 @@ class SbOrderXs2SandboxOrderService
      *     updated: bool,
      *     linked: bool,
      *     skipped: bool,
+     *     already_exists?: bool,
      *     reason: string|null
      * }
      */
@@ -49,25 +50,8 @@ class SbOrderXs2SandboxOrderService
         }
 
         $existing = $this->existingOrder($order);
-        if (
-            $existing !== null
-            && filled($existing->xs2_booking_id)
-            && ! Xs2BookingOrderIdentity::isPendingExternalOrderId($existing->external_order_id)
-        ) {
-            $this->syncLogs->recordSkipped(
-                $order->id,
-                $this->existingOrderSkipReason(),
-                $existing->id,
-            );
-
-            return [
-                'order' => $existing,
-                'created' => false,
-                'updated' => false,
-                'linked' => false,
-                'skipped' => true,
-                'reason' => $this->existingOrderSkipReason(),
-            ];
+        if ($existing !== null && $this->orderIsComplete($existing)) {
+            return $this->alreadyCompleteResult($existing, $order);
         }
 
         $linkedExisting = $this->tryLinkExistingSyncedXs2Order($order, $existing);
@@ -96,11 +80,11 @@ class SbOrderXs2SandboxOrderService
         $quantity = max(1, (int) ($order->quantity ?? 1));
         $netRate = $this->resolveReservationNetRate($order, $ticket);
         if ($netRate === null || $netRate <= 0) {
-            return $this->skip($existing, 'Mapped XS2 ticket is missing net_rate.', $order);
+            return $this->skip($existing, $this->missingTicketAmountSkipReason(), $order);
         }
 
         $currency = (string) ($ticket->currency_code ?? $order->currency_type ?? 'EUR');
-        $salesPrice = $this->resolveReservationSalesPrice($ticket, $netRate);
+        $salesPrice = $netRate;
         $bookingEmail = $this->resolveBookingEmail($order);
 
         $reservationRequest = [
@@ -120,6 +104,22 @@ class SbOrderXs2SandboxOrderService
 
         try {
             return DB::transaction(function () use ($order, $ticket, $existing, $reservationRequest, $quantity, $bookingEmail): array {
+                $existing = $this->existingOrder($order);
+                if ($existing !== null && $this->orderIsComplete($existing)) {
+                    return $this->alreadyCompleteResult($existing, $order);
+                }
+
+                $linkedExisting = $this->tryLinkExistingSyncedXs2Order($order, $existing);
+                if ($linkedExisting !== null) {
+                    return $linkedExisting;
+                }
+
+                if ($this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
+                    throw new \RuntimeException(
+                        'A matching synced XS2 order exists but could not be linked before reservation.',
+                    );
+                }
+
                 $reservationResult = $this->createReservationDetailed($reservationRequest);
                 $this->syncLogs->recordReservationExchange($order->id, $reservationRequest, $reservationResult);
                 if (! $reservationResult['success']) {
@@ -381,48 +381,35 @@ class SbOrderXs2SandboxOrderService
     }
 
     /**
-     * Reservation net_rate in XS2 minor units. Prefer synced ticket pricing, then SB order amount.
+     * Reservation net_rate in XS2 minor units from SB order ticket_amount only (per ticket).
      */
     public function resolveReservationNetRate(SbOrder $order, Xs2Ticket $ticket): ?int
     {
-        foreach ($this->reservationRateCandidates($order, $ticket) as $rate) {
-            if ($rate > 0) {
-                return $rate;
-            }
-        }
+        $rate = $this->minorRateFromSbOrderTicketAmount($order);
 
-        return null;
+        return $rate > 0 ? $rate : null;
     }
 
     public function resolveReservationSalesPrice(Xs2Ticket $ticket, int $netRate): int
     {
-        $faceValue = (int) ($ticket->face_value ?? 0);
-        if ($faceValue > 0) {
-            return $faceValue;
-        }
-
-        $fromPayload = $this->positiveIntFromPayload($ticket->raw_payload, 'face_value');
-        if ($fromPayload > 0) {
-            return $fromPayload;
-        }
-
         return $netRate;
     }
 
-    /** @return list<int> */
-    private function reservationRateCandidates(SbOrder $order, Xs2Ticket $ticket): array
+    public function orderIsComplete(?Xs2Order $order): bool
     {
-        $payload = is_array($ticket->raw_payload) ? $ticket->raw_payload : [];
+        if ($order === null) {
+            return false;
+        }
 
-        return [
-            (int) ($ticket->net_rate ?? 0),
-            (int) ($ticket->face_value ?? 0),
-            (int) ($ticket->package_price ?? 0),
-            $this->positiveIntFromPayload($payload, 'net_rate'),
-            $this->positiveIntFromPayload($payload, 'face_value'),
-            $this->positiveIntFromPayload($payload, 'gross_rate'),
-            $this->minorRateFromSbOrderTicketAmount($order),
-        ];
+        if (Xs2BookingOrderIdentity::isPendingExternalOrderId($order->external_order_id)) {
+            return false;
+        }
+
+        if (filled($order->xs2_booking_id)) {
+            return true;
+        }
+
+        return Xs2BookingOrderIdentity::orderHasResolvableBookingOrderId($order);
     }
 
     private function minorRateFromSbOrderTicketAmount(SbOrder $order): int
@@ -436,21 +423,6 @@ class SbOrderXs2SandboxOrderService
         $totalMinor = (int) round((float) $order->ticket_amount * $divisor);
 
         return (int) round($totalMinor / $quantity);
-    }
-
-    /** @param  array<string, mixed>|null  $payload */
-    private function positiveIntFromPayload(?array $payload, string $key): int
-    {
-        if (! is_array($payload) || ! array_key_exists($key, $payload)) {
-            return 0;
-        }
-
-        $value = $payload[$key];
-        if (! is_numeric($value)) {
-            return 0;
-        }
-
-        return max(0, (int) $value);
     }
 
     private function resolveMappedTicketFromListing(SbOrder $order): ?Xs2Ticket
@@ -521,7 +493,8 @@ class SbOrderXs2SandboxOrderService
             return 'SB order is cancelled.';
         }
 
-        if ($this->existingOrder($order)?->xs2_booking_id) {
+        $existing = $this->existingOrder($order);
+        if ($existing !== null && $this->orderIsComplete($existing)) {
             return $this->existingOrderSkipReason();
         }
 
@@ -534,6 +507,11 @@ class SbOrderXs2SandboxOrderService
                 ?? $this->noTicketMappingSkipReason();
         }
 
+        $ticket = $this->resolveMappedTicket($order);
+        if ($ticket !== null && $this->resolveReservationNetRate($order, $ticket) === null) {
+            return $this->missingTicketAmountSkipReason();
+        }
+
         return null;
     }
 
@@ -544,7 +522,7 @@ class SbOrderXs2SandboxOrderService
     public function resolveManualCreateSkipReason(SbOrder $order): ?string
     {
         $existing = $this->existingOrder($order);
-        if ($existing !== null && filled($existing->xs2_booking_id)) {
+        if ($existing !== null && $this->orderIsComplete($existing)) {
             return $this->existingOrderSkipReason();
         }
 
@@ -552,22 +530,7 @@ class SbOrderXs2SandboxOrderService
             return null;
         }
 
-        $reason = $this->resolveQueueSkipReason($order);
-        if ($reason !== null) {
-            return $reason;
-        }
-
-        $ticket = $this->resolveMappedTicket($order);
-        if ($ticket === null) {
-            return $this->noTicketMappingSkipReason();
-        }
-
-        $netRate = $this->resolveReservationNetRate($order, $ticket);
-        if ($netRate === null || $netRate <= 0) {
-            return 'Mapped XS2 ticket is missing net_rate.';
-        }
-
-        return null;
+        return $this->resolveQueueSkipReason($order);
     }
 
     public function resolveTicketMappingSkipReason(SbOrder $order): ?string
@@ -1061,7 +1024,7 @@ class SbOrderXs2SandboxOrderService
     private function queryUnlinkedXs2OrdersByBuyerEmail(SbOrder $order): Collection
     {
         $email = mb_strtolower($this->resolveBookingEmail($order));
-        if ($email === '' || $email === 'xs2-sandbox@example.com') {
+        if ($email === '' || $email === $this->defaultBookingEmail()) {
             return collect();
         }
 
@@ -1339,7 +1302,7 @@ class SbOrderXs2SandboxOrderService
     private function xs2OrderMatchesSbBuyerEmail(Xs2Order $xs2Order, SbOrder $order): bool
     {
         $email = mb_strtolower($this->resolveBookingEmail($order));
-        if ($email === '' || $email === 'xs2-sandbox@example.com') {
+        if ($email === '' || $email === $this->defaultBookingEmail()) {
             return false;
         }
 
@@ -1548,6 +1511,13 @@ class SbOrderXs2SandboxOrderService
 
     private function resolveBookingEmail(SbOrder $order): string
     {
+        foreach (['buyer_email', 'email'] as $key) {
+            $email = $this->nullableString(data_get($order->raw_payload, $key));
+            if ($email !== null) {
+                return $email;
+            }
+        }
+
         $order->loadMissing('attendees');
         foreach ($order->attendees as $attendee) {
             $email = $this->nullableString($attendee->email);
@@ -1556,15 +1526,13 @@ class SbOrderXs2SandboxOrderService
             }
         }
 
-        foreach (['buyer_email', 'email'] as $key) {
-            $raw = data_get($order->raw_payload, $key);
-            $email = $this->nullableString($raw);
-            if ($email !== null) {
-                return $email;
-            }
-        }
+        // Fallback when SB order payload has no buyer email (XS2 requires booking_email on reservation/booking).
+        return (string) config('xs2.default_booking_email', 'xs2-sandbox@example.com');
+    }
 
-        return 'xs2-sandbox@example.com';
+    private function defaultBookingEmail(): string
+    {
+        return mb_strtolower((string) config('xs2.default_booking_email', 'xs2-sandbox@example.com'));
     }
 
     /**
@@ -1734,6 +1702,31 @@ class SbOrderXs2SandboxOrderService
         return $this->isSandboxEnvironment()
             ? 'No sandbox XS2 ticket mapping found for this SB order.'
             : 'No production XS2 ticket mapping found for this SB order.';
+    }
+
+    private function missingTicketAmountSkipReason(): string
+    {
+        return 'SB order is missing ticket_amount.';
+    }
+
+    /** @return array{order: Xs2Order, created: bool, updated: bool, linked: bool, skipped: bool, already_exists: bool, reason: null} */
+    private function alreadyCompleteResult(Xs2Order $existing, SbOrder $order): array
+    {
+        $this->syncLogs->recordSkipped(
+            $order->id,
+            $this->existingOrderSkipReason(),
+            $existing->id,
+        );
+
+        return [
+            'order' => $existing,
+            'created' => false,
+            'updated' => false,
+            'linked' => false,
+            'skipped' => false,
+            'already_exists' => true,
+            'reason' => null,
+        ];
     }
 
     /**
