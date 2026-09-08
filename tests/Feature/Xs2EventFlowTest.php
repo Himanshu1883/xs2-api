@@ -1195,6 +1195,45 @@ class Xs2EventFlowTest extends TestCase
             ->assertJsonPath('data.0.xs2_event.sync.inventory_sync_status', 'completed');
     }
 
+    public function test_admin_mapping_list_defaults_to_most_recent_inventory_sync_first(): void
+    {
+        $olderEvent = $this->xs2Event('xs2-sort-older');
+        $newerEvent = $this->xs2Event('xs2-sort-newer');
+        $olderMapping = EventMapping::create([
+            'xs2_event_id' => $olderEvent->id,
+            'status' => 'pending',
+            'mapping_method' => 'automatic',
+            'match_score' => 99.0,
+        ]);
+        $newerMapping = EventMapping::create([
+            'xs2_event_id' => $newerEvent->id,
+            'status' => 'pending',
+            'mapping_method' => 'automatic',
+            'match_score' => 10.0,
+        ]);
+        DB::table('xs2_event_inventory_sync_states')->insert([
+            'xs2_event_id' => $olderEvent->id,
+            'tickets_last_full_sync_at' => CarbonImmutable::parse('2026-08-10 09:00:00'),
+            'tickets_sync_status' => 'completed',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        DB::table('xs2_event_inventory_sync_states')->insert([
+            'xs2_event_id' => $newerEvent->id,
+            'tickets_last_incremental_sync_at' => CarbonImmutable::parse('2026-08-14 14:30:00'),
+            'tickets_sync_status' => 'completed',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $token = User::factory()->create(['user_type' => 6])->createToken('test-token')->plainTextToken;
+
+        $this->withToken($token)
+            ->getJson('/api/admin/xs2/event-mappings?status=pending')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', $newerMapping->id)
+            ->assertJsonPath('data.1.id', $olderMapping->id);
+    }
+
     public function test_admin_mapping_list_filters_by_local_event_ids(): void
     {
         DB::table('match_info')->insert($this->localEvent(551));

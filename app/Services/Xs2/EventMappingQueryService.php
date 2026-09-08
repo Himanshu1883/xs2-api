@@ -79,8 +79,7 @@ class EventMappingQueryService
                         });
                     });
             })
-            ->orderBy($filters['sort'] ?? 'match_score', $filters['direction'] ?? 'desc')
-            ->orderByDesc('id')
+            ->tap(fn (Builder $query) => $this->applySort($query, $filters))
             ->paginate($filters['per_page'] ?? 20)
             ->withQueryString();
 
@@ -303,5 +302,59 @@ class EventMappingQueryService
     {
         $query->select('match_info.*');
         $this->englishLabels->apply($query);
+    }
+
+    /** @param  array<string, mixed>  $filters */
+    private function applySort(Builder $query, array $filters): void
+    {
+        $sort = $filters['sort'] ?? 'last_inventory_sync_at';
+        $direction = strtolower((string) ($filters['direction'] ?? 'desc')) === 'asc' ? 'asc' : 'desc';
+
+        if ($sort === 'last_inventory_sync_at') {
+            $query
+                ->leftJoin('xs2_events as sort_xs2_events', 'event_mappings.xs2_event_id', '=', 'sort_xs2_events.id')
+                ->leftJoin(
+                    'xs2_event_inventory_sync_states as sort_inventory_sync',
+                    'sort_xs2_events.id',
+                    '=',
+                    'sort_inventory_sync.xs2_event_id',
+                )
+                ->select('event_mappings.*')
+                ->orderByRaw($this->lastInventorySyncHasTimestampExpression().' asc')
+                ->orderByRaw($this->lastInventorySyncAtExpression().' '.$direction)
+                ->orderByDesc('event_mappings.id');
+
+            return;
+        }
+
+        $query
+            ->orderBy($sort, $direction)
+            ->orderByDesc('event_mappings.id');
+    }
+
+    private function lastInventorySyncHasTimestampExpression(): string
+    {
+        return 'CASE
+            WHEN sort_inventory_sync.tickets_last_full_sync_at IS NULL
+                AND sort_inventory_sync.tickets_last_incremental_sync_at IS NULL
+            THEN 1
+            ELSE 0
+        END';
+    }
+
+    private function lastInventorySyncAtExpression(): string
+    {
+        return 'CASE
+            WHEN sort_inventory_sync.tickets_last_full_sync_at IS NULL
+                AND sort_inventory_sync.tickets_last_incremental_sync_at IS NULL
+            THEN NULL
+            WHEN sort_inventory_sync.tickets_last_full_sync_at IS NULL
+            THEN sort_inventory_sync.tickets_last_incremental_sync_at
+            WHEN sort_inventory_sync.tickets_last_incremental_sync_at IS NULL
+            THEN sort_inventory_sync.tickets_last_full_sync_at
+            WHEN sort_inventory_sync.tickets_last_full_sync_at > sort_inventory_sync.tickets_last_incremental_sync_at
+            THEN sort_inventory_sync.tickets_last_full_sync_at
+            ELSE sort_inventory_sync.tickets_last_incremental_sync_at
+        END';
     }
 }

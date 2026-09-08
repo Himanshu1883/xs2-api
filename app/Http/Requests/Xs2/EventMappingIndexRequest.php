@@ -37,7 +37,7 @@ class EventMappingIndexRequest extends FormRequest
             'search' => ['nullable', 'string', 'max:255'],
             'page' => ['nullable', 'integer', 'min:1'],
             'per_page' => ['nullable', 'integer', 'between:1,100'],
-            'sort' => ['nullable', 'in:id,match_score,created_at,updated_at'],
+            'sort' => ['nullable', 'in:id,match_score,created_at,updated_at,last_inventory_sync_at'],
             'direction' => ['nullable', 'in:asc,desc'],
         ];
     }
