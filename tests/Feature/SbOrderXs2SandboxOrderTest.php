@@ -193,7 +193,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $this->assertTrue($service->queueIfEligible($sbOrder));
         $this->assertNull($service->resolveQueueSkipReason($sbOrder));
-        $this->assertSame($splitTicketId, $service->resolveReservationTicketId($sbOrder, $ticket));
+        $this->assertSame($masterTicketId, $service->resolveReservationTicketId($sbOrder, $ticket));
 
         $result = $service->createFromSbOrder($sbOrder);
 
@@ -204,18 +204,18 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'is_sandbox' => true,
             'external_order_id' => self::SANDBOX_BOOKINGORDER_ID,
             'xs2_booking_id' => self::SANDBOX_BOOKING_ID,
-            'external_ticket_id' => $splitTicketId,
+            'external_ticket_id' => $masterTicketId,
         ]);
 
-        Http::assertSent(function ($request) use ($splitTicketId): bool {
+        Http::assertSent(function ($request) use ($masterTicketId): bool {
             return $request->method() === 'POST'
                 && str_contains($request->url(), '/v1/reservations')
-                && data_get($request->data(), 'items.0.ticket_id') === $splitTicketId
+                && data_get($request->data(), 'items.0.ticket_id') === $masterTicketId
                 && data_get($request->data(), 'items.0.net_rate') === 12000;
         });
     }
 
-    public function test_split_order_maps_by_ticketid_and_uses_split_xs2_listing_id_for_production_reservation(): void
+    public function test_split_order_maps_by_ticketid_and_sends_master_ticket_id_for_production_reservation(): void
     {
         app(IntegrationSettingService::class)->set(
             ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
@@ -280,8 +280,12 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $service = app(SbOrderXs2SandboxOrderService::class);
 
         $this->assertNotNull($service->resolveMappedTicket($sbOrder));
-        $this->assertSame($splitTicketId, $service->resolveReservationTicketId($sbOrder, $ticket));
+        $this->assertSame($masterTicketId, $service->resolveReservationTicketId($sbOrder, $ticket));
         $this->assertSame(4725, $service->resolveReservationNetRate($sbOrder, $ticket));
+        $this->assertSame(
+            $splitTicketId,
+            $service->resolveXs2ListingResolutionsForOrders([$sbOrder])[$sbOrder->id]['xs2_listing_id'],
+        );
 
         $result = $service->createFromSbOrder($sbOrder);
 
@@ -291,15 +295,16 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'sb_order_id' => $sbOrder->id,
             'is_sandbox' => false,
             'external_order_id' => 'production-bookingorder-67791_bko',
-            'external_ticket_id' => $splitTicketId,
+            'external_ticket_id' => $masterTicketId,
         ]);
 
-        Http::assertSent(function ($request) use ($splitTicketId): bool {
+        Http::assertSent(function ($request) use ($masterTicketId): bool {
             return $request->method() === 'POST'
                 && str_contains($request->url(), '/v1/reservations')
-                && data_get($request->data(), 'items.0.ticket_id') === $splitTicketId
+                && data_get($request->data(), 'items.0.ticket_id') === $masterTicketId
                 && data_get($request->data(), 'items.0.net_rate') === 4725
-                && data_get($request->data(), 'items.0.quantity') === 2;
+                && data_get($request->data(), 'items.0.quantity') === 2
+                && data_get($request->data(), 'items.0.currency_code') === 'EUR';
         });
     }
 

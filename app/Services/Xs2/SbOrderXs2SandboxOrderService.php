@@ -394,19 +394,11 @@ class SbOrderXs2SandboxOrderService
     }
 
     /**
-     * XS2 ticket_id for reservation/booking: split sublisting id when mapped, else master ticket.
+     * XS2 ticket_id for reservation/booking: always the master XS2 ticket external id.
+     * Split seller references (e.g. ...-S2) are SB publish ids only and are not valid XS2 API ticket_ids.
      */
     public function resolveReservationTicketId(SbOrder $order, Xs2Ticket $ticket): ?string
     {
-        $split = $this->findListingSplitForOrder($order);
-        if ($split !== null) {
-            $split->loadMissing('masterListing');
-            $xs2ListingId = $split->xs2ListingId();
-            if ($xs2ListingId !== null) {
-                return $xs2ListingId;
-            }
-        }
-
         return $this->nullableString($ticket->external_ticket_id);
     }
 
