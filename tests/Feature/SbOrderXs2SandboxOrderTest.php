@@ -173,7 +173,9 @@ class SbOrderXs2SandboxOrderTest extends TestCase
                 ]),
         ]);
 
-        $ticket = $this->seedSplitListingMapping('920288', '65e39feec62e49dc8f2e486023c7bd6b_spp');
+        $masterTicketId = '65e39feec62e49dc8f2e486023c7bd6b_spp';
+        $splitTicketId = $masterTicketId.'-S2';
+        $ticket = $this->seedSplitListingMapping('920288', $masterTicketId);
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67156',
             'booking_status' => SbOrder::STATUS_CONFIRMED,
@@ -191,6 +193,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $this->assertTrue($service->queueIfEligible($sbOrder));
         $this->assertNull($service->resolveQueueSkipReason($sbOrder));
+        $this->assertSame($splitTicketId, $service->resolveReservationTicketId($sbOrder, $ticket));
 
         $result = $service->createFromSbOrder($sbOrder);
 
@@ -201,8 +204,126 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'is_sandbox' => true,
             'external_order_id' => self::SANDBOX_BOOKINGORDER_ID,
             'xs2_booking_id' => self::SANDBOX_BOOKING_ID,
-            'external_ticket_id' => $ticket->external_ticket_id,
+            'external_ticket_id' => $splitTicketId,
         ]);
+
+        Http::assertSent(function ($request) use ($splitTicketId): bool {
+            return $request->method() === 'POST'
+                && str_contains($request->url(), '/v1/reservations')
+                && data_get($request->data(), 'items.0.ticket_id') === $splitTicketId
+                && data_get($request->data(), 'items.0.net_rate') === 12000;
+        });
+    }
+
+    public function test_split_order_maps_by_ticketid_and_uses_split_xs2_listing_id_for_production_reservation(): void
+    {
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_PRODUCTION,
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        config()->set('xs2.bookings_endpoint', '/v1/bookings');
+        config()->set('xs2.bookingorders_endpoint', '/v1/bookingorders');
+        config()->set('xs2.bookingorder_detail_endpoint', '/v1/bookingorders/{bookingorder_id}');
+
+        $masterTicketId = '1f73a73b0969417d9a3b5d07453e5f1b_spt';
+        $splitTicketId = $masterTicketId.'-S2';
+
+        Http::fake([
+            'https://api.xs2.test/v1/reservations' => Http::response([
+                'reservation_id' => 'production-reservation-67791_rsv',
+            ], 201),
+            'https://api.xs2.test/v1/bookings' => Http::response([
+                'booking_id' => 'production-booking-67791_bkn',
+                'booking_code' => 'SBX67791',
+            ], 201),
+            'https://api.xs2.test/v1/bookingorders*' => Http::sequence()
+                ->push([
+                    'bookingorders' => [[
+                        'booking_id' => 'production-booking-67791_bkn',
+                        'bookingorder_id' => 'production-bookingorder-67791_bko',
+                    ]],
+                ])
+                ->push([
+                    'bookingorder_id' => 'production-bookingorder-67791_bko',
+                    'booking_id' => 'production-booking-67791_bkn',
+                    'event_name' => 'Sunderland vs Arsenal',
+                    'booking_status' => 'confirmed',
+                ]),
+        ]);
+
+        $ticket = $this->seedSplitListingMapping('994519', $masterTicketId);
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67791',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'ticket_id' => 994519,
+            'listing_id' => '235017',
+            'ticketid' => $splitTicketId,
+            'quantity' => 2,
+            'ticket_amount' => 94.50,
+            'currency_type' => 'GBP',
+            'match_name' => 'Sunderland vs Arsenal',
+            'stadium_name' => 'Stadium of Light',
+            'match_date' => '2026-09-12',
+        ]);
+
+        $service = app(SbOrderXs2SandboxOrderService::class);
+
+        $this->assertNotNull($service->resolveMappedTicket($sbOrder));
+        $this->assertSame($splitTicketId, $service->resolveReservationTicketId($sbOrder, $ticket));
+        $this->assertSame(4725, $service->resolveReservationNetRate($sbOrder, $ticket));
+
+        $result = $service->createFromSbOrder($sbOrder);
+
+        $this->assertTrue($result['created']);
+        $this->assertFalse($result['skipped']);
+        $this->assertDatabaseHas('xs2_orders', [
+            'sb_order_id' => $sbOrder->id,
+            'is_sandbox' => false,
+            'external_order_id' => 'production-bookingorder-67791_bko',
+            'external_ticket_id' => $splitTicketId,
+        ]);
+
+        Http::assertSent(function ($request) use ($splitTicketId): bool {
+            return $request->method() === 'POST'
+                && str_contains($request->url(), '/v1/reservations')
+                && data_get($request->data(), 'items.0.ticket_id') === $splitTicketId
+                && data_get($request->data(), 'items.0.net_rate') === 4725
+                && data_get($request->data(), 'items.0.quantity') === 2;
+        });
+    }
+
+    public function test_split_order_maps_when_listing_id_is_xs2_split_reference_without_numeric_ticket_id(): void
+    {
+        $masterTicketId = '1f73a73b0969417d9a3b5d07453e5f1b_spt';
+        $splitTicketId = $masterTicketId.'-S2';
+
+        $this->seedSplitListingMapping('994519', $masterTicketId);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67792',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'listing_id' => $splitTicketId,
+            'quantity' => 2,
+            'ticket_amount' => 94.50,
+            'match_name' => 'Sunderland vs Arsenal',
+            'match_date' => '2026-09-12',
+        ]);
+
+        $service = app(SbOrderXs2SandboxOrderService::class);
+
+        $this->assertNotNull($service->resolveMappedTicket($sbOrder));
+        $this->assertSame($splitTicketId, $service->resolveXs2ListingResolutionsForOrders([$sbOrder])[$sbOrder->id]['xs2_listing_id']);
     }
 
     public function test_sb_orders_index_includes_resolved_xs2_listing_ids(): void

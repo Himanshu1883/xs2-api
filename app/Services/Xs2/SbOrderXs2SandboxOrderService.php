@@ -86,10 +86,14 @@ class SbOrderXs2SandboxOrderService
         $currency = (string) ($ticket->currency_code ?? $order->currency_type ?? 'EUR');
         $salesPrice = $netRate;
         $bookingEmail = $this->resolveBookingEmail($order);
+        $reservationTicketId = $this->resolveReservationTicketId($order, $ticket);
+        if ($reservationTicketId === null) {
+            return $this->skip($existing, $this->noTicketMappingSkipReason(), $order);
+        }
 
         $reservationRequest = [
             'items' => [[
-                'ticket_id' => $ticket->external_ticket_id,
+                'ticket_id' => $reservationTicketId,
                 'quantity' => $quantity,
                 'net_rate' => $netRate,
                 'currency_code' => $currency,
@@ -103,7 +107,7 @@ class SbOrderXs2SandboxOrderService
         ];
 
         try {
-            return DB::transaction(function () use ($order, $ticket, $existing, $reservationRequest, $quantity, $bookingEmail): array {
+            return DB::transaction(function () use ($order, $ticket, $existing, $reservationRequest, $quantity, $bookingEmail, $reservationTicketId): array {
                 $existing = $this->existingOrder($order);
                 if ($existing !== null && $this->orderIsComplete($existing)) {
                     return $this->alreadyCompleteResult($existing, $order);
@@ -170,6 +174,7 @@ class SbOrderXs2SandboxOrderService
                     $bookingId,
                     $bookingOrderId,
                     $quantity,
+                    $reservationTicketId,
                 );
 
                 if ($existing === null) {
@@ -338,17 +343,10 @@ class SbOrderXs2SandboxOrderService
             ->get()
             ->keyBy('seller_listing_id');
 
-        $splitsByListingId = collect();
-        if (Schema::hasTable('listing_splits')) {
-            $splitsByListingId = ListingSplit::query()
-                ->whereIn('seatsbroker_listing_id', $listingIds)
-                ->with('masterListing')
-                ->get()
-                ->keyBy('seatsbroker_listing_id');
-        }
+        $listingSplits = $this->loadListingSplitsForMarketplaceIds($listingIds);
 
         $ticketIds = $mappingsByListingId->pluck('xs2_ticket_id')
-            ->merge($splitsByListingId->pluck('master_listing_id'))
+            ->merge($listingSplits->pluck('master_listing_id'))
             ->filter()
             ->unique()
             ->values();
@@ -362,7 +360,7 @@ class SbOrderXs2SandboxOrderService
             $resolutions[$order->id] = $this->resolveXs2ListingResolutionFromLookups(
                 $order,
                 $mappingsByListingId,
-                $splitsByListingId,
+                $listingSplits,
                 $ticketsById,
             );
         }
@@ -393,6 +391,23 @@ class SbOrderXs2SandboxOrderService
     public function resolveReservationSalesPrice(Xs2Ticket $ticket, int $netRate): int
     {
         return $netRate;
+    }
+
+    /**
+     * XS2 ticket_id for reservation/booking: split sublisting id when mapped, else master ticket.
+     */
+    public function resolveReservationTicketId(SbOrder $order, Xs2Ticket $ticket): ?string
+    {
+        $split = $this->findListingSplitForOrder($order);
+        if ($split !== null) {
+            $split->loadMissing('masterListing');
+            $xs2ListingId = $split->xs2ListingId();
+            if ($xs2ListingId !== null) {
+                return $xs2ListingId;
+            }
+        }
+
+        return $this->nullableString($ticket->external_ticket_id);
     }
 
     public function orderIsComplete(?Xs2Order $order): bool
@@ -437,17 +452,13 @@ class SbOrderXs2SandboxOrderService
                     return $ticket;
                 }
             }
+        }
 
-            if (Schema::hasTable('listing_splits')) {
-                $split = ListingSplit::query()
-                    ->where('seatsbroker_listing_id', $listingId)
-                    ->first();
-                if ($split !== null) {
-                    $ticket = Xs2Ticket::query()->find($split->master_listing_id);
-                    if ($this->isEligibleTicket($ticket)) {
-                        return $ticket;
-                    }
-                }
+        $split = $this->findListingSplitForOrder($order);
+        if ($split !== null) {
+            $ticket = Xs2Ticket::query()->find($split->master_listing_id);
+            if ($this->isEligibleTicket($ticket)) {
+                return $ticket;
             }
         }
 
@@ -551,21 +562,19 @@ class SbOrderXs2SandboxOrderService
                 }
             }
 
-            if (Schema::hasTable('listing_splits')) {
-                $split = ListingSplit::query()
-                    ->where('seatsbroker_listing_id', $listingId)
-                    ->first();
-                if ($split !== null) {
-                    $ticket = Xs2Ticket::query()->find($split->master_listing_id);
-                    if ($ticket === null) {
-                        return "listing_splits for seatsbroker_listing_id {$listingId} references missing master_listing_id {$split->master_listing_id}.";
-                    }
+        }
 
-                    $reason = $this->ticketIneligibleReason($ticket, 'listing_splits', $listingId);
-                    if ($reason !== null) {
-                        return $reason;
-                    }
-                }
+        $split = $this->findListingSplitForOrder($order);
+        if ($split !== null) {
+            $ticket = Xs2Ticket::query()->find($split->master_listing_id);
+            $listingId = (string) ($split->seatsbroker_listing_id ?? $split->seller_reference ?? 'split');
+            if ($ticket === null) {
+                return "listing_splits for seatsbroker_listing_id {$listingId} references missing master_listing_id {$split->master_listing_id}.";
+            }
+
+            $reason = $this->ticketIneligibleReason($ticket, 'listing_splits', $listingId);
+            if ($reason !== null) {
+                return $reason;
             }
         }
 
@@ -616,14 +625,14 @@ class SbOrderXs2SandboxOrderService
 
     /**
      * @param  Collection<string, ExternalListingMapping>  $mappingsByListingId
-     * @param  Collection<string, ListingSplit>  $splitsByListingId
+     * @param  Collection<int, ListingSplit>  $listingSplits
      * @param  Collection<int, Xs2Ticket>  $ticketsById
      * @return array{xs2_listing_id: string|null, external_ticket_id: string|null}
      */
     private function resolveXs2ListingResolutionFromLookups(
         SbOrder $order,
         Collection $mappingsByListingId,
-        Collection $splitsByListingId,
+        Collection $listingSplits,
         Collection $ticketsById,
     ): array {
         foreach ($this->marketplaceListingIds($order) as $listingId) {
@@ -637,25 +646,25 @@ class SbOrderXs2SandboxOrderService
                     ];
                 }
             }
+        }
 
-            $split = $splitsByListingId->get($listingId);
-            if ($split !== null) {
-                $master = $split->relationLoaded('masterListing')
-                    ? $split->masterListing
-                    : $ticketsById->get($split->master_listing_id);
-                if ($master !== null) {
-                    $split->setRelation('masterListing', $master);
-                }
+        $split = $this->findListingSplitInCollection($listingSplits, $this->marketplaceListingIds($order));
+        if ($split !== null) {
+            $master = $split->relationLoaded('masterListing')
+                ? $split->masterListing
+                : $ticketsById->get($split->master_listing_id);
+            if ($master !== null) {
+                $split->setRelation('masterListing', $master);
+            }
 
-                $xs2ListingId = $split->xs2ListingId();
-                $externalTicketId = $master?->external_ticket_id;
+            $xs2ListingId = $split->xs2ListingId();
+            $externalTicketId = $master?->external_ticket_id;
 
-                if ($xs2ListingId !== null || filled($externalTicketId)) {
-                    return [
-                        'xs2_listing_id' => $xs2ListingId ?? (string) $externalTicketId,
-                        'external_ticket_id' => filled($externalTicketId) ? (string) $externalTicketId : null,
-                    ];
-                }
+            if ($xs2ListingId !== null || filled($externalTicketId)) {
+                return [
+                    'xs2_listing_id' => $xs2ListingId ?? (string) $externalTicketId,
+                    'external_ticket_id' => filled($externalTicketId) ? (string) $externalTicketId : null,
+                ];
             }
         }
 
@@ -672,8 +681,107 @@ class SbOrderXs2SandboxOrderService
         if (is_string($order->listing_id) && $order->listing_id !== '') {
             $ids[] = $order->listing_id;
         }
+        if (is_string($order->ticketid) && $order->ticketid !== '') {
+            $ids[] = $order->ticketid;
+        }
 
         return array_values(array_unique($ids));
+    }
+
+    public function findListingSplitForOrder(SbOrder $order): ?ListingSplit
+    {
+        if (! Schema::hasTable('listing_splits')) {
+            return null;
+        }
+
+        $listingIds = $this->marketplaceListingIds($order);
+        if ($listingIds === []) {
+            return null;
+        }
+
+        return $this->findListingSplitInCollection(
+            $this->loadListingSplitsForMarketplaceIds($listingIds),
+            $listingIds,
+        );
+    }
+
+    /**
+     * @param  list<string>  $listingIds
+     * @return Collection<int, ListingSplit>
+     */
+    private function loadListingSplitsForMarketplaceIds(array $listingIds): Collection
+    {
+        if (! Schema::hasTable('listing_splits') || $listingIds === []) {
+            return collect();
+        }
+
+        $references = $this->expandedListingSplitReferences($listingIds);
+
+        return ListingSplit::query()
+            ->where(function ($query) use ($listingIds, $references): void {
+                $query->whereIn('seatsbroker_listing_id', $listingIds)
+                    ->orWhereIn('seller_reference', $references);
+            })
+            ->with('masterListing')
+            ->get();
+    }
+
+    /**
+     * @param  Collection<int, ListingSplit>  $splits
+     * @param  list<string>  $listingIds
+     */
+    private function findListingSplitInCollection(Collection $splits, array $listingIds): ?ListingSplit
+    {
+        if ($splits->isEmpty() || $listingIds === []) {
+            return null;
+        }
+
+        $references = $this->expandedListingSplitReferences($listingIds);
+        $listingIdSet = array_fill_keys($listingIds, true);
+        $referenceSet = array_fill_keys($references, true);
+
+        foreach ($splits as $split) {
+            $seatsbrokerListingId = $this->nullableString($split->seatsbroker_listing_id);
+            if ($seatsbrokerListingId !== null && isset($listingIdSet[$seatsbrokerListingId])) {
+                return $split;
+            }
+
+            $sellerReference = $this->nullableString($split->seller_reference);
+            if ($sellerReference !== null && isset($referenceSet[$sellerReference])) {
+                return $split;
+            }
+
+            $xs2ListingId = $split->xs2ListingId();
+            if ($xs2ListingId !== null && isset($listingIdSet[$xs2ListingId])) {
+                return $split;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  list<string>  $listingIds
+     * @return list<string>
+     */
+    private function expandedListingSplitReferences(array $listingIds): array
+    {
+        $prefix = $this->sellerReferencePrefix();
+        $references = [];
+
+        foreach ($listingIds as $listingId) {
+            $references[] = $listingId;
+            if (! str_starts_with($listingId, $prefix)) {
+                $references[] = $prefix.$listingId;
+            }
+        }
+
+        return array_values(array_unique($references));
+    }
+
+    private function sellerReferencePrefix(): string
+    {
+        return (string) config('services.seller_api.external_reference_prefix', 'XS2-');
     }
 
     private function isEligibleTicket(?Xs2Ticket $ticket): bool
@@ -1549,6 +1657,7 @@ class SbOrderXs2SandboxOrderService
         string $bookingId,
         string $bookingOrderId,
         int $quantity,
+        ?string $reservationTicketId = null,
     ): array {
         $status = $this->nullableString(
             $bookingOrderResponse['booking_status']
@@ -1582,7 +1691,7 @@ class SbOrderXs2SandboxOrderService
             'event_time' => $order->match_time,
             'external_event_id' => $ticket->xs2Event?->external_event_id
                 ?? $this->nullableString($bookingOrderResponse['event_id'] ?? null),
-            'external_ticket_id' => $ticket->external_ticket_id,
+            'external_ticket_id' => $reservationTicketId ?? $ticket->external_ticket_id,
             'quantity' => $quantity,
             'seat_category' => $order->seat_category ?? $ticket->category_name,
             'ticket_block' => $order->ticket_block ?? $ticket->ticket_block,
