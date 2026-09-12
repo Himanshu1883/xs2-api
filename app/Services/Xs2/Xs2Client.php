@@ -115,7 +115,10 @@ class Xs2Client
         } catch (LockTimeoutException) {
             // Queue jobs release this exception rather than starting an
             // overlapping request while another worker owns the next slot.
-            throw new Xs2RateLimitException(max(1, (int) ceil($secondsPerRequest)));
+            $retryAfter = max(1, (int) ceil($secondsPerRequest));
+            usleep($retryAfter * 1_000_000);
+
+            throw new Xs2RateLimitException($retryAfter);
         }
     }
 
@@ -126,6 +129,25 @@ class Xs2Client
         }
 
         RateLimiter::hit($key, 60);
+    }
+
+    private function consumeRateLimitWithRetry(): void
+    {
+        $maxAttempts = max(1, (int) $this->setting('rate_limit_acquire_attempts', 8));
+
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                $this->consumeRateLimit();
+
+                return;
+            } catch (Xs2RateLimitException $exception) {
+                if ($attempt === $maxAttempts) {
+                    throw $exception;
+                }
+
+                usleep(max(1, $exception->retryAfter) * 1_000_000);
+            }
+        }
     }
 
     /**
@@ -147,7 +169,7 @@ class Xs2Client
         }
 
         for ($attempt = 1; $attempt <= $attempts; $attempt++) {
-            $this->consumeRateLimit();
+            $this->consumeRateLimitWithRetry();
 
             try {
                 $response = $this->http()->send($method, $uri, $options);
@@ -897,7 +919,7 @@ class Xs2Client
         }
 
         for ($attempt = 1; $attempt <= $attempts; $attempt++) {
-            $this->consumeRateLimit();
+            $this->consumeRateLimitWithRetry();
 
             try {
                 $response = $this->ordersHttp()->send($method, $uri, $options);

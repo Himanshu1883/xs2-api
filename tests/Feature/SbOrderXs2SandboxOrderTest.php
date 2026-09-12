@@ -1031,7 +1031,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         Http::assertNothingSent();
     }
 
-    public function test_create_manual_with_pending_skips_without_api_when_no_synced_match(): void
+    public function test_create_manual_removes_legacy_pending_and_skips_without_ticket_mapping(): void
     {
         app(IntegrationSettingService::class)->set(
             ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
@@ -1060,9 +1060,118 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $result = app(SbOrderXs2SandboxOrderService::class)->createFromSbOrder($sbOrder);
 
         $this->assertTrue($result['skipped']);
-        $this->assertStringContainsString('Could not link an existing synced XS2 order', (string) $result['reason']);
-        $this->assertDatabaseHas('xs2_orders', ['id' => $pendingOrder->id]);
+        $this->assertNotEmpty($result['reason']);
+        $this->assertDatabaseMissing('xs2_orders', ['id' => $pendingOrder->id]);
         Http::assertNothingSent();
+    }
+
+    public function test_api_failure_does_not_create_xs2_order_row(): void
+    {
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_PRODUCTION,
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        config()->set('xs2.reservations_endpoint', '/v1/reservations');
+
+        Http::fake([
+            'https://api.xs2.test/v1/reservations' => Http::response([
+                'message' => 'Invalid ticket id',
+            ], 422),
+        ]);
+
+        $this->seedProductionTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-FAIL-9001',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+            'ticket_amount' => 180.00,
+            'match_name' => 'Real Madrid vs Test',
+            'match_date' => '2026-10-01',
+        ]);
+
+        $result = app(SbOrderXs2SandboxOrderService::class)->createFromSbOrder($sbOrder);
+
+        $this->assertNull($result['order']);
+        $this->assertFalse($result['skipped']);
+        $this->assertNotEmpty($result['reason']);
+        $this->assertDatabaseMissing('xs2_orders', ['sb_order_id' => $sbOrder->id]);
+        $this->assertDatabaseHas('sb_order_xs2_sync_logs', [
+            'sb_order_id' => $sbOrder->id,
+            'status' => 'failed',
+        ]);
+    }
+
+    public function test_create_xs2_job_releases_on_rate_limit_failure(): void
+    {
+        $service = \Mockery::mock(SbOrderXs2SandboxOrderService::class);
+        $service->shouldReceive('createFromSbOrder')
+            ->once()
+            ->andReturn([
+                'order' => null,
+                'created' => false,
+                'updated' => false,
+                'linked' => false,
+                'skipped' => false,
+                'retryable' => true,
+                'reason' => 'Local XS2 rate limit reached. Retry after 42 seconds.',
+            ]);
+        $service->shouldReceive('isRetryableFailureReason')->never();
+        $service->shouldReceive('retryDelaySecondsFromReason')
+            ->once()
+            ->with('Local XS2 rate limit reached. Retry after 42 seconds.')
+            ->andReturn(42);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-RETRY-9001',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'quantity' => 1,
+        ]);
+
+        $job = (new CreateXs2SandboxOrderFromSbOrder($sbOrder->id))->withFakeQueueInteractions();
+        $job->handle($service);
+
+        $job->assertReleased(42);
+    }
+
+    public function test_retry_failed_sb_order_sync_command_queues_eligible_orders(): void
+    {
+        Queue::fake();
+
+        $this->seedProductionTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-RETRY-9002',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+            'ticket_amount' => 180.00,
+            'match_name' => 'Real Madrid vs Test',
+            'match_date' => '2026-10-01',
+        ]);
+
+        \App\Models\SbOrderXs2SyncLog::query()->create([
+            'sb_order_id' => $sbOrder->id,
+            'status' => 'failed',
+            'error' => 'XS2 reservation failed.',
+        ]);
+
+        Artisan::call('xs2:retry-failed-sb-order-sync');
+
+        Queue::assertPushed(CreateXs2SandboxOrderFromSbOrder::class, function (CreateXs2SandboxOrderFromSbOrder $job) use ($sbOrder): bool {
+            return $job->sbOrderId === $sbOrder->id;
+        });
     }
 
     public function test_resolve_mapped_ticket_falls_back_to_past_event_by_name_and_date(): void

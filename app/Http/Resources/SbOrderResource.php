@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Support\Xs2BookingOrderIdentity;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -46,13 +47,23 @@ class SbOrderResource extends JsonResource
             'updated_at' => $this->updated_at?->toIso8601String(),
             'attendees_count' => $this->whenCounted('attendees'),
             'attendees' => SbOrderAttendeeResource::collection($this->whenLoaded('attendees')),
-            'xs2_order' => $this->whenLoaded('xs2Order', fn () => $this->xs2Order === null ? null : [
-                'id' => $this->xs2Order->id,
-                'external_order_id' => $this->xs2Order->external_order_id,
-                'is_sandbox' => (bool) $this->xs2Order->is_sandbox,
-                'xs2_booking_id' => $this->xs2Order->xs2_booking_id,
-                'xs2_bookingorder_id' => $this->xs2Order->xs2_bookingorder_id,
-            ]),
+            'xs2_order' => $this->whenLoaded('xs2Order', function (): ?array {
+                if ($this->xs2Order === null) {
+                    return null;
+                }
+
+                if (Xs2BookingOrderIdentity::isPendingExternalOrderId($this->xs2Order->external_order_id)) {
+                    return null;
+                }
+
+                return [
+                    'id' => $this->xs2Order->id,
+                    'external_order_id' => $this->xs2Order->external_order_id,
+                    'is_sandbox' => (bool) $this->xs2Order->is_sandbox,
+                    'xs2_booking_id' => $this->xs2Order->xs2_booking_id,
+                    'xs2_bookingorder_id' => $this->xs2Order->xs2_bookingorder_id,
+                ];
+            }),
         ];
     }
 }

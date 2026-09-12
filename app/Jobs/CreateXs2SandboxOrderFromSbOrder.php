@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\Integrations\Xs2RateLimitException;
 use App\Models\SbOrder;
 use App\Services\Xs2\SbOrderXs2SandboxOrderService;
 use Illuminate\Contracts\Queue\ShouldBeUniqueUntilProcessing;
@@ -13,7 +14,12 @@ class CreateXs2SandboxOrderFromSbOrder implements ShouldBeUniqueUntilProcessing,
 {
     use Queueable;
 
-    public int $tries = 3;
+    public int $tries = 0;
+
+    public int $maxExceptions = 5;
+
+    /** @var list<int> */
+    public array $backoff = [30, 60, 120, 300, 600];
 
     public int $timeout = 120;
 
@@ -36,10 +42,16 @@ class CreateXs2SandboxOrderFromSbOrder implements ShouldBeUniqueUntilProcessing,
             return;
         }
 
-        $result = $service->createFromSbOrder($order);
+        try {
+            $result = $service->createFromSbOrder($order);
+        } catch (Xs2RateLimitException $exception) {
+            $this->release(max(1, $exception->retryAfter));
+
+            return;
+        }
 
         if ($result['skipped'] ?? false) {
-            Log::debug('Skipped XS2 sandbox order creation for SB order.', [
+            Log::debug('Skipped XS2 order creation for SB order.', [
                 'sb_order_id' => $this->sbOrderId,
                 'reason' => $result['reason'] ?? null,
             ]);
@@ -47,12 +59,27 @@ class CreateXs2SandboxOrderFromSbOrder implements ShouldBeUniqueUntilProcessing,
             return;
         }
 
-        if (($result['created'] ?? false) || ($result['updated'] ?? false)) {
-            Log::info('XS2 sandbox order synced from SB order.', [
+        if (($result['created'] ?? false) || ($result['updated'] ?? false) || ($result['linked'] ?? false)) {
+            Log::info('XS2 order synced from SB order.', [
                 'sb_order_id' => $this->sbOrderId,
                 'xs2_order_id' => $result['order']?->id,
                 'created' => $result['created'] ?? false,
+                'linked' => $result['linked'] ?? false,
             ]);
+
+            return;
         }
+
+        $reason = (string) ($result['reason'] ?? 'XS2 order creation failed.');
+        if (($result['retryable'] ?? false) || $service->isRetryableFailureReason($reason)) {
+            $this->release($service->retryDelaySecondsFromReason($reason));
+
+            return;
+        }
+
+        Log::warning('XS2 order creation failed for SB order.', [
+            'sb_order_id' => $this->sbOrderId,
+            'reason' => $reason,
+        ]);
     }
 }

@@ -114,6 +114,23 @@ $sbBookingsSchedule
     ->withoutOverlapping($overlapMinutes)
     ->onOneServer();
 
+$sbOrderXs2RetryInterval = max(1, min(60, (int) config('xs2.sb_order_xs2_sync.retry_interval_minutes', 5)));
+$sbOrderXs2RetrySchedule = Schedule::command('xs2:retry-failed-sb-order-sync');
+if ($sbOrderXs2RetryInterval <= 1) {
+    $sbOrderXs2RetrySchedule->everyMinute();
+} elseif ($sbOrderXs2RetryInterval === 2) {
+    $sbOrderXs2RetrySchedule->everyTwoMinutes();
+} else {
+    $sbOrderXs2RetrySchedule->cron($intervals->staggeredExpression($sbOrderXs2RetryInterval, 23));
+}
+$sbOrderXs2RetrySchedule
+    ->when(fn (): bool => $shouldRun(
+        'xs2-sb-order-xs2-retry',
+        (bool) config('xs2.sb_order_xs2_sync.retry_enabled', true),
+    ))
+    ->withoutOverlapping($overlapMinutes)
+    ->onOneServer();
+
 Schedule::command('sanctum:prune-expired --hours=24')
     ->daily()
     ->when(fn (): bool => $shouldRun('sanctum-prune-expired', $schedulerEnabled()))

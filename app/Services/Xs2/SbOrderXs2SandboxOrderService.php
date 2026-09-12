@@ -2,6 +2,7 @@
 
 namespace App\Services\Xs2;
 
+use App\Exceptions\Integrations\Xs2RateLimitException;
 use App\Models\EventMapping;
 use App\Models\ExternalListingMapping;
 use App\Services\Admin\ApiEnvironmentService;
@@ -58,6 +59,9 @@ class SbOrderXs2SandboxOrderService
         if ($linkedExisting !== null) {
             return $linkedExisting;
         }
+
+        $this->removePendingPlaceholderForSbOrder($order);
+        $existing = $this->existingOrder($order);
 
         if (! $this->isEnabled()) {
             return $this->skip(null, $this->autoOrderDisabledReason(), $order);
@@ -127,7 +131,12 @@ class SbOrderXs2SandboxOrderService
                 $reservationResult = $this->createReservationDetailed($reservationRequest);
                 $this->syncLogs->recordReservationExchange($order->id, $reservationRequest, $reservationResult);
                 if (! $reservationResult['success']) {
-                    throw new \RuntimeException((string) ($reservationResult['message'] ?? 'XS2 reservation failed.'));
+                    $reservationMessage = (string) ($reservationResult['message'] ?? 'XS2 reservation failed.');
+                    if ($this->isRateLimitMessage($reservationMessage)) {
+                        throw new Xs2RateLimitException($this->retryAfterSecondsFromMessage($reservationMessage));
+                    }
+
+                    throw new \RuntimeException($reservationMessage);
                 }
 
                 $reservationResponse = $reservationResult['data'];
@@ -150,7 +159,12 @@ class SbOrderXs2SandboxOrderService
                 $bookingResult = $this->createBookingDetailed($bookingRequest);
                 $this->syncLogs->recordBookingExchange($order->id, $bookingRequest, $bookingResult);
                 if (! $bookingResult['success']) {
-                    throw new \RuntimeException((string) ($bookingResult['message'] ?? 'XS2 booking failed.'));
+                    $bookingMessage = (string) ($bookingResult['message'] ?? 'XS2 booking failed.');
+                    if ($this->isRateLimitMessage($bookingMessage)) {
+                        throw new Xs2RateLimitException($this->retryAfterSecondsFromMessage($bookingMessage));
+                    }
+
+                    throw new \RuntimeException($bookingMessage);
                 }
 
                 $bookingResponse = $bookingResult['data'];
@@ -207,9 +221,7 @@ class SbOrderXs2SandboxOrderService
         } catch (\Throwable $exception) {
             $message = mb_substr($exception->getMessage(), 0, 2000);
 
-            if ($existing === null) {
-                $existing = $this->existingOrder($order);
-            }
+            $existing = $this->existingOrder($order);
 
             $linkedExisting = $this->tryLinkExistingSyncedXs2Order($order, $existing);
             if ($linkedExisting !== null) {
@@ -224,39 +236,15 @@ class SbOrderXs2SandboxOrderService
                 );
             }
 
-            if ($existing === null) {
-                $existing = Xs2Order::query()->create([
-                    'external_order_id' => $this->pendingExternalOrderId($order),
-                    'is_sandbox' => $this->isSandboxEnvironment(),
-                    'sb_order_id' => $order->id,
-                    'event_name' => $order->match_name,
-                    'venue_name' => $order->stadium_name,
-                    'event_date' => $order->match_date,
-                    'event_time' => $order->match_time,
-                    'external_ticket_id' => $ticket->external_ticket_id,
-                    'quantity' => $quantity,
-                    'order_status' => 'failed',
-                    'order_status_text' => 'XS2 sync failed',
-                    'sandbox_sync_error' => $message,
-                    'synced_at' => now(),
-                ]);
-            } else {
-                $existing->fill([
-                    'order_status' => 'failed',
-                    'order_status_text' => 'XS2 sync failed',
-                    'sandbox_sync_error' => $message,
-                    'synced_at' => now(),
-                ])->save();
-            }
-
-            $this->syncLogs->recordFailure($order->id, $message, $existing->id);
+            $this->syncLogs->recordFailure($order->id, $message);
 
             return [
-                'order' => $existing->fresh(),
+                'order' => null,
                 'created' => false,
-                'updated' => true,
+                'updated' => false,
                 'linked' => false,
                 'skipped' => false,
+                'retryable' => $this->isRetryableFailureReason($message),
                 'reason' => $message,
             ];
         }
@@ -286,11 +274,7 @@ class SbOrderXs2SandboxOrderService
         }
 
         if ($this->isPendingLinkedXs2Order($existing)) {
-            return $this->skip(
-                $existing,
-                'Could not link an existing synced XS2 order for booking '.$order->booking_no.'. Sync XS2 orders from the API, then retry Create manual.',
-                $order,
-            );
+            return null;
         }
 
         if ($unlinkedMatch !== null) {
@@ -1880,9 +1864,45 @@ class SbOrderXs2SandboxOrderService
             : $this->client->fetchBookingOrdersByBookingId($bookingId);
     }
 
-    private function pendingExternalOrderId(SbOrder $order): string
+    public function isRetryableFailureReason(?string $message): bool
     {
-        return Xs2BookingOrderIdentity::pendingExternalOrderId((string) $order->booking_no);
+        if ($message === null || $message === '') {
+            return false;
+        }
+
+        if ($this->isRateLimitMessage($message)) {
+            return true;
+        }
+
+        $normalized = mb_strtolower($message);
+
+        return str_contains($normalized, 'could not connect')
+            || str_contains($normalized, 'connection')
+            || str_contains($normalized, 'temporarily unavailable')
+            || str_contains($normalized, 'timeout');
+    }
+
+    public function retryDelaySecondsFromReason(?string $message): int
+    {
+        if ($message !== null && preg_match('/retry after (\d+)/i', $message, $matches) === 1) {
+            return max(1, (int) $matches[1]);
+        }
+
+        return max(1, (int) config('xs2.sb_order_xs2_sync.retry_delay_seconds', 60));
+    }
+
+    private function removePendingPlaceholderForSbOrder(SbOrder $order): void
+    {
+        $existing = $this->existingOrder($order);
+        if ($existing === null) {
+            return;
+        }
+
+        if (! Xs2BookingOrderIdentity::isPendingExternalOrderId($existing->external_order_id)) {
+            return;
+        }
+
+        $existing->delete();
     }
 
     /** @return array{order: Xs2Order|null, created: bool, updated: bool, linked: bool, skipped: bool, reason: string|null} */
@@ -1912,4 +1932,28 @@ class SbOrderXs2SandboxOrderService
 
         return $string === '' ? null : $string;
     }
+
+    private function isRateLimitFailure(\Throwable $exception): bool
+    {
+        if ($exception instanceof Xs2RateLimitException) {
+            return true;
+        }
+
+        return $this->isRateLimitMessage($exception->getMessage());
+    }
+
+    private function isRateLimitMessage(?string $message): bool
+    {
+        return $message !== null && str_contains(mb_strtolower($message), 'rate limit');
+    }
+
+    private function retryAfterSecondsFromMessage(string $message): int
+    {
+        if (preg_match('/retry after (\d+)/i', $message, $matches) === 1) {
+            return max(1, (int) $matches[1]);
+        }
+
+        return 2;
+    }
+
 }

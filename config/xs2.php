@@ -44,6 +44,8 @@ return [
     // Pace calls evenly across the shared cache instead of consuming all
     // allowed requests at the beginning of a minute.
     'rate_limit_pacing' => (bool) env('XS2_RATE_LIMIT_PACING', true),
+    // Retries acquiring the shared pacing lock / local rate-limit slot before failing.
+    'rate_limit_acquire_attempts' => max(1, (int) env('XS2_RATE_LIMIT_ACQUIRE_ATTEMPTS', 12)),
     // Inventory sync normally makes at least a venue/category request and a
     // ticket request, so leave two paced request slots between job starts.
     'inventory_dispatch_interval_seconds' => (int) env(
@@ -218,6 +220,17 @@ return [
             'SB_BOOKINGS_SYNC_INTERVAL_MINUTES',
             $lowLoadMode ? 30 : 2,
         ))),
+    ],
+
+    'sb_order_xs2_sync' => [
+        // Scheduled xs2:retry-failed-sb-order-sync — re-queues real XS2 create for failed SB orders.
+        'retry_enabled' => (bool) env('XS2_SB_ORDER_XS2_SYNC_RETRY_ENABLED', true),
+        'retry_interval_minutes' => max(1, min(60, (int) env(
+            'XS2_SB_ORDER_XS2_SYNC_RETRY_INTERVAL_MINUTES',
+            $lowLoadMode ? 15 : 5,
+        ))),
+        'retry_delay_seconds' => max(1, (int) env('XS2_SB_ORDER_XS2_SYNC_RETRY_DELAY_SECONDS', 60)),
+        'retry_batch_limit' => max(1, (int) env('XS2_SB_ORDER_XS2_SYNC_RETRY_BATCH_LIMIT', 50)),
     ],
 
     'sb_order_guest_data_sync' => [
