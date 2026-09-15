@@ -1653,10 +1653,13 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'stock' => 0,
             'net_rate' => 4500,
             'face_value' => 4500,
-            'currency_code' => 'GBP',
+            'currency_code' => null,
             'category_name' => 'Distinti Laterale',
             'sync_status' => 'pending',
-            'raw_payload' => [],
+            'raw_payload' => [
+                'currency_code' => 'EUR',
+                'net_rate' => 4500,
+            ],
         ]);
 
         $sbOrder = SbOrder::query()->create([
@@ -1673,11 +1676,56 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $service = app(SbOrderXs2SandboxOrderService::class);
 
         $this->assertSame(4500, $service->resolveReservationNetRate($sbOrder, $ticket));
+        $this->assertSame('EUR', $service->resolveReservationCurrency($ticket));
         $this->assertSame(4500, $service->resolveReservationSalesPrice($ticket, 4500));
         $request = $service->buildReservationRequest($sbOrder, $ticket);
         $this->assertSame(4500, data_get($request, 'items.0.net_rate'));
         $this->assertSame(4500, data_get($request, 'items.0.sales_price'));
-        $this->assertSame('GBP', data_get($request, 'items.0.currency_code'));
+        $this->assertSame('EUR', data_get($request, 'items.0.currency_code'));
+        $this->assertSame('EUR', data_get($request, 'target_currency'));
+    }
+
+    public function test_gbp_sb_order_sends_eur_reservation_for_xs2_ticket_like_1bx67876(): void
+    {
+        $masterTicketId = 'abd5efacfaf0471b8680108bee207f1d_spt';
+
+        $this->seedSplitListingMapping('994520', $masterTicketId);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67876',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
+            'ticket_id' => 994520,
+            'listing_id' => '235018',
+            'quantity' => 1,
+            'ticket_amount' => 40.00,
+            'currency_type' => 'GBP',
+            'match_name' => 'Test Event',
+            'match_date' => '2026-09-12',
+        ]);
+
+        $service = app(SbOrderXs2SandboxOrderService::class);
+        $ticket = $service->resolveMappedTicket($sbOrder);
+        $this->assertNotNull($ticket);
+
+        $ticket->update([
+            'net_rate' => 4000,
+            'currency_code' => null,
+            'raw_payload' => [
+                'ticket_id' => $masterTicketId,
+                'currency_code' => 'EUR',
+                'net_rate' => 4000,
+            ],
+        ]);
+        $ticket->refresh();
+
+        $request = $service->buildReservationRequest($sbOrder, $ticket);
+
+        $this->assertSame($masterTicketId, data_get($request, 'items.0.ticket_id'));
+        $this->assertSame(4000, data_get($request, 'items.0.net_rate'));
+        $this->assertSame(4000, data_get($request, 'items.0.sales_price'));
+        $this->assertSame('EUR', data_get($request, 'items.0.currency_code'));
+        $this->assertSame('EUR', data_get($request, 'target_currency'));
     }
 
     public function test_queue_and_manual_create_skip_confirmed_sb_orders(): void

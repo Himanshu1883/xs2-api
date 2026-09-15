@@ -377,8 +377,8 @@ class SbOrderXs2SandboxOrderService
     }
 
     /**
-     * Reservation net_rate in XS2 minor units from the mapped XS2 ticket listing price.
-     * XS2 validates against listing our_price — do not use SB ticket_amount.
+     * Reservation net_rate in XS2 minor units from the mapped XS2 ticket (synced listing price).
+     * XS2 validates against listing our_price — do not use SB ticket_amount or publish markup.
      */
     public function resolveReservationNetRate(SbOrder $order, Xs2Ticket $ticket): ?int
     {
@@ -389,6 +389,31 @@ class SbOrderXs2SandboxOrderService
         }
 
         return null;
+    }
+
+    /**
+     * XS2 reservation currency from synced ticket data only — never SB order currency_type.
+     */
+    public function resolveReservationCurrency(Xs2Ticket $ticket): string
+    {
+        $fromColumn = strtoupper(trim((string) ($ticket->currency_code ?? '')));
+        if ($fromColumn !== '') {
+            return $fromColumn;
+        }
+
+        $payload = is_array($ticket->raw_payload) ? $ticket->raw_payload : [];
+        foreach (['currency_code', 'currency'] as $key) {
+            if (! array_key_exists($key, $payload)) {
+                continue;
+            }
+
+            $value = strtoupper(trim((string) $payload[$key]));
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return 'EUR';
     }
 
     /**
@@ -405,11 +430,11 @@ class SbOrderXs2SandboxOrderService
         $payload = is_array($ticket->raw_payload) ? $ticket->raw_payload : [];
 
         return [
+            $this->positiveIntFromPayload($payload, 'net_rate'),
             (int) ($ticket->net_rate ?? 0),
+            $this->positiveIntFromPayload($payload, 'face_value'),
             (int) ($ticket->face_value ?? 0),
             (int) ($ticket->package_price ?? 0),
-            $this->positiveIntFromPayload($payload, 'net_rate'),
-            $this->positiveIntFromPayload($payload, 'face_value'),
             $this->positiveIntFromPayload($payload, 'sales_price'),
             $this->positiveIntFromPayload($payload, 'gross_rate'),
         ];
@@ -644,7 +669,7 @@ class SbOrderXs2SandboxOrderService
             return null;
         }
 
-        $currency = (string) ($ticket->currency_code ?? $order->currency_type ?? 'EUR');
+        $currency = $this->resolveReservationCurrency($ticket);
         $salesPrice = $this->resolveReservationSalesPrice($ticket, $netRate);
         $bookingEmail = $this->resolveBookingEmail($order);
         $reservationTicketId = $this->resolveReservationTicketId($order, $ticket);
