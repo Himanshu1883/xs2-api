@@ -63,7 +63,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             ->andReturn([
                 'result' => [[
                     'booking_no' => 'SB-9001',
-                    'booking_status' => SbOrder::STATUS_CONFIRMED,
+                    'booking_status' => SbOrder::STATUS_PENDING,
                     'booking_status_text' => 'Confirmed',
                     'ticket_id' => 906584,
                     'listing_id' => '841765',
@@ -120,8 +120,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $ticket = $this->seedSandboxTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-9001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 2,
@@ -178,8 +178,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $ticket = $this->seedSplitListingMapping('920288', $masterTicketId);
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67156',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'ticket_id' => 920288,
             'listing_id' => '287339',
             'quantity' => 1,
@@ -264,8 +264,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $ticket = $this->seedSplitListingMapping('994519', $masterTicketId);
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67791',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'ticket_id' => 994519,
             'listing_id' => '235017',
             'ticketid' => $splitTicketId,
@@ -281,7 +281,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $this->assertNotNull($service->resolveMappedTicket($sbOrder));
         $this->assertSame($masterTicketId, $service->resolveReservationTicketId($sbOrder, $ticket));
-        $this->assertSame(4725, $service->resolveReservationNetRate($sbOrder, $ticket));
+        $this->assertSame(12000, $service->resolveReservationNetRate($sbOrder, $ticket));
         $this->assertSame(
             $splitTicketId,
             $service->resolveXs2ListingResolutionsForOrders([$sbOrder])[$sbOrder->id]['xs2_listing_id'],
@@ -302,7 +302,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             return $request->method() === 'POST'
                 && str_contains($request->url(), '/v1/reservations')
                 && data_get($request->data(), 'items.0.ticket_id') === $masterTicketId
-                && data_get($request->data(), 'items.0.net_rate') === 4725
+                && data_get($request->data(), 'items.0.net_rate') === 12000
+                && data_get($request->data(), 'items.0.sales_price') === 12000
                 && data_get($request->data(), 'items.0.quantity') === 2
                 && data_get($request->data(), 'items.0.currency_code') === 'EUR';
         });
@@ -317,7 +318,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67792',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'listing_id' => $splitTicketId,
             'quantity' => 2,
             'ticket_amount' => 94.50,
@@ -338,7 +339,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         SbOrder::query()->create([
             'booking_no' => 'SB-IDX-MASTER',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 1,
@@ -346,7 +347,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         SbOrder::query()->create([
             'booking_no' => 'SB-IDX-SPLIT',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 906999,
             'listing_id' => '906999',
             'quantity' => 2,
@@ -400,8 +401,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $ticket = $this->seedSandboxTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-MANUAL-001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 2,
@@ -442,7 +443,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $ticket = $this->seedSandboxTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-MANUAL-002',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 1,
@@ -480,7 +481,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX-IDEM-001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'quantity' => 1,
             'ticket_amount' => 120.00,
             'match_name' => 'AS Roma vs Atalanta',
@@ -515,7 +516,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $token = $this->adminToken();
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-9010',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 906584,
             'quantity' => 1,
             'ticket_amount' => 120.00,
@@ -554,7 +555,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             ->andReturn([
                 'result' => [[
                     'booking_no' => '1BX67857',
-                    'booking_status' => SbOrder::STATUS_CONFIRMED,
+                    'booking_status' => SbOrder::STATUS_PENDING,
                     'booking_status_text' => 'Confirmed',
                     'ticket_id' => 906584,
                     'listing_id' => '841765',
@@ -595,7 +596,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->seedSandboxTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-FAIL-SBX-9001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 1,
@@ -630,7 +631,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-PROCESSING-9001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'quantity' => 1,
         ]);
 
@@ -659,7 +660,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->seedProductionTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-STUCK-9001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 1,
@@ -729,8 +730,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $ticket = $this->seedProductionTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-PROD-9001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 2,
@@ -775,8 +776,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->seedSandboxTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-9003',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 1,
@@ -800,8 +801,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -852,8 +853,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -914,8 +915,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -1008,8 +1009,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -1051,8 +1052,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -1095,8 +1096,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -1147,7 +1148,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -1183,7 +1184,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -1235,7 +1236,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->seedProductionTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-FAIL-9001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 1,
@@ -1279,7 +1280,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-RETRY-9001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'quantity' => 1,
         ]);
 
@@ -1296,7 +1297,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->seedProductionTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-RETRY-9002',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 1,
@@ -1350,7 +1351,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 999999,
             'listing_id' => '888888',
             'quantity' => 1,
@@ -1434,8 +1435,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67679',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'ticket_id' => 999999,
             'listing_id' => '888888',
             'quantity' => 1,
@@ -1462,7 +1463,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         ]);
     }
 
-    public function test_admin_can_manually_create_xs2_order_when_ticket_missing_net_rate_uses_sb_ticket_amount(): void
+    public function test_admin_can_manually_create_xs2_order_using_ticket_face_value_when_net_rate_missing(): void
     {
         app(IntegrationSettingService::class)->set(
             ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
@@ -1522,7 +1523,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'ticket_status' => 'available',
             'stock' => 0,
             'net_rate' => null,
-            'face_value' => null,
+            'face_value' => 4500,
             'currency_code' => 'EUR',
             'category_name' => 'Distinti Laterale',
             'sync_status' => 'pending',
@@ -1531,8 +1532,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'ticket_id' => 999999,
             'listing_id' => '888888',
             'quantity' => 1,
@@ -1544,7 +1545,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         ]);
 
         $service = app(SbOrderXs2SandboxOrderService::class);
-        $this->assertSame(4900, $service->resolveReservationNetRate($sbOrder, $ticket));
+        $this->assertSame(4500, $service->resolveReservationNetRate($sbOrder, $ticket));
 
         $token = $this->adminToken();
 
@@ -1558,8 +1559,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
                 return false;
             }
 
-            return data_get($request->data(), 'items.0.net_rate') === 4900
-                && data_get($request->data(), 'items.0.sales_price') === 4900;
+            return data_get($request->data(), 'items.0.net_rate') === 4500
+                && data_get($request->data(), 'items.0.sales_price') === 4500;
         });
 
         $this->assertDatabaseHas('xs2_orders', [
@@ -1613,7 +1614,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67677',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 999999,
             'listing_id' => '888888',
             'quantity' => 1,
@@ -1627,12 +1628,12 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->withToken($this->adminToken())
             ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
             ->assertStatus(422)
-            ->assertJsonPath('message', 'SB order is missing ticket_amount.');
+            ->assertJsonPath('message', 'Mapped XS2 ticket is missing net_rate.');
 
         Queue::assertNothingPushed();
     }
 
-    public function test_resolve_reservation_net_rate_prefers_sb_ticket_amount_over_ticket_pricing(): void
+    public function test_resolve_reservation_net_rate_prefers_ticket_net_rate_over_sb_ticket_amount(): void
     {
         $event = Xs2Event::query()->create([
             'external_event_id' => 'production-event-face-value',
@@ -1650,26 +1651,64 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             'is_sandbox' => false,
             'ticket_status' => 'available',
             'stock' => 0,
-            'net_rate' => 18000,
-            'face_value' => 18000,
-            'currency_code' => 'EUR',
+            'net_rate' => 4500,
+            'face_value' => 4500,
+            'currency_code' => 'GBP',
             'category_name' => 'Distinti Laterale',
             'sync_status' => 'pending',
             'raw_payload' => [],
         ]);
 
         $sbOrder = SbOrder::query()->create([
-            'booking_no' => '1BX67680',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_no' => '1BX67871',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'quantity' => 2,
-            'ticket_amount' => 350.00,
+            'ticket_amount' => 77.38,
+            'currency_type' => 'GBP',
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
         ]);
 
         $service = app(SbOrderXs2SandboxOrderService::class);
 
-        $this->assertSame(17500, $service->resolveReservationNetRate($sbOrder, $ticket));
+        $this->assertSame(4500, $service->resolveReservationNetRate($sbOrder, $ticket));
+        $this->assertSame(4500, $service->resolveReservationSalesPrice($ticket, 4500));
+        $request = $service->buildReservationRequest($sbOrder, $ticket);
+        $this->assertSame(4500, data_get($request, 'items.0.net_rate'));
+        $this->assertSame(4500, data_get($request, 'items.0.sales_price'));
+        $this->assertSame('GBP', data_get($request, 'items.0.currency_code'));
+    }
+
+    public function test_queue_and_manual_create_skip_confirmed_sb_orders(): void
+    {
+        $this->seedSandboxTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX-CONFIRMED-SKIP',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+            'ticket_amount' => 120.00,
+            'match_name' => 'FC Barcelona vs Test',
+        ]);
+
+        $service = app(SbOrderXs2SandboxOrderService::class);
+        $reason = 'SB order must be Pending Confirmation to create an XS2 order (current: Confirmed).';
+
+        $this->assertFalse($service->queueIfEligible($sbOrder));
+        $this->assertSame($reason, $service->resolveQueueSkipReason($sbOrder));
+        $this->assertSame($reason, $service->resolveManualCreateSkipReason($sbOrder));
+
+        $result = $service->createFromSbOrder($sbOrder);
+        $this->assertTrue($result['skipped']);
+        $this->assertSame($reason, $result['reason']);
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order")
+            ->assertStatus(422)
+            ->assertJsonPath('message', $reason);
     }
 
     public function test_create_manual_links_synced_order_for_1bx67744_without_duplicate_api_call(): void
@@ -1809,8 +1848,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $ticket = $this->seedProductionTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-NO-ATT-001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'ticket_id' => 906584,
             'listing_id' => '841765',
             'quantity' => 2,
@@ -1838,7 +1877,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
                 return false;
             }
 
-            return data_get($request->data(), 'items.0.net_rate') === 17500
+            return data_get($request->data(), 'items.0.net_rate') === 15000
+                && data_get($request->data(), 'items.0.sales_price') === 15000
                 && data_get($request->data(), 'items.0.quantity') === 2
                 && data_get($request->data(), 'booking_email') === 'buyer-no-att@example.com';
         });
@@ -1887,7 +1927,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-EMAIL-001',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'raw_payload' => ['buyer_email' => 'buyer-from-payload@example.com'],
         ]);
 
@@ -1949,7 +1989,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 999999,
             'listing_id' => '888888',
             'quantity' => 1,
@@ -1994,7 +2034,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta BC',
             'match_date' => '2026-09-05',
@@ -2030,8 +2070,8 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
-            'booking_status_text' => 'Confirmed',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -2162,7 +2202,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
 
         $sbOrder = SbOrder::query()->create([
             'booking_no' => '1BX67678',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'quantity' => 1,
             'match_name' => 'AS Roma vs Atalanta',
             'match_date' => '2026-09-05',
@@ -2205,7 +2245,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $ticket = $this->seedSandboxTicketMapping('906584');
         $sbOrder = SbOrder::query()->create([
             'booking_no' => 'SB-9002',
-            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status' => SbOrder::STATUS_PENDING,
             'ticket_id' => 906584,
             'quantity' => 1,
             'ticket_amount' => 120.00,
