@@ -16,7 +16,7 @@ class RetryFailedSbOrderXs2SyncCommand extends Command
                             {--dry-run : Show eligible orders without queueing}
                             {--limit=50 : Maximum orders to queue per run}';
 
-    protected $description = 'Retry XS2 reservation+booking for SB orders whose sync log is failed and no real XS2 order exists.';
+    protected $description = 'Retry XS2 reservation+booking for SB orders whose sync log is failed or stuck queued/processing.';
 
     public function handle(SbOrderXs2SandboxOrderService $service): int
     {
@@ -30,8 +30,18 @@ class RetryFailedSbOrderXs2SyncCommand extends Command
         $limit = max(1, (int) $this->option('limit'));
         $dryRun = (bool) $this->option('dry-run');
 
+        $stuckBefore = now()->subMinutes(max(5, (int) config('xs2.sb_order_xs2_sync.stuck_queued_minutes', 15)));
+
         $query = SbOrderXs2SyncLog::query()
-            ->where('status', SbOrderXs2SyncLog::STATUS_FAILED)
+            ->where(function ($query) use ($stuckBefore): void {
+                $query->where('status', SbOrderXs2SyncLog::STATUS_FAILED)
+                    ->orWhere(function ($query) use ($stuckBefore): void {
+                        $query->whereIn('status', [
+                            SbOrderXs2SyncLog::STATUS_QUEUED,
+                            SbOrderXs2SyncLog::STATUS_PROCESSING,
+                        ])->where('updated_at', '<=', $stuckBefore);
+                    });
+            })
             ->when($sbOrderId !== null, fn ($query) => $query->where('sb_order_id', $sbOrderId))
             ->orderBy('updated_at');
 
@@ -43,48 +53,12 @@ class RetryFailedSbOrderXs2SyncCommand extends Command
                 break;
             }
 
-            $order = SbOrder::query()->with('xs2Order')->find($log->sb_order_id);
-            if ($order === null) {
+            if (! $this->queueRetryForLog($log, $service, $dryRun)) {
                 $skipped++;
 
                 continue;
             }
 
-            $existing = $order->xs2Order;
-            if ($existing !== null && $service->orderIsComplete($existing)) {
-                $skipped++;
-
-                continue;
-            }
-
-            if (
-                $existing !== null
-                && Xs2BookingOrderIdentity::isPendingExternalOrderId($existing->external_order_id)
-            ) {
-                if (! $dryRun) {
-                    $existing->delete();
-                }
-            }
-
-            if ($service->resolveQueueSkipReason($order) !== null) {
-                $skipped++;
-
-                continue;
-            }
-
-            if ($dryRun) {
-                $this->line(sprintf(
-                    'Would queue SB order #%d (%s): %s',
-                    $order->id,
-                    $order->booking_no,
-                    mb_substr((string) ($log->error ?? 'failed'), 0, 120),
-                ));
-                $queued++;
-
-                continue;
-            }
-
-            CreateXs2SandboxOrderFromSbOrder::dispatch($order->id);
             $queued++;
         }
 
@@ -96,5 +70,49 @@ class RetryFailedSbOrderXs2SyncCommand extends Command
         ));
 
         return self::SUCCESS;
+    }
+
+    private function queueRetryForLog(
+        SbOrderXs2SyncLog $log,
+        SbOrderXs2SandboxOrderService $service,
+        bool $dryRun,
+    ): bool {
+        $order = SbOrder::query()->with('xs2Order')->find($log->sb_order_id);
+        if ($order === null) {
+            return false;
+        }
+
+        $existing = $order->xs2Order;
+        if ($existing !== null && $service->orderIsComplete($existing)) {
+            return false;
+        }
+
+        if (
+            $existing !== null
+            && Xs2BookingOrderIdentity::isPendingExternalOrderId($existing->external_order_id)
+        ) {
+            if (! $dryRun) {
+                $existing->delete();
+            }
+        }
+
+        if ($service->resolveQueueSkipReason($order) !== null) {
+            return false;
+        }
+
+        if ($dryRun) {
+            $this->line(sprintf(
+                'Would queue SB order #%d (%s): %s',
+                $order->id,
+                $order->booking_no,
+                mb_substr((string) ($log->error ?? $log->status), 0, 120),
+            ));
+
+            return true;
+        }
+
+        CreateXs2SandboxOrderFromSbOrder::dispatch($order->id);
+
+        return true;
     }
 }

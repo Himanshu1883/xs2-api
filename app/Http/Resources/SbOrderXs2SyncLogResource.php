@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Services\Admin\ApiEnvironmentService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -11,6 +12,9 @@ class SbOrderXs2SyncLogResource extends JsonResource
     /** @return array<string, mixed> */
     public function toArray(Request $request): array
     {
+        /** @var ApiEnvironmentService $apiEnvironment */
+        $apiEnvironment = app(ApiEnvironmentService::class);
+
         return [
             'id' => $this->id,
             'sb_order_id' => $this->sb_order_id,
@@ -26,6 +30,8 @@ class SbOrderXs2SyncLogResource extends JsonResource
             'booking_response_status' => $this->booking_response_status,
             'booking_response_headers' => $this->booking_response_headers,
             'error' => $this->error,
+            'xs2_environment' => $apiEnvironment->xs2OrdersEnvironment(),
+            'xs2_api_base_url' => $apiEnvironment->xs2OrdersBaseUrl(),
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
         ];

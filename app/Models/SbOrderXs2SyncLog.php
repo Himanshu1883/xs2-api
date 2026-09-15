@@ -11,6 +11,8 @@ class SbOrderXs2SyncLog extends Model
 
     public const STATUS_QUEUED = 'queued';
 
+    public const STATUS_PROCESSING = 'processing';
+
     public const STATUS_SUCCESS = 'success';
 
     public const STATUS_FAILED = 'failed';

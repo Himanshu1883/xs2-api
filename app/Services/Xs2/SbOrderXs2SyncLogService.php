@@ -16,13 +16,40 @@ class SbOrderXs2SyncLogService
         ]);
     }
 
-    public function recordQueued(int $sbOrderId): void
+    /**
+     * @param  array<string, mixed>|null  $reservationRequest
+     */
+    public function recordQueued(int $sbOrderId, ?array $reservationRequest = null): void
     {
-        $this->upsert($sbOrderId, [
+        $attributes = [
             'status' => SbOrderXs2SyncLog::STATUS_QUEUED,
             'skip_reason' => null,
             'error' => null,
-        ]);
+        ];
+
+        if ($reservationRequest !== null) {
+            $attributes['reservation_request'] = $reservationRequest;
+        }
+
+        $this->upsert($sbOrderId, $attributes);
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $reservationRequest
+     */
+    public function recordProcessing(int $sbOrderId, ?array $reservationRequest = null): void
+    {
+        $attributes = [
+            'status' => SbOrderXs2SyncLog::STATUS_PROCESSING,
+            'skip_reason' => null,
+            'error' => null,
+        ];
+
+        if ($reservationRequest !== null) {
+            $attributes['reservation_request'] = $reservationRequest;
+        }
+
+        $this->upsert($sbOrderId, $attributes);
     }
 
     public function recordSkipped(int $sbOrderId, string $reason, ?int $xs2OrderId = null): void
@@ -49,7 +76,7 @@ class SbOrderXs2SyncLogService
     {
         $this->upsert($sbOrderId, [
             'reservation_request' => $request,
-            'reservation_response' => $response['data'] !== [] ? $response['data'] : null,
+            'reservation_response' => $this->normalizeExchangeResponse($response),
             'reservation_response_status' => $response['status'],
             'reservation_response_headers' => $response['headers'],
         ]);
@@ -69,7 +96,7 @@ class SbOrderXs2SyncLogService
     {
         $this->upsert($sbOrderId, [
             'booking_request' => $request,
-            'booking_response' => $response['data'] !== [] ? $response['data'] : null,
+            'booking_response' => $this->normalizeExchangeResponse($response),
             'booking_response_status' => $response['status'],
             'booking_response_headers' => $response['headers'],
         ]);
@@ -94,7 +121,37 @@ class SbOrderXs2SyncLogService
         ]);
     }
 
-  /** @param array<string, mixed> $attributes */
+    /**
+     * @param  array{
+     *     success: bool,
+     *     status: int|null,
+     *     data: array<string, mixed>,
+     *     headers: array<string, list<string>>,
+     *     message: string|null
+     * }  $response
+     * @return array<string, mixed>|null
+     */
+    private function normalizeExchangeResponse(array $response): ?array
+    {
+        if ($response['data'] !== []) {
+            return $response['data'];
+        }
+
+        $payload = [];
+        if ($response['message'] !== null && $response['message'] !== '') {
+            $payload['message'] = $response['message'];
+        }
+        if ($response['status'] !== null) {
+            $payload['http_status'] = $response['status'];
+        }
+        if (($response['success'] ?? false) === false) {
+            $payload['success'] = false;
+        }
+
+        return $payload !== [] ? $payload : null;
+    }
+
+    /** @param array<string, mixed> $attributes */
     private function upsert(int $sbOrderId, array $attributes): ?SbOrderXs2SyncLog
     {
         if (! Schema::hasTable('sb_order_xs2_sync_logs')) {

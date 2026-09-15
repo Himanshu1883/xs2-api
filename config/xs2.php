@@ -231,6 +231,8 @@ return [
         ))),
         'retry_delay_seconds' => max(1, (int) env('XS2_SB_ORDER_XS2_SYNC_RETRY_DELAY_SECONDS', 60)),
         'retry_batch_limit' => max(1, (int) env('XS2_SB_ORDER_XS2_SYNC_RETRY_BATCH_LIMIT', 50)),
+        // Re-queue SB orders stuck in queued/processing when the worker never completed the job.
+        'stuck_queued_minutes' => max(5, (int) env('XS2_SB_ORDER_XS2_SYNC_STUCK_QUEUED_MINUTES', 15)),
     ],
 
     'sb_order_guest_data_sync' => [

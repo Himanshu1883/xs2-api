@@ -537,7 +537,150 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.status', 'queued')
             ->assertJsonPath('data.reservation_response_status', 201)
-            ->assertJsonPath('data.reservation_response.reservation_id', 'sandbox-reservation-sb_rsv');
+            ->assertJsonPath('data.reservation_response.reservation_id', 'sandbox-reservation-sb_rsv')
+            ->assertJsonPath('data.xs2_environment', 'sandbox')
+            ->assertJsonPath('data.xs2_api_base_url', 'https://sandbox.xs2.test');
+    }
+
+    public function test_record_queue_decision_stores_planned_reservation_request(): void
+    {
+        Queue::fake();
+        $ticket = $this->seedSandboxTicketMapping('906584');
+
+        $client = Mockery::mock(SellerApiClient::class);
+        $client->shouldReceive('resolvedListingBaseUrl')->andReturn('https://seller.test');
+        $client->shouldReceive('fetchAllBookings')
+            ->once()
+            ->andReturn([
+                'result' => [[
+                    'booking_no' => '1BX67857',
+                    'booking_status' => SbOrder::STATUS_CONFIRMED,
+                    'booking_status_text' => 'Confirmed',
+                    'ticket_id' => 906584,
+                    'listing_id' => '841765',
+                    'quantity' => 2,
+                    'ticket_amount' => 240.00,
+                    'match_name' => 'FC Barcelona vs Test',
+                    'stadium_name' => 'Camp Nou',
+                    'match_date' => '2026-10-01',
+                    'attendee_details' => [],
+                ]],
+            ]);
+
+        $listingSales = Mockery::mock(ListingSalesService::class);
+        $listingSales->shouldReceive('queueStockReconcileForListingIds')->once()->andReturn(['queued' => 0]);
+
+        app(SellerBookingSyncService::class, [
+            'client' => $client,
+            'listingSales' => $listingSales,
+        ])->sync();
+
+        $sbOrder = SbOrder::query()->where('booking_no', '1BX67857')->firstOrFail();
+        $log = \App\Models\SbOrderXs2SyncLog::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+
+        $this->assertSame('queued', $log->status);
+        $this->assertIsArray($log->reservation_request);
+        $this->assertSame($ticket->external_ticket_id, data_get($log->reservation_request, 'items.0.ticket_id'));
+        $this->assertSame('1BX67857', data_get($log->reservation_request, 'external_reference_id'));
+    }
+
+    public function test_failed_reservation_records_request_and_response_payload(): void
+    {
+        Http::fake([
+            'https://sandbox.xs2.test/v1/reservations' => Http::response([
+                'message' => 'Invalid ticket id',
+            ], 422),
+        ]);
+
+        $this->seedSandboxTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-FAIL-SBX-9001',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+            'ticket_amount' => 180.00,
+            'match_name' => 'FC Barcelona vs Test',
+            'match_date' => '2026-10-01',
+        ]);
+
+        app(SbOrderXs2SandboxOrderService::class)->createFromSbOrder($sbOrder);
+
+        $log = \App\Models\SbOrderXs2SyncLog::query()->where('sb_order_id', $sbOrder->id)->firstOrFail();
+        $this->assertSame('failed', $log->status);
+        $this->assertIsArray($log->reservation_request);
+        $this->assertSame('Invalid ticket id', data_get($log->reservation_response, 'message'));
+        $this->assertSame(422, $log->reservation_response_status);
+    }
+
+    public function test_create_xs2_job_marks_sync_log_processing(): void
+    {
+        $service = \Mockery::mock(SbOrderXs2SandboxOrderService::class);
+        $service->shouldReceive('markJobProcessing')->once();
+        $service->shouldReceive('createFromSbOrder')
+            ->once()
+            ->andReturn([
+                'order' => null,
+                'created' => false,
+                'updated' => false,
+                'linked' => false,
+                'skipped' => true,
+                'reason' => 'SB order is cancelled.',
+            ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-PROCESSING-9001',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'quantity' => 1,
+        ]);
+
+        $job = (new CreateXs2SandboxOrderFromSbOrder($sbOrder->id))->withFakeQueueInteractions();
+        $job->handle($service);
+    }
+
+    public function test_retry_command_queues_stuck_queued_orders(): void
+    {
+        Queue::fake();
+
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_PRODUCTION,
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_BASE_URL,
+            'https://api.xs2.test',
+        );
+        app(IntegrationSettingService::class)->set(
+            IntegrationSettingService::XS2_API_KEY,
+            'production-key',
+            secret: true,
+        );
+
+        $this->seedProductionTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-STUCK-9001',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+            'ticket_amount' => 180.00,
+            'match_name' => 'Real Madrid vs Test',
+            'match_date' => '2026-10-01',
+        ]);
+
+        \App\Models\SbOrderXs2SyncLog::query()->create([
+            'sb_order_id' => $sbOrder->id,
+            'status' => 'queued',
+            'reservation_request' => ['items' => [['ticket_id' => 'production-ticket-madrid_tck', 'quantity' => 1]]],
+            'updated_at' => now()->subHour(),
+            'created_at' => now()->subHour(),
+        ]);
+
+        Artisan::call('xs2:retry-failed-sb-order-sync');
+
+        Queue::assertPushed(CreateXs2SandboxOrderFromSbOrder::class, function (CreateXs2SandboxOrderFromSbOrder $job) use ($sbOrder): bool {
+            return $job->sbOrderId === $sbOrder->id;
+        });
     }
 
     public function test_service_creates_xs2_production_order_in_xs2_orders_table(): void
@@ -1116,6 +1259,7 @@ class SbOrderXs2SandboxOrderTest extends TestCase
     public function test_create_xs2_job_releases_on_rate_limit_failure(): void
     {
         $service = \Mockery::mock(SbOrderXs2SandboxOrderService::class);
+        $service->shouldReceive('markJobProcessing')->once();
         $service->shouldReceive('createFromSbOrder')
             ->once()
             ->andReturn([

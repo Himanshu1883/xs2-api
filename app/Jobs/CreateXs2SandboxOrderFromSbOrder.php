@@ -42,6 +42,8 @@ class CreateXs2SandboxOrderFromSbOrder implements ShouldBeUniqueUntilProcessing,
             return;
         }
 
+        $service->markJobProcessing($order);
+
         try {
             $result = $service->createFromSbOrder($order);
         } catch (Xs2RateLimitException $exception) {

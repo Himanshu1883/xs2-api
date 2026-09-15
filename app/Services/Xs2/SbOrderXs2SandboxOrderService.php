@@ -87,31 +87,97 @@ class SbOrderXs2SandboxOrderService
             return $this->skip($existing, $this->missingTicketAmountSkipReason(), $order);
         }
 
-        $currency = (string) ($ticket->currency_code ?? $order->currency_type ?? 'EUR');
-        $salesPrice = $netRate;
         $bookingEmail = $this->resolveBookingEmail($order);
         $reservationTicketId = $this->resolveReservationTicketId($order, $ticket);
         if ($reservationTicketId === null) {
             return $this->skip($existing, $this->noTicketMappingSkipReason(), $order);
         }
 
-        $reservationRequest = [
-            'items' => [[
-                'ticket_id' => $reservationTicketId,
-                'quantity' => $quantity,
-                'net_rate' => $netRate,
-                'currency_code' => $currency,
-                'sales_price' => $salesPrice > 0 ? $salesPrice : $netRate,
-            ]],
-            'booking_email' => $bookingEmail,
-            'notify_me' => false,
-            'notes' => 'SeatsBroker SB order '.$order->booking_no,
-            'external_reference_id' => $order->booking_no,
-            'target_currency' => $currency,
-        ];
+        $reservationRequest = $this->buildReservationRequest($order, $ticket);
+        if ($reservationRequest === null) {
+            return $this->skip($existing, $this->noTicketMappingSkipReason(), $order);
+        }
 
         try {
-            return DB::transaction(function () use ($order, $ticket, $existing, $reservationRequest, $quantity, $bookingEmail, $reservationTicketId): array {
+            $existing = $this->existingOrder($order);
+            if ($existing !== null && $this->orderIsComplete($existing)) {
+                return $this->alreadyCompleteResult($existing, $order);
+            }
+
+            $linkedExisting = $this->tryLinkExistingSyncedXs2Order($order, $existing);
+            if ($linkedExisting !== null) {
+                return $linkedExisting;
+            }
+
+            if ($this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
+                throw new \RuntimeException(
+                    'A matching synced XS2 order exists but could not be linked before reservation.',
+                );
+            }
+
+            $reservationResult = $this->createReservationDetailed($reservationRequest);
+            $this->syncLogs->recordReservationExchange($order->id, $reservationRequest, $reservationResult);
+            if (! $reservationResult['success']) {
+                $reservationMessage = (string) ($reservationResult['message'] ?? 'XS2 reservation failed.');
+                if ($this->isRateLimitMessage($reservationMessage)) {
+                    throw new Xs2RateLimitException($this->retryAfterSecondsFromMessage($reservationMessage));
+                }
+
+                throw new \RuntimeException($reservationMessage);
+            }
+
+            $reservationResponse = $reservationResult['data'];
+            $reservationId = $this->nullableString($reservationResponse['reservation_id'] ?? null);
+            if ($reservationId === null) {
+                throw new \RuntimeException('XS2 reservation response did not include reservation_id.');
+            }
+
+            $bookingRequest = [
+                'reservation_id' => $reservationId,
+                'booking_email' => $bookingEmail,
+                'booking_reference' => $order->booking_no,
+                'invoice_reference' => $order->booking_no,
+                'payment_method' => 'invoice',
+            ];
+            if ($this->isSandboxEnvironment()) {
+                $bookingRequest['is_test_booking'] = true;
+            }
+
+            $bookingResult = $this->createBookingDetailed($bookingRequest);
+            $this->syncLogs->recordBookingExchange($order->id, $bookingRequest, $bookingResult);
+            if (! $bookingResult['success']) {
+                $bookingMessage = (string) ($bookingResult['message'] ?? 'XS2 booking failed.');
+                if ($this->isRateLimitMessage($bookingMessage)) {
+                    throw new Xs2RateLimitException($this->retryAfterSecondsFromMessage($bookingMessage));
+                }
+
+                throw new \RuntimeException($bookingMessage);
+            }
+
+            $bookingResponse = $bookingResult['data'];
+            $bookingId = $this->nullableString($bookingResponse['booking_id'] ?? null);
+            if ($bookingId === null) {
+                throw new \RuntimeException('XS2 booking response did not include booking_id.');
+            }
+
+            $bookingOrderId = $this->resolveBookingOrderId($bookingId, $bookingResponse);
+            if ($bookingOrderId === null) {
+                throw new \RuntimeException('XS2 booking was created but bookingorder_id could not be resolved.');
+            }
+
+            $bookingOrderResponse = $this->fetchBookingOrder($bookingOrderId);
+
+            return DB::transaction(function () use (
+                $order,
+                $ticket,
+                $bookingOrderResponse,
+                $bookingResponse,
+                $reservationId,
+                $bookingId,
+                $bookingOrderId,
+                $quantity,
+                $reservationTicketId,
+            ): array {
                 $existing = $this->existingOrder($order);
                 if ($existing !== null && $this->orderIsComplete($existing)) {
                     return $this->alreadyCompleteResult($existing, $order);
@@ -122,63 +188,6 @@ class SbOrderXs2SandboxOrderService
                     return $linkedExisting;
                 }
 
-                if ($this->findUnlinkedXs2OrderMatchingSbBooking($order) !== null) {
-                    throw new \RuntimeException(
-                        'A matching synced XS2 order exists but could not be linked before reservation.',
-                    );
-                }
-
-                $reservationResult = $this->createReservationDetailed($reservationRequest);
-                $this->syncLogs->recordReservationExchange($order->id, $reservationRequest, $reservationResult);
-                if (! $reservationResult['success']) {
-                    $reservationMessage = (string) ($reservationResult['message'] ?? 'XS2 reservation failed.');
-                    if ($this->isRateLimitMessage($reservationMessage)) {
-                        throw new Xs2RateLimitException($this->retryAfterSecondsFromMessage($reservationMessage));
-                    }
-
-                    throw new \RuntimeException($reservationMessage);
-                }
-
-                $reservationResponse = $reservationResult['data'];
-                $reservationId = $this->nullableString($reservationResponse['reservation_id'] ?? null);
-                if ($reservationId === null) {
-                    throw new \RuntimeException('XS2 reservation response did not include reservation_id.');
-                }
-
-                $bookingRequest = [
-                    'reservation_id' => $reservationId,
-                    'booking_email' => $bookingEmail,
-                    'booking_reference' => $order->booking_no,
-                    'invoice_reference' => $order->booking_no,
-                    'payment_method' => 'invoice',
-                ];
-                if ($this->isSandboxEnvironment()) {
-                    $bookingRequest['is_test_booking'] = true;
-                }
-
-                $bookingResult = $this->createBookingDetailed($bookingRequest);
-                $this->syncLogs->recordBookingExchange($order->id, $bookingRequest, $bookingResult);
-                if (! $bookingResult['success']) {
-                    $bookingMessage = (string) ($bookingResult['message'] ?? 'XS2 booking failed.');
-                    if ($this->isRateLimitMessage($bookingMessage)) {
-                        throw new Xs2RateLimitException($this->retryAfterSecondsFromMessage($bookingMessage));
-                    }
-
-                    throw new \RuntimeException($bookingMessage);
-                }
-
-                $bookingResponse = $bookingResult['data'];
-                $bookingId = $this->nullableString($bookingResponse['booking_id'] ?? null);
-                if ($bookingId === null) {
-                    throw new \RuntimeException('XS2 booking response did not include booking_id.');
-                }
-
-                $bookingOrderId = $this->resolveBookingOrderId($bookingId, $bookingResponse);
-                if ($bookingOrderId === null) {
-                    throw new \RuntimeException('XS2 booking was created but bookingorder_id could not be resolved.');
-                }
-
-                $bookingOrderResponse = $this->fetchBookingOrder($bookingOrderId);
                 $attributes = $this->orderAttributes(
                     $order,
                     $ticket,
@@ -571,7 +580,52 @@ class SbOrderXs2SandboxOrderService
             return;
         }
 
-        $this->syncLogs->recordQueued($order->id);
+        $this->syncLogs->recordQueued($order->id, $this->buildReservationRequest($order));
+    }
+
+    public function markJobProcessing(SbOrder $order): void
+    {
+        $this->syncLogs->recordProcessing($order->id, $this->buildReservationRequest($order));
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function buildReservationRequest(SbOrder $order, ?Xs2Ticket $ticket = null): ?array
+    {
+        $ticket ??= $this->resolveMappedTicket($order);
+        if ($ticket === null) {
+            return null;
+        }
+
+        $quantity = max(1, (int) ($order->quantity ?? 1));
+        $netRate = $this->resolveReservationNetRate($order, $ticket);
+        if ($netRate === null || $netRate <= 0) {
+            return null;
+        }
+
+        $currency = (string) ($ticket->currency_code ?? $order->currency_type ?? 'EUR');
+        $salesPrice = $netRate;
+        $bookingEmail = $this->resolveBookingEmail($order);
+        $reservationTicketId = $this->resolveReservationTicketId($order, $ticket);
+        if ($reservationTicketId === null) {
+            return null;
+        }
+
+        return [
+            'items' => [[
+                'ticket_id' => $reservationTicketId,
+                'quantity' => $quantity,
+                'net_rate' => $netRate,
+                'currency_code' => $currency,
+                'sales_price' => $salesPrice > 0 ? $salesPrice : $netRate,
+            ]],
+            'booking_email' => $bookingEmail,
+            'notify_me' => false,
+            'notes' => 'SeatsBroker SB order '.$order->booking_no,
+            'external_reference_id' => $order->booking_no,
+            'target_currency' => $currency,
+        ];
     }
 
     private function isEnabled(): bool
