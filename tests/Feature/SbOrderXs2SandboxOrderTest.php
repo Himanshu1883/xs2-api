@@ -1685,6 +1685,55 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->assertSame('EUR', data_get($request, 'target_currency'));
     }
 
+    public function test_gbp_ticket_row_still_sends_eur_reservation_with_inventory_net_rate_like_1bx67884(): void
+    {
+        $masterTicketId = 'abd5efacfaf0471b8680108bee207f1d_spt';
+
+        $this->seedSplitListingMapping('994521', $masterTicketId);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67884',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
+            'ticket_id' => 994521,
+            'listing_id' => '235019',
+            'quantity' => 1,
+            'ticket_amount' => 59.00,
+            'currency_type' => 'GBP',
+            'match_name' => 'Test Event',
+            'match_date' => '2026-09-12',
+        ]);
+
+        $service = app(SbOrderXs2SandboxOrderService::class);
+        $ticket = $service->resolveMappedTicket($sbOrder);
+        $this->assertNotNull($ticket);
+
+        $ticket->update([
+            'net_rate' => 5900,
+            'face_value' => 5900,
+            'currency_code' => 'GBP',
+            'raw_payload' => [
+                'ticket_id' => $masterTicketId,
+                'currency_code' => 'EUR',
+                'net_rate' => 7136,
+                'face_value' => 7136,
+            ],
+        ]);
+        $ticket->refresh();
+
+        $this->assertSame('EUR', $service->resolveReservationCurrency($ticket));
+        $this->assertSame(7136, $service->resolveReservationNetRate($sbOrder, $ticket));
+
+        $request = $service->buildReservationRequest($sbOrder, $ticket);
+
+        $this->assertSame($masterTicketId, data_get($request, 'items.0.ticket_id'));
+        $this->assertSame(7136, data_get($request, 'items.0.net_rate'));
+        $this->assertSame(7136, data_get($request, 'items.0.sales_price'));
+        $this->assertSame('EUR', data_get($request, 'items.0.currency_code'));
+        $this->assertSame('EUR', data_get($request, 'target_currency'));
+        $this->assertNotSame('GBP', data_get($request, 'items.0.currency_code'));
+    }
+
     public function test_gbp_sb_order_sends_eur_reservation_for_xs2_ticket_like_1bx67876(): void
     {
         $masterTicketId = 'abd5efacfaf0471b8680108bee207f1d_spt';

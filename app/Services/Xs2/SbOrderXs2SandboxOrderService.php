@@ -6,6 +6,8 @@ use App\Exceptions\Integrations\Xs2RateLimitException;
 use App\Models\EventMapping;
 use App\Models\ExternalListingMapping;
 use App\Services\Admin\ApiEnvironmentService;
+use App\Services\Admin\IntegrationSettingService;
+use App\Services\Currency\CurrencyConversionService;
 use App\Models\ListingSplit;
 use App\Models\SbOrder;
 use App\Models\SbOrderAttendee;
@@ -382,7 +384,9 @@ class SbOrderXs2SandboxOrderService
      */
     public function resolveReservationNetRate(SbOrder $order, Xs2Ticket $ticket): ?int
     {
-        foreach ($this->reservationRateCandidates($ticket) as $rate) {
+        $reservationCurrency = $this->resolveReservationCurrency($ticket);
+
+        foreach ($this->reservationRateCandidates($ticket, $reservationCurrency) as $rate) {
             if ($rate > 0) {
                 return $rate;
             }
@@ -392,28 +396,16 @@ class SbOrderXs2SandboxOrderService
     }
 
     /**
-     * XS2 reservation currency from synced ticket data only — never SB order currency_type.
+     * XS2 reservation currency — never SB order currency_type or publish-facing xs2_tickets.currency_code.
      */
     public function resolveReservationCurrency(Xs2Ticket $ticket): string
     {
-        $fromColumn = strtoupper(trim((string) ($ticket->currency_code ?? '')));
-        if ($fromColumn !== '') {
-            return $fromColumn;
+        $configured = $this->configuredReservationCurrency();
+        if ($configured !== null) {
+            return $configured;
         }
 
-        $payload = is_array($ticket->raw_payload) ? $ticket->raw_payload : [];
-        foreach (['currency_code', 'currency'] as $key) {
-            if (! array_key_exists($key, $payload)) {
-                continue;
-            }
-
-            $value = strtoupper(trim((string) $payload[$key]));
-            if ($value !== '') {
-                return $value;
-            }
-        }
-
-        return 'EUR';
+        return $this->resolveXs2InventoryCurrency($ticket) ?? 'EUR';
     }
 
     /**
@@ -425,19 +417,103 @@ class SbOrderXs2SandboxOrderService
     }
 
     /** @return list<int> */
-    private function reservationRateCandidates(Xs2Ticket $ticket): array
+    private function reservationRateCandidates(Xs2Ticket $ticket, string $reservationCurrency): array
+    {
+        $payload = is_array($ticket->raw_payload) ? $ticket->raw_payload : [];
+        $payloadCurrency = $this->resolveXs2InventoryCurrency($ticket);
+        $columnCurrency = $this->normalizeCurrencyCode($ticket->currency_code);
+        $candidates = [];
+
+        if ($payloadCurrency === $reservationCurrency) {
+            $candidates[] = $this->positiveIntFromPayload($payload, 'net_rate');
+            $candidates[] = $this->positiveIntFromPayload($payload, 'face_value');
+            $candidates[] = $this->positiveIntFromPayload($payload, 'sales_price');
+            $candidates[] = $this->positiveIntFromPayload($payload, 'gross_rate');
+        }
+
+        if ($columnCurrency === $reservationCurrency) {
+            $candidates[] = (int) ($ticket->net_rate ?? 0);
+            $candidates[] = (int) ($ticket->face_value ?? 0);
+            $candidates[] = (int) ($ticket->package_price ?? 0);
+        }
+
+        $converter = $this->currencyConversion();
+        if ($payloadCurrency !== null
+            && $payloadCurrency !== $reservationCurrency
+            && $converter->needsConversion($payloadCurrency, $reservationCurrency)) {
+            foreach (['net_rate', 'face_value', 'sales_price', 'gross_rate'] as $key) {
+                $minor = $this->positiveIntFromPayload($payload, $key);
+                if ($minor > 0) {
+                    $candidates[] = $converter->convertMinorUnits($minor, $payloadCurrency, $reservationCurrency);
+                }
+            }
+        }
+
+        if ($columnCurrency !== null
+            && $columnCurrency !== $reservationCurrency
+            && $converter->needsConversion($columnCurrency, $reservationCurrency)) {
+            foreach ([
+                (int) ($ticket->net_rate ?? 0),
+                (int) ($ticket->face_value ?? 0),
+                (int) ($ticket->package_price ?? 0),
+            ] as $minor) {
+                if ($minor > 0) {
+                    $candidates[] = $converter->convertMinorUnits($minor, $columnCurrency, $reservationCurrency);
+                }
+            }
+        }
+
+        return $candidates;
+    }
+
+    private function configuredReservationCurrency(): ?string
+    {
+        $fromIntegration = app(IntegrationSettingService::class)
+            ->value(IntegrationSettingService::XS2_ORDERS_RESERVATION_CURRENCY);
+        $fromConfig = config('xs2.sb_order_xs2_sync.reservation_currency');
+        $raw = $fromIntegration ?? $fromConfig;
+        if ($raw === null || $raw === '') {
+            return null;
+        }
+
+        return $this->normalizeCurrencyCode($raw);
+    }
+
+    /**
+     * Original XS2 inventory currency from synced API payload (not SB publish / column overrides).
+     */
+    private function resolveXs2InventoryCurrency(Xs2Ticket $ticket): ?string
     {
         $payload = is_array($ticket->raw_payload) ? $ticket->raw_payload : [];
 
-        return [
-            $this->positiveIntFromPayload($payload, 'net_rate'),
-            (int) ($ticket->net_rate ?? 0),
-            $this->positiveIntFromPayload($payload, 'face_value'),
-            (int) ($ticket->face_value ?? 0),
-            (int) ($ticket->package_price ?? 0),
-            $this->positiveIntFromPayload($payload, 'sales_price'),
-            $this->positiveIntFromPayload($payload, 'gross_rate'),
-        ];
+        foreach (['local_currency', 'ticket_currency', 'currency_code', 'currency'] as $key) {
+            if (! array_key_exists($key, $payload)) {
+                continue;
+            }
+
+            $normalized = $this->normalizeCurrencyCode($payload[$key]);
+            if ($normalized !== null) {
+                return $normalized;
+            }
+        }
+
+        return null;
+    }
+
+    private function normalizeCurrencyCode(mixed $code): ?string
+    {
+        if (! is_scalar($code)) {
+            return null;
+        }
+
+        $normalized = strtoupper(trim((string) $code));
+
+        return strlen($normalized) === 3 ? $normalized : null;
+    }
+
+    private function currencyConversion(): CurrencyConversionService
+    {
+        return app(CurrencyConversionService::class);
     }
 
     /** @param  array<string, mixed>|null  $payload */

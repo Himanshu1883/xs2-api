@@ -223,6 +223,9 @@ return [
     ],
 
     'sb_order_xs2_sync' => [
+        // ISO currency sent on XS2 reservation/booking items (currency_code + target_currency).
+        // EUR-only XS2 accounts must not use SB or publish-converted GBP on xs2_tickets.currency_code.
+        'reservation_currency' => env('XS2_ORDERS_RESERVATION_CURRENCY', 'EUR'),
         // Scheduled xs2:retry-failed-sb-order-sync — re-queues real XS2 create for failed SB orders.
         'retry_enabled' => (bool) env('XS2_SB_ORDER_XS2_SYNC_RETRY_ENABLED', true),
         'retry_interval_minutes' => max(1, min(60, (int) env(

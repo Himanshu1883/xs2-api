@@ -44,6 +44,9 @@ class IntegrationSettingService
 
     public const XS2_SB_ORDER_GUEST_DATA_SYNC_ENABLED = 'XS2_SB_ORDER_GUEST_DATA_SYNC_ENABLED';
 
+    /** ISO currency for XS2 reservation/booking payloads (e.g. EUR for EUR-only distributor accounts). */
+    public const XS2_ORDERS_RESERVATION_CURRENCY = 'XS2_ORDERS_RESERVATION_CURRENCY';
+
     public const SELLER_API_ENABLED = 'SELLER_API_ENABLED';
 
     public const APP_LOW_LOAD_MODE = 'APP_LOW_LOAD_MODE';
