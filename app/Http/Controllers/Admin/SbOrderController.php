@@ -29,7 +29,7 @@ class SbOrderController extends Controller
         $filters = $request->validated();
         $search = trim((string) ($filters['search'] ?? ''));
 
-        $query = SbOrder::query()->with(['attendees', 'xs2Order'])->withCount('attendees');
+        $query = SbOrder::query()->with(['attendees', 'xs2Order', 'xs2SyncLog'])->withCount('attendees');
 
         if ($search !== '') {
             $like = '%'.$search.'%';
@@ -66,7 +66,7 @@ class SbOrderController extends Controller
     {
         $this->authorize('viewAny', EventMapping::class);
 
-        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $sbOrder->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
         return new SbOrderResource($sbOrder);
@@ -132,7 +132,7 @@ class SbOrderController extends Controller
         $statusLabel = $refreshed->booking_status_text
             ?? ($refreshed->booking_status !== null ? (string) $refreshed->booking_status : 'unknown');
 
-        $refreshed->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $refreshed->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$refreshed]);
 
         return response()->json([
@@ -157,7 +157,7 @@ class SbOrderController extends Controller
             ], 422);
         }
 
-        $refreshed->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $refreshed->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$refreshed]);
 
         if ($refreshed->attendees->isEmpty()) {
@@ -181,7 +181,7 @@ class SbOrderController extends Controller
     {
         $this->authorize('viewAny', EventMapping::class);
 
-        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $sbOrder->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
         return response()->json([
@@ -194,7 +194,7 @@ class SbOrderController extends Controller
     {
         $this->authorize('viewAny', EventMapping::class);
 
-        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $sbOrder->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
         if ($sbOrder->xs2Order && $this->xs2SandboxOrders->orderIsComplete($sbOrder->xs2Order)) {
@@ -223,7 +223,7 @@ class SbOrderController extends Controller
         $result = $this->xs2SandboxOrders->createFromSbOrder($sbOrder->fresh(['attendees']));
 
         $sbOrder->refresh();
-        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $sbOrder->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
         if ($result['skipped'] ?? false) {
@@ -300,7 +300,7 @@ class SbOrderController extends Controller
             ], 422);
         }
 
-        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $sbOrder->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
         return response()->json([

@@ -4,6 +4,8 @@ dockerfilePath = "Dockerfile"
 # Set Railway service Root Directory to this folder (xs2-api) in the dashboard.
 
 [deploy]
+# Single Railway service runs HTTP + queue workers + scheduler via docker-entrypoint.sh
+# (seller-api queue + general worker including xs2-sync for CreateXs2SandboxOrderFromSbOrder).
 healthcheckPath = "/up"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"

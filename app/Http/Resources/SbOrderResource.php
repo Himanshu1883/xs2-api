@@ -64,6 +64,18 @@ class SbOrderResource extends JsonResource
                     'xs2_bookingorder_id' => $this->xs2Order->xs2_bookingorder_id,
                 ];
             }),
+            'xs2_sync' => $this->whenLoaded('xs2SyncLog', function (): ?array {
+                if ($this->xs2SyncLog === null) {
+                    return null;
+                }
+
+                return [
+                    'status' => $this->xs2SyncLog->status,
+                    'skip_reason' => $this->xs2SyncLog->skip_reason,
+                    'error' => $this->xs2SyncLog->error,
+                    'updated_at' => $this->xs2SyncLog->updated_at?->toIso8601String(),
+                ];
+            }),
         ];
     }
 }

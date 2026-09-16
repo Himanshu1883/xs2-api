@@ -38,8 +38,14 @@ Bootstrap sequence (when each cron flag is enabled):
 | 0s | `xs2-inventory-full` | `xs2:sync-inventory --mode=full` |
 | 120s | `xs2-sb-new-listing-publish` | `xs2:publish-new-sb-listings` |
 | 300s | `xs2-sb-listing-inventory` | `xs2:sync-sb-listing-inventory` |
-| 330s | `xs2-sb-order-sync` | `seller-api:sync-bookings` |
+| 330s | `xs2-sb-order-sync` | `seller-api:sync-bookings` (upserts `sb_orders`, queues `CreateXs2SandboxOrderFromSbOrder` when Pending Confirmation + mapped) |
 | 360s | `xs2-sb-order-guest-data-sync` | `xs2:sync-order-guest-data` |
+
+Scheduled continuously (not in Start All bootstrap delay table — runs on its own interval when enabled):
+
+| Interval (default) | Cron job | Command |
+|--------------------|----------|---------|
+| 5m | `xs2-sb-order-xs2-retry` | `xs2:retry-failed-sb-order-sync` (re-queues failed or stuck queued/processing SB→XS2 jobs) |
 
 After bootstrap, the OS scheduler (`php artisan schedule:run` every minute) continues each job on its configured interval. Schedule definitions always register in `routes/console.php`; runtime `->when()` gates honour Stop/Start without restarting PHP workers.
 
@@ -73,8 +79,11 @@ SELLER_API_ENABLED=true
 XS2_SB_LISTING_INVENTORY_SYNC_ENABLED=true
 XS2_SB_NEW_LISTING_PUBLISH_ENABLED=true
 XS2_SB_FAILED_LISTING_PUBLISH_RETRY_ENABLED=false
-XS2_SB_BOOKINGS_SYNC_ENABLED=true   # enable for order sync cron
+SB_BOOKINGS_SYNC_ENABLED=true       # enable seller-api:sync-bookings cron
 XS2_SB_ORDER_GUEST_DATA_SYNC_ENABLED=true
+XS2_SB_ORDER_XS2_SYNC_RETRY_ENABLED=true
+XS2_SANDBOX_AUTO_CREATE_ORDERS_FROM_SB=true
+XS2_ORDERS_RESERVATION_CURRENCY=EUR
 ```
 
 Optional:
@@ -88,7 +97,7 @@ XS2_SPLIT_UNPUBLISH_STOCK_MAX=0     # 0 = disabled; >0 deletes all splits when s
 ### 1. Redeploy
 
 1. Push API + web; redeploy Railway (xs2-api) and Vercel (xs2-web).
-2. Confirm workers are running (`docker-entrypoint.sh` starts `queue:work` for `default` and `seller-api`).
+2. Confirm workers are running (`docker-entrypoint.sh` starts `queue:work` for `seller-api` and a general worker on `xs2-sync`, `xs2-mapping`, `admin-cron`, `default`, plus `schedule:work`).
 3. In admin **Cron Config**, verify **Scheduler: enabled** and tasks show a **Next run** time (not “Never”).
 
 ### 2. Start All

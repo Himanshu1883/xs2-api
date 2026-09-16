@@ -92,6 +92,60 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         });
     }
 
+    public function test_happy_path_pending_sb_order_job_creates_linked_xs2_order(): void
+    {
+        Http::fake([
+            'https://sandbox.xs2.test/v1/reservations' => Http::response([
+                'reservation_id' => 'sandbox-reservation-happy_rsv',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookings' => Http::response([
+                'booking_id' => self::SANDBOX_BOOKING_ID,
+                'booking_code' => 'SBX-HAPPY',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookingorders*' => Http::sequence()
+                ->push([
+                    'bookingorders' => [[
+                        'booking_id' => self::SANDBOX_BOOKING_ID,
+                        'bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+                    ]],
+                ])
+                ->push([
+                    'bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+                    'booking_id' => self::SANDBOX_BOOKING_ID,
+                    'event_name' => 'FC Barcelona vs Test',
+                    'booking_status' => 'confirmed',
+                ]),
+        ]);
+
+        $this->seedSandboxTicketMapping('841765');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-HAPPY-9001',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 2,
+            'ticket_amount' => 240.00,
+            'match_name' => 'FC Barcelona vs Test',
+            'match_date' => '2026-10-01',
+        ]);
+
+        $sandboxOrders = app(SbOrderXs2SandboxOrderService::class);
+        $this->assertTrue($sandboxOrders->queueIfEligible($sbOrder));
+        $sandboxOrders->recordQueueDecision($sbOrder);
+
+        $job = new CreateXs2SandboxOrderFromSbOrder($sbOrder->id);
+        $job->handle($sandboxOrders);
+
+        $sbOrder->refresh()->load(['xs2Order', 'xs2SyncLog']);
+        $this->assertNotNull($sbOrder->xs2Order);
+        $this->assertSame($sbOrder->id, $sbOrder->xs2Order->sb_order_id);
+        $this->assertSame(self::SANDBOX_BOOKING_ID, $sbOrder->xs2Order->xs2_booking_id);
+        $this->assertNotNull($sbOrder->xs2SyncLog);
+        $this->assertSame('success', $sbOrder->xs2SyncLog->status);
+        $this->assertSame('EUR', data_get($sbOrder->xs2SyncLog->reservation_request, 'items.0.currency_code'));
+    }
+
     public function test_service_creates_xs2_sandbox_order_in_xs2_orders_table(): void
     {
         Http::fake([
@@ -597,6 +651,29 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             ->assertJsonPath('data.reservation_response.reservation_id', 'sandbox-reservation-sb_rsv')
             ->assertJsonPath('data.xs2_environment', 'sandbox')
             ->assertJsonPath('data.xs2_api_base_url', 'https://sandbox.xs2.test');
+    }
+
+    public function test_admin_sb_orders_index_includes_xs2_sync_summary(): void
+    {
+        $token = $this->adminToken();
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-9011',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'quantity' => 1,
+        ]);
+
+        \App\Models\SbOrderXs2SyncLog::query()->create([
+            'sb_order_id' => $sbOrder->id,
+            'status' => 'failed',
+            'error' => 'XS2 reservation failed.',
+        ]);
+
+        $this->withToken($token)
+            ->getJson('/api/admin/sb-orders?search=SB-9011')
+            ->assertOk()
+            ->assertJsonPath('data.0.booking_no', 'SB-9011')
+            ->assertJsonPath('data.0.xs2_sync.status', 'failed')
+            ->assertJsonPath('data.0.xs2_sync.error', 'XS2 reservation failed.');
     }
 
     public function test_record_queue_decision_stores_planned_reservation_request(): void
