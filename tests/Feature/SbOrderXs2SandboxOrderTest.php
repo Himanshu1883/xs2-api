@@ -438,6 +438,62 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         ]);
     }
 
+    public function test_preview_xs2_order_returns_eur_payload_without_xs2_http_or_xs2_orders_writes(): void
+    {
+        $ticket = $this->seedSandboxTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-PREVIEW-001',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 2,
+            'ticket_amount' => 240.00,
+            'match_name' => 'FC Barcelona vs Test',
+            'stadium_name' => 'Camp Nou',
+            'match_date' => '2026-10-01',
+        ]);
+
+        $xs2OrderCountBefore = Xs2Order::query()->count();
+
+        $this->withToken($this->adminToken())
+            ->getJson("/api/admin/sb-orders/{$sbOrder->id}/preview-xs2-order")
+            ->assertOk()
+            ->assertJsonPath('data.xs2_environment', 'sandbox')
+            ->assertJsonPath('data.skip_reason', null)
+            ->assertJsonPath('data.reservation_request.items.0.currency_code', 'EUR')
+            ->assertJsonPath('data.reservation_request.items.0.quantity', 2)
+            ->assertJsonPath('data.booking_request_planned.reservation_id', '<reservation_id from XS2 reservation response>')
+            ->assertJsonPath('data.booking_request_planned.is_test_booking', true)
+            ->assertJsonPath('data.booking_request_planned.booking_reference', 'SB-PREVIEW-001')
+            ->assertJsonPath('data.ticket_mapping.external_ticket_id', $ticket->external_ticket_id);
+
+        $this->assertSame($xs2OrderCountBefore, Xs2Order::query()->count());
+        $this->assertDatabaseMissing('sb_order_xs2_sync_logs', [
+            'sb_order_id' => $sbOrder->id,
+        ]);
+    }
+
+    public function test_preview_xs2_order_includes_skip_reason_for_non_pending_sb_order(): void
+    {
+        $this->seedSandboxTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-PREVIEW-SKIP',
+            'booking_status' => SbOrder::STATUS_CONFIRMED,
+            'booking_status_text' => 'Confirmed',
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+            'ticket_amount' => 120.00,
+            'match_name' => 'FC Barcelona vs Test',
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/sb-orders/{$sbOrder->id}/preview-xs2-order")
+            ->assertOk()
+            ->assertJsonPath('data.skip_reason', 'SB order must be Pending Confirmation to create an XS2 order (current: Confirmed).');
+    }
+
     public function test_manual_create_xs2_order_returns_success_when_booking_already_exists(): void
     {
         $ticket = $this->seedSandboxTicketMapping('906584');

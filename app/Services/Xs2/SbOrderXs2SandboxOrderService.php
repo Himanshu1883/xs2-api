@@ -769,6 +769,61 @@ class SbOrderXs2SandboxOrderService
         ];
     }
 
+    /**
+     * Read-only preview of XS2 reservation + planned booking payloads.
+     * Does not call XS2 HTTP APIs or write xs2_orders / sync logs.
+     *
+     * @return array{
+     *     reservation_request: array<string, mixed>|null,
+     *     booking_request_planned: array<string, mixed>|null,
+     *     ticket_mapping: array<string, mixed>|null,
+     *     skip_reason: string|null,
+     *     xs2_environment: string
+     * }
+     */
+    public function previewXs2OrderFromSbOrder(SbOrder $order): array
+    {
+        $skipReason = $this->resolveManualCreateSkipReason($order);
+        $ticket = $this->resolveMappedTicket($order);
+        $listingResolution = $this->resolveXs2ListingResolutionsForOrders([$order])[$order->id]
+            ?? ['xs2_listing_id' => null, 'external_ticket_id' => null];
+
+        $ticketMapping = null;
+        if ($ticket !== null) {
+            $ticketMapping = [
+                'xs2_ticket_id' => $ticket->id,
+                'external_ticket_id' => $ticket->external_ticket_id,
+                'reservation_ticket_id' => $this->resolveReservationTicketId($order, $ticket),
+                'xs2_listing_id' => $listingResolution['xs2_listing_id'],
+                'xs2_external_ticket_id' => $listingResolution['external_ticket_id'],
+            ];
+        }
+
+        $reservationRequest = $this->buildReservationRequest($order, $ticket);
+
+        $bookingRequestPlanned = null;
+        if ($reservationRequest !== null) {
+            $bookingRequestPlanned = [
+                'reservation_id' => '<reservation_id from XS2 reservation response>',
+                'booking_email' => $this->resolveBookingEmail($order),
+                'booking_reference' => $order->booking_no,
+                'invoice_reference' => $order->booking_no,
+                'payment_method' => 'invoice',
+            ];
+            if ($this->isSandboxEnvironment()) {
+                $bookingRequestPlanned['is_test_booking'] = true;
+            }
+        }
+
+        return [
+            'reservation_request' => $reservationRequest,
+            'booking_request_planned' => $bookingRequestPlanned,
+            'ticket_mapping' => $ticketMapping,
+            'skip_reason' => $skipReason,
+            'xs2_environment' => $this->apiEnvironment->xs2OrdersEnvironment(),
+        ];
+    }
+
     private function isEnabled(): bool
     {
         return (bool) config('xs2.sandbox.auto_create_orders_from_sb', true);

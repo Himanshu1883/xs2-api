@@ -177,6 +177,19 @@ class SbOrderController extends Controller
         ]);
     }
 
+    public function previewXs2Order(SbOrder $sbOrder): JsonResponse
+    {
+        $this->authorize('viewAny', EventMapping::class);
+
+        $sbOrder->load(['attendees', 'xs2Order'])->loadCount('attendees');
+        $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
+
+        return response()->json([
+            'message' => 'XS2 order preview (read-only; no XS2 API calls).',
+            'data' => $this->xs2SandboxOrders->previewXs2OrderFromSbOrder($sbOrder),
+        ]);
+    }
+
     public function createXs2Order(SbOrder $sbOrder): JsonResponse
     {
         $this->authorize('viewAny', EventMapping::class);
