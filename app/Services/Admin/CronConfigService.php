@@ -31,6 +31,7 @@ class CronConfigService
         private readonly CronIntervalService $intervals,
         private readonly CronToggleService $cronToggles,
         private readonly CronControlService $cronControl,
+        private readonly CronExecutionLogService $executionLogs,
     ) {}
 
     /** @return array{scheduler: array<string, mixed>, tasks: list<array<string, mixed>>} */
@@ -92,6 +93,7 @@ class CronConfigService
 
         $health = $this->scheduleHealth($tasks);
         $queueSnapshot = $this->queues->snapshot();
+        $tasks = $this->decorateSbXs2OrderCronTasks($tasks, $queueSnapshot, $scheduleByTaskId);
 
         return [
             'scheduler' => [
@@ -127,6 +129,7 @@ class CronConfigService
                 'cron_control' => $this->cronControl->status(),
                 'aws_emergency_steps' => AwsEmergencyStopGuide::steps(),
                 'schedule_health' => $health,
+                'sb_xs2_order_crons' => $this->sbXs2OrderCronSummary($tasks, $queueSnapshot),
                 'generated_at' => now()->toIso8601String(),
             ],
             'tasks' => $tasks,
@@ -672,16 +675,303 @@ class CronConfigService
 
     /**
      * @param  array<string, Xs2SyncState>  $states
+     * Live schedule/queue/execution fields for dedicated SB→XS2 order crons.
+     * `is_running` is never inferred from last_run_at — only mutex/sync-state or a running execution log.
+     *
+     * @param  list<array<string, mixed>>  $tasks
+     * @param  array<string, mixed>  $queueSnapshot
+     * @param  array<string, array<string, mixed>>  $scheduleByTaskId
+     * @return list<array<string, mixed>>
+     */
+    private function decorateSbXs2OrderCronTasks(array $tasks, array $queueSnapshot, array $scheduleByTaskId): array
+    {
+        $orderCronIds = [
+            'xs2-sb-order-sync',
+            'xs2-sb-order-xs2-retry',
+            'xs2-sb-order-guest-data-sync',
+        ];
+        $latestLogs = $this->executionLogs->latestSummariesForJobs($orderCronIds);
+        $orderQueue = (string) config('xs2.sandbox.order_queue', config('xs2.queue', 'xs2-sync'));
+        $guestQueue = (string) config('xs2.sb_order_guest_data_sync.queue', config('xs2.guest_queue', 'xs2-guest'));
+        $orderQueueCounts = $this->queueCountsForName($queueSnapshot, $orderQueue);
+        $guestQueueCounts = $this->queueCountsForName($queueSnapshot, $guestQueue);
+        $schedulerShouldBeActive = $this->cronToggles->schedulerShouldBeActive();
+        $schedulerEnabled = $this->cronControl->schedulerEnabled();
+        $xs2Enabled = (bool) config('xs2.enabled', true);
+        $sellerApiEnabled = (bool) config('services.seller_api.enabled', true);
+        $queueAvailable = (bool) ($queueSnapshot['available'] ?? false);
+        $queueConnection = (string) ($queueSnapshot['connection'] ?? config('queue.default', 'database'));
+
+        foreach ($tasks as $index => $task) {
+            $taskId = (string) ($task['id'] ?? '');
+            if (! in_array($taskId, $orderCronIds, true)) {
+                continue;
+            }
+
+            $extra = is_array($task['extra'] ?? null) ? $task['extra'] : [];
+            $lastExecution = $latestLogs[$taskId] ?? null;
+            $usesOrderQueue = $taskId !== 'xs2-sb-order-guest-data-sync';
+            $queueName = $usesOrderQueue ? $orderQueue : $guestQueue;
+            $queueCounts = $usesOrderQueue ? $orderQueueCounts : $guestQueueCounts;
+            $scheduleMeta = $scheduleByTaskId[$taskId] ?? null;
+            $scheduleWillRun = $this->sbXs2OrderScheduleWillRun($taskId, $task);
+            $blockedReasons = $this->sbXs2OrderBlockedReasons(
+                $taskId,
+                $task,
+                $scheduleWillRun,
+                $schedulerShouldBeActive,
+                $xs2Enabled,
+                $sellerApiEnabled,
+            );
+
+            $extra['scheduler_enabled'] = $schedulerEnabled;
+            $extra['scheduler_should_be_active'] = $schedulerShouldBeActive;
+            $extra['xs2_enabled'] = $xs2Enabled;
+            $extra['seller_api_enabled'] = $sellerApiEnabled;
+            $extra['toggle_enabled'] = (bool) ($task['toggle_enabled'] ?? false);
+            $extra['will_run'] = (bool) ($task['will_run'] ?? false);
+            $extra['schedule_will_run'] = $scheduleWillRun;
+            $extra['blocked_reasons'] = $blockedReasons;
+            $extra['queue_connection'] = $queueConnection;
+            $extra['order_queue'] = $orderQueue;
+            $extra['queue_available'] = $queueAvailable;
+            $extra['queue_pending'] = $queueAvailable ? ($queueCounts['pending'] ?? 0) : null;
+            $extra['queue_running'] = $queueAvailable ? ($queueCounts['running'] ?? 0) : null;
+            $extra['last_execution'] = $lastExecution;
+            $extra['scheduled_next_run_at'] = is_array($scheduleMeta) ? ($scheduleMeta['next_run_at'] ?? null) : null;
+            $extra['worker_must_drain_queue'] = $queueName;
+            $task['extra'] = $extra;
+
+            if (($task['last_run_at'] ?? null) === null && is_array($lastExecution) && filled($lastExecution['started_at'] ?? null)) {
+                $task['last_run_at'] = $lastExecution['started_at'];
+            }
+
+            if (is_array($lastExecution) && ($lastExecution['status'] ?? null) === 'running') {
+                $task['is_running'] = true;
+                $task['status'] = 'running';
+            }
+
+            $tasks[$index] = $task;
+        }
+
+        return $tasks;
+    }
+
+    /**
+     * @param  array<string, mixed>  $task
+     */
+    private function sbXs2OrderScheduleWillRun(string $taskId, array $task): bool
+    {
+        $toggleWillRun = (bool) ($task['will_run'] ?? false);
+        if (! $toggleWillRun) {
+            return false;
+        }
+
+        if ($taskId === 'xs2-sb-order-xs2-retry') {
+            // routes/console.php: shouldRun(id, retry_enabled) — no $xs2Enabled() wrapper.
+            return (bool) config('xs2.sb_order_xs2_sync.retry_enabled', true);
+        }
+
+        // $sellerApiEnabled() in console.php = schedulerShouldBeActive && XS2_ENABLED && SELLER_API_ENABLED
+        if (! $this->cronToggles->schedulerShouldBeActive()) {
+            return false;
+        }
+        if (! (bool) config('xs2.enabled', true)) {
+            return false;
+        }
+        if ($taskId === 'xs2-sb-order-guest-data-sync') {
+            return (bool) config('xs2.sb_order_guest_data_sync.enabled', true);
+        }
+
+        return (bool) config('services.seller_api.enabled', true)
+            && (bool) config('xs2.sb_bookings_sync.enabled', true);
+    }
+
+    /**
+     * @param  array<string, mixed>  $task
+     * @return list<array{code: string, label: string}>
+     */
+    private function sbXs2OrderBlockedReasons(
+        string $taskId,
+        array $task,
+        bool $scheduleWillRun,
+        bool $schedulerShouldBeActive,
+        bool $xs2Enabled,
+        bool $sellerApiEnabled,
+    ): array {
+        if ($scheduleWillRun) {
+            return [];
+        }
+
+        $reasons = [];
+        $usesSchedulerInWhen = $taskId !== 'xs2-sb-order-xs2-retry';
+        if ($usesSchedulerInWhen && ! $schedulerShouldBeActive) {
+            $reasons[] = [
+                'code' => 'scheduler_inactive',
+                'label' => 'Scheduler is not active (Start All off and no individual cron enabled)',
+            ];
+        }
+        if ($usesSchedulerInWhen && ! $xs2Enabled) {
+            $reasons[] = ['code' => 'xs2_disabled', 'label' => 'XS2_ENABLED is false'];
+        }
+        if ($taskId === 'xs2-sb-order-sync' && ! $sellerApiEnabled) {
+            $reasons[] = ['code' => 'seller_api_disabled', 'label' => 'SELLER_API_ENABLED is false'];
+        }
+        if ($taskId === 'xs2-sb-order-sync' && ! (bool) config('xs2.sb_bookings_sync.enabled', true)) {
+            $reasons[] = ['code' => 'feature_disabled', 'label' => 'SB_BOOKINGS_SYNC_ENABLED is false'];
+        }
+        if ($taskId === 'xs2-sb-order-xs2-retry' && ! (bool) config('xs2.sb_order_xs2_sync.retry_enabled', true)) {
+            $reasons[] = ['code' => 'feature_disabled', 'label' => 'XS2_SB_ORDER_XS2_SYNC_RETRY_ENABLED is false'];
+        }
+        if ($taskId === 'xs2-sb-order-guest-data-sync' && ! (bool) config('xs2.sb_order_guest_data_sync.enabled', true)) {
+            $reasons[] = ['code' => 'feature_disabled', 'label' => 'XS2_SB_ORDER_GUEST_DATA_SYNC_ENABLED is false'];
+        }
+        if (! (bool) ($task['toggle_enabled'] ?? false)) {
+            $reasons[] = ['code' => 'toggle_off', 'label' => 'Cron toggle is off'];
+        } elseif (! (bool) ($task['will_run'] ?? false)) {
+            $reasons[] = [
+                'code' => 'start_all_off',
+                'label' => 'Start All is off and this cron is not individually enabled',
+            ];
+        }
+
+        return $reasons;
+    }
+
+    /**
+     * @param  array<string, mixed>  $queueSnapshot
+     * @return array{pending: int, running: int, delayed: int, total: int}|null
+     */
+    private function queueCountsForName(array $queueSnapshot, string $queueName): ?array
+    {
+        if (! ($queueSnapshot['available'] ?? false)) {
+            return null;
+        }
+
+        foreach ($queueSnapshot['queues'] ?? [] as $queue) {
+            if (! is_array($queue)) {
+                continue;
+            }
+            $name = (string) ($queue['value'] ?? $queue['queue'] ?? '');
+            if ($name === $queueName) {
+                return [
+                    'pending' => (int) ($queue['pending'] ?? 0),
+                    'running' => (int) ($queue['running'] ?? 0),
+                    'delayed' => (int) ($queue['delayed'] ?? 0),
+                    'total' => (int) ($queue['total'] ?? 0),
+                ];
+            }
+        }
+
+        foreach ($queueSnapshot['other_queues'] ?? [] as $queue) {
+            if (! is_array($queue)) {
+                continue;
+            }
+            if ((string) ($queue['queue'] ?? '') === $queueName) {
+                return [
+                    'pending' => (int) ($queue['pending'] ?? 0),
+                    'running' => (int) ($queue['running'] ?? 0),
+                    'delayed' => (int) ($queue['delayed'] ?? 0),
+                    'total' => (int) ($queue['total'] ?? 0),
+                ];
+            }
+        }
+
+        return [
+            'pending' => 0,
+            'running' => 0,
+            'delayed' => 0,
+            'total' => 0,
+        ];
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $tasks
+     * @param  array<string, mixed>  $queueSnapshot
+     * @return array<string, mixed>
+     */
+    private function sbXs2OrderCronSummary(array $tasks, array $queueSnapshot): array
+    {
+        $byId = [];
+        foreach ($tasks as $task) {
+            $id = (string) ($task['id'] ?? '');
+            if ($id === '') {
+                continue;
+            }
+            $byId[$id] = $task;
+        }
+
+        $sync = $byId['xs2-sb-order-sync'] ?? null;
+        $retry = $byId['xs2-sb-order-xs2-retry'] ?? null;
+        $guest = $byId['xs2-sb-order-guest-data-sync'] ?? null;
+        $orderQueue = (string) config('xs2.sandbox.order_queue', config('xs2.queue', 'xs2-sync'));
+        $queueCounts = $this->queueCountsForName($queueSnapshot, $orderQueue);
+        $available = (bool) ($queueSnapshot['available'] ?? false);
+
+        return [
+            'order_queue' => $orderQueue,
+            'queue_connection' => (string) ($queueSnapshot['connection'] ?? config('queue.default', 'database')),
+            'auto_create_enabled' => (bool) config('xs2.sandbox.auto_create_orders_from_sb', true),
+            'queue_available' => $available,
+            'queue_pending' => $available ? ($queueCounts['pending'] ?? 0) : null,
+            'queue_running' => $available ? ($queueCounts['running'] ?? 0) : null,
+            'create_task_ids' => ['xs2-sb-order-sync', 'xs2-sb-order-xs2-retry'],
+            'related_non_create_task_ids' => ['xs2-sb-order-guest-data-sync'],
+            'sync' => $this->sbXs2OrderCronCardPayload($sync),
+            'retry' => $this->sbXs2OrderCronCardPayload($retry),
+            'guest_data' => $this->sbXs2OrderCronCardPayload($guest),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $task
+     * @return array<string, mixed>|null
+     */
+    private function sbXs2OrderCronCardPayload(?array $task): ?array
+    {
+        if ($task === null) {
+            return null;
+        }
+
+        $extra = is_array($task['extra'] ?? null) ? $task['extra'] : [];
+
+        return [
+            'id' => $task['id'] ?? null,
+            'name' => $task['name'] ?? null,
+            'command' => $task['command'] ?? null,
+            'queue' => $task['queue'] ?? null,
+            'schedule' => $task['schedule'] ?? null,
+            'expression' => $task['expression'] ?? null,
+            'interval_minutes' => $task['interval_minutes'] ?? ($extra['sync_interval_minutes'] ?? null),
+            'enabled' => (bool) ($task['enabled'] ?? false),
+            'toggle_enabled' => (bool) ($task['toggle_enabled'] ?? false),
+            'will_run' => (bool) ($task['will_run'] ?? false),
+            'schedule_will_run' => (bool) ($extra['schedule_will_run'] ?? false),
+            'is_running' => (bool) ($task['is_running'] ?? false),
+            'status' => $task['status'] ?? null,
+            'last_run_at' => $task['last_run_at'] ?? null,
+            'next_run_at' => $task['next_run_at'] ?? null,
+            'scheduled_next_run_at' => $extra['scheduled_next_run_at'] ?? null,
+            'last_execution' => $extra['last_execution'] ?? null,
+            'auto_create_enabled' => $extra['auto_create_enabled'] ?? null,
+            'creates_xs2_orders' => $extra['creates_xs2_orders'] ?? null,
+            'queue_pending' => $extra['queue_pending'] ?? null,
+            'blocked_reasons' => $extra['blocked_reasons'] ?? [],
+        ];
+    }
+
+    /**
+     * @param  array<string, Xs2SyncState>  $states
      * @param  array<string, array<string, mixed>>  $scheduleByTaskId
      * @return list<array<string, mixed>>
      */
     private function xs2SbOrderSyncTasks(array $scheduleByTaskId, array $states, bool $xs2Enabled): array
     {
         $enabled = (bool) config('xs2.sb_bookings_sync.enabled', true)
-            && (bool) config('services.seller_api.enabled', true)
-            && $this->sellerApiListingConfigured();
+            && $xs2Enabled
+            && (bool) config('services.seller_api.enabled', true);
         $telemetry = $this->xs2SbOrderSyncTelemetry($states);
-        $interval = max(1, min(59, (int) config('xs2.sb_bookings_sync.sync_interval_minutes', 2)));
+        $interval = $this->intervals->minutesFor('xs2-sb-order-sync');
         $orderQueue = (string) config('xs2.sandbox.order_queue', config('xs2.queue', 'xs2-sync'));
         $state = $states[SellerBookingSyncService::SYNC_RESOURCE] ?? null;
         $webhookUrl = rtrim((string) config('app.url'), '/').'/api/webhooks/sb/orders';
@@ -705,8 +995,8 @@ class CronConfigService
                     extra: [
                         'cron_role' => 'sb_order_xs2_order_sync',
                         'cron_role_label' => 'SB order → XS2 booking',
-                        'what_it_does' => 'Imports SB marketplace bookings into sb_orders, then immediately queues CreateXs2SandboxOrderFromSbOrder when the sold listing maps to a sandbox XS2 ticket. Creates the XS2 reservation + booking on testapi.xs2event.com and stores the result in xs2_orders.',
-                        'does_not_do' => 'Does not run when Create Order API is set to production (not implemented yet). Skips orders whose SB listing is not linked to a sandbox-imported XS2 ticket, cancelled orders, or orders that already have an XS2 booking id.',
+                        'what_it_does' => 'Does not call XS2 HTTP itself. Pulls SB bookings into sb_orders, then dispatches CreateXs2SandboxOrderFromSbOrder onto the order queue when the order is Pending Confirmation, not cancelled, auto-create is on, a mapped XS2 ticket exists, no complete xs2_orders row exists, and net rate is valid.',
+                        'does_not_do' => 'Does not create XS2 orders inline. Does not fetch attendee/guest data (use xs2-sb-order-guest-data-sync). Skips cancelled orders, non-Pending Confirmation statuses, unmapped tickets, and orders that already have a complete XS2 booking.',
                         'algorithm' => [
                             'Real-time path: SB POST '.$webhookUrl.' → upsert sb_orders → queue XS2 sandbox order job if eligible.',
                             'Scheduled path (this cron): GET Seller API /api/booking → upsert each booking → same XS2 queue step.',
@@ -722,8 +1012,14 @@ class CronConfigService
                         'manual_command' => 'php artisan seller-api:sync-bookings',
                         'worker_hint' => 'php artisan queue:work --queue='.$orderQueue,
                         'webhook_url' => $webhookUrl,
+                        'creates_xs2_orders' => true,
                         'create_order_api' => $telemetry['create_order_api'] ?? 'sandbox',
                         'auto_create_enabled' => $telemetry['auto_create_enabled'] ?? false,
+                        'seller_listing_configured' => $this->sellerApiListingConfigured(),
+                        'interval_config_key' => 'xs2.sb_bookings_sync.sync_interval_minutes',
+                        'interval_env_key' => 'SB_BOOKINGS_SYNC_INTERVAL_MINUTES',
+                        'feature_env_key' => 'SB_BOOKINGS_SYNC_ENABLED',
+                        'schedule_when_uses_scheduler' => true,
                         'sb_orders_total' => $telemetry['sb_orders_total'] ?? 0,
                         'xs2_orders_from_sb' => $telemetry['xs2_orders_from_sb'] ?? 0,
                         'sync_interval_minutes' => $interval,
@@ -776,7 +1072,7 @@ class CronConfigService
     private function xs2SbOrderXs2RetryTasks(array $scheduleByTaskId): array
     {
         $enabled = (bool) config('xs2.sb_order_xs2_sync.retry_enabled', true);
-        $interval = max(1, min(60, (int) config('xs2.sb_order_xs2_sync.retry_interval_minutes', 5)));
+        $interval = $this->intervals->minutesFor('xs2-sb-order-xs2-retry');
         $orderQueue = (string) config('xs2.sandbox.order_queue', config('xs2.queue', 'xs2-sync'));
         $telemetry = $this->xs2SbOrderXs2RetryTelemetry();
 
@@ -799,13 +1095,19 @@ class CronConfigService
                     extra: [
                         'cron_role' => 'sb_order_xs2_retry',
                         'cron_role_label' => 'Failed / stuck XS2 order retry',
-                        'what_it_does' => 'Scans sb_order_xs2_sync_logs for failed or long-running queued/processing rows and dispatches CreateXs2SandboxOrderFromSbOrder on the xs2-sync queue.',
+                        'what_it_does' => 'Re-queues failed or stuck CreateXs2SandboxOrderFromSbOrder jobs onto the same order queue used for first-time create.',
                         'does_not_do' => 'Does not import SB bookings (use xs2-sb-order-sync). Does not fetch attendee data (use xs2-sb-order-guest-data-sync).',
                         'manual_command' => 'php artisan xs2:retry-failed-sb-order-sync',
                         'worker_hint' => 'php artisan queue:work --queue='.$orderQueue,
+                        'creates_xs2_orders' => true,
+                        'auto_create_enabled' => (bool) config('xs2.sandbox.auto_create_orders_from_sb', true),
                         'retry_enabled' => $enabled,
                         'eligible_failed_or_stuck' => $telemetry['eligible_failed_or_stuck'] ?? 0,
                         'sync_interval_minutes' => $interval,
+                        'interval_config_key' => 'xs2.sb_order_xs2_sync.retry_interval_minutes',
+                        'interval_env_key' => 'XS2_SB_ORDER_XS2_SYNC_RETRY_INTERVAL_MINUTES',
+                        'feature_env_key' => 'XS2_SB_ORDER_XS2_SYNC_RETRY_ENABLED',
+                        'schedule_when_uses_scheduler' => false,
                     ],
                     enabled: $enabled,
                     category: 'xs2',
@@ -847,7 +1149,7 @@ class CronConfigService
     {
         $enabled = (bool) config('xs2.sb_order_guest_data_sync.enabled', true);
         $telemetry = $this->xs2SbOrderGuestDataSyncTelemetry($states);
-        $interval = max(1, min(59, (int) config('xs2.sb_order_guest_data_sync.sync_interval_minutes', 30)));
+        $interval = $this->intervals->minutesFor('xs2-sb-order-guest-data-sync');
         $guestQueue = (string) config('xs2.sb_order_guest_data_sync.queue', config('xs2.guest_queue', 'xs2-guest'));
         $state = $states[SbOrderXs2GuestDataSyncService::SYNC_RESOURCE] ?? null;
         $webhookUrl = rtrim((string) config('app.url'), '/').'/api/webhooks/sb/orders';
@@ -869,6 +1171,12 @@ class CronConfigService
                         'cron_role_label' => 'SB attendee fetch (once)',
                         'what_it_does' => 'Finds sb_orders that do not yet have attendee_fetched_at, GETs that booking from the Seller API, and persists attendee_details. Stops polling an order after the first successful attendee fetch. Does not push guest data to XS2 (use Move to XS order + Push to XS2 API).',
                         'does_not_do' => 'Does not re-fetch attendees for orders already marked fetched. Does not copy attendees onto xs2_orders. Does not PUT XS2 guestdata. Does not create XS2 bookings.',
+                        'creates_xs2_orders' => false,
+                        'related_order_cron' => true,
+                        'interval_config_key' => 'xs2.sb_order_guest_data_sync.sync_interval_minutes',
+                        'interval_env_key' => 'XS2_SB_ORDER_GUEST_DATA_SYNC_INTERVAL_MINUTES',
+                        'feature_env_key' => 'XS2_SB_ORDER_GUEST_DATA_SYNC_ENABLED',
+                        'schedule_when_uses_scheduler' => true,
                         'algorithm' => [
                             'Query active sb_orders where attendee_fetched_at is null.',
                             'GET Seller API /api/booking?booking_no=… for each pending order (batch_limit).',

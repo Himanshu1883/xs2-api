@@ -291,6 +291,49 @@ class CronExecutionLogService
             ->all();
     }
 
+    /**
+     * Latest execution-log row per cron (compact). Does not imply the cron is currently running.
+     *
+     * @param  list<string>  $cronJobIds
+     * @return array<string, array<string, mixed>>
+     */
+    public function latestSummariesForJobs(array $cronJobIds): array
+    {
+        $cronJobIds = array_values(array_unique(array_filter($cronJobIds, 'filled')));
+        if ($cronJobIds === [] || ! $this->isAvailable()) {
+            return [];
+        }
+
+        $latestIds = CronExecutionLog::query()
+            ->selectRaw('MAX(id) as id')
+            ->whereIn('cron_job_id', $cronJobIds)
+            ->groupBy('cron_job_id')
+            ->pluck('id');
+
+        if ($latestIds->isEmpty()) {
+            return [];
+        }
+
+        return CronExecutionLog::query()
+            ->whereIn('id', $latestIds)
+            ->get()
+            ->mapWithKeys(function (CronExecutionLog $log): array {
+                return [
+                    (string) $log->cron_job_id => [
+                        'id' => (int) $log->id,
+                        'status' => (string) $log->status,
+                        'trigger' => (string) $log->trigger,
+                        'started_at' => $log->started_at?->toIso8601String(),
+                        'finished_at' => $log->finished_at?->toIso8601String(),
+                        'duration_ms' => $log->duration_ms,
+                        'message' => $log->message,
+                        'error_message' => $log->error_message,
+                    ],
+                ];
+            })
+            ->all();
+    }
+
     /** @return list<array<string, mixed>> */
     public function recentGlobal(int $limit = 10): array
     {

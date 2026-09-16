@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\RunAdminCronJob;
+use App\Models\CronExecutionLog;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Queue;
@@ -302,6 +303,49 @@ class AdminCronJobTest extends TestCase
         $this->assertArrayHasKey('what_it_does', $task['extra']);
         $this->assertSame('sb_order_xs2_order_sync', $task['extra']['cron_role']);
         $this->assertArrayHasKey('create_order_api', $task['extra']);
+        $this->assertTrue($task['extra']['creates_xs2_orders']);
+        $this->assertSame('xs2-sync', $task['queue']);
+        $this->assertSame('xs2-sync', $task['extra']['order_queue']);
+        $this->assertSame('SB_BOOKINGS_SYNC_INTERVAL_MINUTES', $task['extra']['interval_env_key']);
+        $this->assertArrayHasKey('auto_create_enabled', $task['extra']);
+        $this->assertArrayHasKey('schedule_will_run', $task['extra']);
+        $this->assertArrayHasKey('blocked_reasons', $task['extra']);
+        $this->assertArrayHasKey('queue_pending', $task['extra']);
+        $this->assertFalse($task['is_running']);
+
+        $summary = $response->json('data.scheduler.sb_xs2_order_crons');
+        $this->assertIsArray($summary);
+        $this->assertSame('xs2-sync', $summary['order_queue']);
+        $this->assertSame('seller-api:sync-bookings', $summary['sync']['command']);
+        $this->assertSame(2, $summary['sync']['interval_minutes']);
+    }
+
+    public function test_cron_config_order_sync_uses_execution_log_without_faking_running(): void
+    {
+        config()->set('services.seller_api.enabled', true);
+        config()->set('xs2.sb_bookings_sync.enabled', true);
+        config()->set('xs2.sandbox.order_queue', 'xs2-sync');
+
+        CronExecutionLog::query()->create([
+            'cron_job_id' => 'xs2-sb-order-sync',
+            'trigger' => 'scheduled',
+            'status' => 'success',
+            'started_at' => now()->subMinutes(3),
+            'finished_at' => now()->subMinutes(2),
+            'duration_ms' => 8000,
+            'message' => 'Scheduled run completed successfully.',
+            'metadata' => ['command' => 'seller-api:sync-bookings'],
+        ]);
+
+        $token = $this->adminToken();
+        $task = collect($this->withToken($token)->getJson('/api/admin/cron-config')->json('data.tasks'))
+            ->firstWhere('id', 'xs2-sb-order-sync');
+
+        $this->assertNotNull($task);
+        $this->assertFalse($task['is_running']);
+        $this->assertSame('success', $task['extra']['last_execution']['status']);
+        $this->assertNotNull($task['last_run_at']);
+        $this->assertSame('success', $task['extra']['last_execution']['status']);
     }
 
     public function test_admin_can_run_sb_order_to_xs2_order_sync(): void
@@ -335,6 +379,16 @@ class AdminCronJobTest extends TestCase
         $this->assertTrue($task['toggleable']);
         $this->assertTrue($task['will_run']);
         $this->assertSame('sb_order_xs2_retry', $task['extra']['cron_role']);
+        $this->assertSame('xs2:retry-failed-sb-order-sync', $task['command']);
+        $this->assertSame('xs2-sync', $task['queue']);
+        $this->assertTrue($task['extra']['creates_xs2_orders']);
+        $this->assertFalse($task['extra']['schedule_when_uses_scheduler']);
+        $this->assertSame(5, $task['extra']['sync_interval_minutes']);
+        $this->assertSame(5, $task['interval_minutes']);
+        $this->assertArrayHasKey('auto_create_enabled', $task['extra']);
+        $this->assertTrue($task['extra']['schedule_will_run']);
+        $this->assertSame([], $task['extra']['blocked_reasons']);
+        $this->assertFalse($task['is_running']);
     }
 
     public function test_admin_can_run_sb_order_xs2_retry(): void
