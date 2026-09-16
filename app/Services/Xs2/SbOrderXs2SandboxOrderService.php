@@ -309,12 +309,31 @@ class SbOrderXs2SandboxOrderService
      */
     public function attachXs2ListingResolutions(iterable $orders): void
     {
-        $resolutions = $this->resolveXs2ListingResolutionsForOrders($orders);
+        $ordersList = collect($orders);
+        if ($ordersList->isEmpty()) {
+            return;
+        }
 
-        foreach ($orders as $order) {
+        $lookups = $this->listingLookupsForOrders($ordersList);
+
+        foreach ($ordersList as $order) {
             $order->setAttribute(
                 'xs2_listing_resolution',
-                $resolutions[$order->id] ?? ['xs2_listing_id' => null, 'external_ticket_id' => null],
+                $this->resolveXs2ListingResolutionFromLookups(
+                    $order,
+                    $lookups['mappingsByListingId'],
+                    $lookups['listingSplits'],
+                    $lookups['ticketsById'],
+                ),
+            );
+            $order->setAttribute(
+                'main_listing',
+                $this->resolveMainListingFromLookups(
+                    $order,
+                    $lookups['mappingsByListingId'],
+                    $lookups['listingSplits'],
+                    $lookups['ticketsById'],
+                ),
             );
         }
     }
@@ -330,6 +349,56 @@ class SbOrderXs2SandboxOrderService
             return [];
         }
 
+        $lookups = $this->listingLookupsForOrders($ordersList);
+
+        $resolutions = [];
+        foreach ($ordersList as $order) {
+            $resolutions[$order->id] = $this->resolveXs2ListingResolutionFromLookups(
+                $order,
+                $lookups['mappingsByListingId'],
+                $lookups['listingSplits'],
+                $lookups['ticketsById'],
+            );
+        }
+
+        return $resolutions;
+    }
+
+    /**
+     * @param  iterable<SbOrder>  $orders
+     * @return array<int, array<string, mixed>|null>
+     */
+    public function resolveMainListingsForOrders(iterable $orders): array
+    {
+        $ordersList = collect($orders);
+        if ($ordersList->isEmpty()) {
+            return [];
+        }
+
+        $lookups = $this->listingLookupsForOrders($ordersList);
+
+        $mainListings = [];
+        foreach ($ordersList as $order) {
+            $mainListings[$order->id] = $this->resolveMainListingFromLookups(
+                $order,
+                $lookups['mappingsByListingId'],
+                $lookups['listingSplits'],
+                $lookups['ticketsById'],
+            );
+        }
+
+        return $mainListings;
+    }
+
+    /**
+     * @return array{
+     *     mappingsByListingId: Collection<string, ExternalListingMapping>,
+     *     listingSplits: Collection<int, ListingSplit>,
+     *     ticketsById: Collection<int, Xs2Ticket>
+     * }
+     */
+    private function listingLookupsForOrders(Collection $ordersList): array
+    {
         $listingIds = [];
         foreach ($ordersList as $order) {
             foreach ($this->marketplaceListingIds($order) as $listingId) {
@@ -355,17 +424,129 @@ class SbOrderXs2SandboxOrderService
             ? collect()
             : Xs2Ticket::query()->whereIn('id', $ticketIds)->get()->keyBy('id');
 
-        $resolutions = [];
-        foreach ($ordersList as $order) {
-            $resolutions[$order->id] = $this->resolveXs2ListingResolutionFromLookups(
-                $order,
-                $mappingsByListingId,
-                $listingSplits,
-                $ticketsById,
-            );
+        return [
+            'mappingsByListingId' => $mappingsByListingId,
+            'listingSplits' => $listingSplits,
+            'ticketsById' => $ticketsById,
+        ];
+    }
+
+    /**
+     * Original XS2 inventory price (major units) and currency — not SB publish / reservation conversion.
+     *
+     * @return array{original_price: float|null, original_currency: string|null}
+     */
+    public function resolveOriginalInventoryPrice(Xs2Ticket $ticket): array
+    {
+        $currency = $this->resolveXs2InventoryCurrency($ticket)
+            ?? $this->normalizeCurrencyCode($ticket->currency_code)
+            ?? 'EUR';
+        $payload = is_array($ticket->raw_payload) ? $ticket->raw_payload : [];
+        $payloadCurrency = $this->resolveXs2InventoryCurrency($ticket);
+        $columnCurrency = $this->normalizeCurrencyCode($ticket->currency_code);
+        $divisor = max(1, (int) config('services.xs2.minor_unit_divisor'));
+
+        $minor = 0;
+        if ($payloadCurrency === null || $payloadCurrency === $currency) {
+            foreach (['net_rate', 'face_value', 'sales_price', 'gross_rate'] as $key) {
+                $candidate = $this->positiveIntFromPayload($payload, $key);
+                if ($candidate > 0) {
+                    $minor = $candidate;
+                    break;
+                }
+            }
         }
 
-        return $resolutions;
+        if ($minor <= 0 && ($columnCurrency === null || $columnCurrency === $currency)) {
+            foreach ([
+                (int) ($ticket->net_rate ?? 0),
+                (int) ($ticket->face_value ?? 0),
+                (int) ($ticket->package_price ?? 0),
+            ] as $candidate) {
+                if ($candidate > 0) {
+                    $minor = $candidate;
+                    break;
+                }
+            }
+        }
+
+        return [
+            'original_price' => $minor > 0 ? round($minor / $divisor, 2) : null,
+            'original_currency' => $currency,
+        ];
+    }
+
+    /**
+     * @param  Collection<string, ExternalListingMapping>  $mappingsByListingId
+     * @param  Collection<int, ListingSplit>  $listingSplits
+     * @param  Collection<int, Xs2Ticket>  $ticketsById
+     * @return array<string, mixed>|null
+     */
+    private function resolveMainListingFromLookups(
+        SbOrder $order,
+        Collection $mappingsByListingId,
+        Collection $listingSplits,
+        Collection $ticketsById,
+    ): ?array {
+        $marketplaceIds = $this->marketplaceListingIds($order);
+        $master = null;
+        $matchedSplit = null;
+        $directSellerListingId = null;
+
+        foreach ($marketplaceIds as $listingId) {
+            $mapping = $mappingsByListingId->get($listingId);
+            if ($mapping !== null) {
+                $master = $ticketsById->get($mapping->xs2_ticket_id);
+                $directSellerListingId = $listingId;
+                break;
+            }
+        }
+
+        $split = $this->findListingSplitInCollection($listingSplits, $marketplaceIds);
+        if ($split !== null) {
+            $matchedSplit = $split;
+            if ($master === null) {
+                $master = $split->relationLoaded('masterListing')
+                    ? $split->masterListing
+                    : $ticketsById->get($split->master_listing_id);
+            }
+        }
+
+        if ($master === null) {
+            return null;
+        }
+
+        $priceInfo = $this->resolveOriginalInventoryPrice($master);
+
+        $sellerListingIds = $listingSplits
+            ->where('master_listing_id', $master->id)
+            ->pluck('seatsbroker_listing_id')
+            ->filter(fn ($id) => filled($id))
+            ->map(fn ($id) => (string) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($sellerListingIds === [] && $directSellerListingId !== null) {
+            $sellerListingIds = [$directSellerListingId];
+        }
+
+        return [
+            'xs2_ticket_id' => $master->id,
+            'external_ticket_id' => filled($master->external_ticket_id)
+                ? (string) $master->external_ticket_id
+                : null,
+            'original_price' => $priceInfo['original_price'],
+            'original_currency' => $priceInfo['original_currency'],
+            'sb_listing_id' => $order->listing_id,
+            'sb_ticket_id' => $order->ticket_id,
+            'split_seller_reference' => $matchedSplit?->seller_reference,
+            'split_seatsbroker_listing_id' => filled($matchedSplit?->seatsbroker_listing_id)
+                ? (string) $matchedSplit->seatsbroker_listing_id
+                : null,
+            'xs2_split_listing_id' => $matchedSplit?->xs2ListingId(),
+            'seller_listing_ids' => $sellerListingIds,
+        ];
     }
 
     public function resolveMappedTicket(SbOrder $order): ?Xs2Ticket
@@ -815,10 +996,13 @@ class SbOrderXs2SandboxOrderService
             }
         }
 
+        $mainListing = $this->resolveMainListingsForOrders([$order])[$order->id] ?? null;
+
         return [
             'reservation_request' => $reservationRequest,
             'booking_request_planned' => $bookingRequestPlanned,
             'ticket_mapping' => $ticketMapping,
+            'main_listing' => $mainListing,
             'skip_reason' => $skipReason,
             'xs2_environment' => $this->apiEnvironment->xs2OrdersEnvironment(),
         ];

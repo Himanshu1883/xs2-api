@@ -420,6 +420,18 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             $rows['SB-IDX-SPLIT']['xs2_listing_id'],
         );
         $this->assertSame($splitTicket->external_ticket_id, $rows['SB-IDX-SPLIT']['xs2_external_ticket_id']);
+
+        $this->assertSame($masterTicket->id, $rows['SB-IDX-MASTER']['main_listing']['xs2_ticket_id']);
+        $this->assertSame($masterTicket->external_ticket_id, $rows['SB-IDX-MASTER']['main_listing']['external_ticket_id']);
+        $this->assertEquals(120.0, $rows['SB-IDX-MASTER']['main_listing']['original_price']);
+        $this->assertSame('EUR', $rows['SB-IDX-MASTER']['main_listing']['original_currency']);
+        $this->assertSame(['906584'], $rows['SB-IDX-MASTER']['main_listing']['seller_listing_ids']);
+
+        $this->assertSame($splitTicket->id, $rows['SB-IDX-SPLIT']['main_listing']['xs2_ticket_id']);
+        $this->assertEquals(120.0, $rows['SB-IDX-SPLIT']['main_listing']['original_price']);
+        $this->assertSame('EUR', $rows['SB-IDX-SPLIT']['main_listing']['original_currency']);
+        $this->assertSame('906999', $rows['SB-IDX-SPLIT']['main_listing']['split_seatsbroker_listing_id']);
+        $this->assertSame(['906999'], $rows['SB-IDX-SPLIT']['main_listing']['seller_listing_ids']);
     }
 
     public function test_admin_can_manually_create_xs2_order_from_sb_order(): void
@@ -520,7 +532,10 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             ->assertJsonPath('data.booking_request_planned.reservation_id', '<reservation_id from XS2 reservation response>')
             ->assertJsonPath('data.booking_request_planned.is_test_booking', true)
             ->assertJsonPath('data.booking_request_planned.booking_reference', 'SB-PREVIEW-001')
-            ->assertJsonPath('data.ticket_mapping.external_ticket_id', $ticket->external_ticket_id);
+            ->assertJsonPath('data.ticket_mapping.external_ticket_id', $ticket->external_ticket_id)
+            ->assertJsonPath('data.main_listing.xs2_ticket_id', $ticket->id)
+            ->assertJsonPath('data.main_listing.original_price', 120)
+            ->assertJsonPath('data.main_listing.original_currency', 'EUR');
 
         $this->assertSame($xs2OrderCountBefore, Xs2Order::query()->count());
         $this->assertDatabaseMissing('sb_order_xs2_sync_logs', [

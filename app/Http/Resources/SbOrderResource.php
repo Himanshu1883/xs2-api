@@ -29,6 +29,7 @@ class SbOrderResource extends JsonResource
             'listing_id' => $this->listing_id,
             'xs2_listing_id' => $this->xs2_listing_resolution['xs2_listing_id'] ?? null,
             'xs2_external_ticket_id' => $this->xs2_listing_resolution['external_ticket_id'] ?? null,
+            'main_listing' => $this->main_listing ?? null,
             'ticketid' => $this->ticketid,
             'quantity' => $this->quantity,
             'split' => $this->split,
