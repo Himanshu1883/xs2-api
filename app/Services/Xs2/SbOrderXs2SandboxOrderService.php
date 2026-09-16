@@ -328,7 +328,7 @@ class SbOrderXs2SandboxOrderService
             );
             $order->setAttribute(
                 'main_listing',
-                $this->resolveMainListingFromLookups(
+                $this->resolveMainListingForOrder(
                     $order,
                     $lookups['mappingsByListingId'],
                     $lookups['listingSplits'],
@@ -379,7 +379,7 @@ class SbOrderXs2SandboxOrderService
 
         $mainListings = [];
         foreach ($ordersList as $order) {
-            $mainListings[$order->id] = $this->resolveMainListingFromLookups(
+            $mainListings[$order->id] = $this->resolveMainListingForOrder(
                 $order,
                 $lookups['mappingsByListingId'],
                 $lookups['listingSplits'],
@@ -388,6 +388,36 @@ class SbOrderXs2SandboxOrderService
         }
 
         return $mainListings;
+    }
+
+    /**
+     * @param  Collection<string, ExternalListingMapping>  $mappingsByListingId
+     * @param  Collection<int, ListingSplit>  $listingSplits
+     * @param  Collection<int, Xs2Ticket>  $ticketsById
+     * @return array<string, mixed>|null
+     */
+    private function resolveMainListingForOrder(
+        SbOrder $order,
+        Collection $mappingsByListingId,
+        Collection $listingSplits,
+        Collection $ticketsById,
+    ): ?array {
+        $fromLookups = $this->resolveMainListingFromLookups(
+            $order,
+            $mappingsByListingId,
+            $listingSplits,
+            $ticketsById,
+        );
+        if ($fromLookups !== null) {
+            return $fromLookups;
+        }
+
+        $ticket = $this->resolveMappedTicket($order);
+        if ($ticket === null) {
+            return null;
+        }
+
+        return $this->composeMainListingForMappedTicket($order, $ticket);
     }
 
     /**
@@ -516,8 +546,6 @@ class SbOrderXs2SandboxOrderService
             return null;
         }
 
-        $priceInfo = $this->resolveOriginalInventoryPrice($master);
-
         $sellerListingIds = $listingSplits
             ->where('master_listing_id', $master->id)
             ->pluck('seatsbroker_listing_id')
@@ -530,6 +558,53 @@ class SbOrderXs2SandboxOrderService
         if ($sellerListingIds === [] && $directSellerListingId !== null) {
             $sellerListingIds = [$directSellerListingId];
         }
+
+        return $this->formatMainListingArray($order, $master, $matchedSplit, $sellerListingIds);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function composeMainListingForMappedTicket(SbOrder $order, Xs2Ticket $master): array
+    {
+        $matchedSplit = $this->findListingSplitForOrder($order);
+        if ($matchedSplit !== null && (int) $matchedSplit->master_listing_id !== (int) $master->id) {
+            $matchedSplit = null;
+        }
+
+        $directSellerListingId = null;
+        foreach ($this->marketplaceListingIds($order) as $listingId) {
+            $mapping = ExternalListingMapping::query()
+                ->where('seller_listing_id', $listingId)
+                ->where('xs2_ticket_id', $master->id)
+                ->first();
+            if ($mapping !== null) {
+                $directSellerListingId = $listingId;
+                break;
+            }
+        }
+
+        $sellerListingIds = [];
+        if ($matchedSplit !== null && filled($matchedSplit->seatsbroker_listing_id)) {
+            $sellerListingIds = [(string) $matchedSplit->seatsbroker_listing_id];
+        } elseif ($directSellerListingId !== null) {
+            $sellerListingIds = [$directSellerListingId];
+        }
+
+        return $this->formatMainListingArray($order, $master, $matchedSplit, $sellerListingIds);
+    }
+
+    /**
+     * @param  list<string>  $sellerListingIds
+     * @return array<string, mixed>
+     */
+    private function formatMainListingArray(
+        SbOrder $order,
+        Xs2Ticket $master,
+        ?ListingSplit $matchedSplit,
+        array $sellerListingIds,
+    ): array {
+        $priceInfo = $this->resolveOriginalInventoryPrice($master);
 
         return [
             'xs2_ticket_id' => $master->id,

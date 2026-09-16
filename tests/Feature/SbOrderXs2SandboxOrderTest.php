@@ -563,6 +563,58 @@ class SbOrderXs2SandboxOrderTest extends TestCase
             ->assertJsonPath('data.skip_reason', 'SB order must be Pending Confirmation to create an XS2 order (current: Confirmed).');
     }
 
+    public function test_preview_xs2_order_includes_main_listing_when_ticket_resolved_via_event_match(): void
+    {
+        $event = Xs2Event::query()->create([
+            'external_event_id' => 'preview-event-fallback',
+            'event_name' => 'AS Roma vs Atalanta BC',
+            'sport_type' => 'soccer',
+            'event_status' => 'notstarted',
+            'date_start_local' => '2026-09-05',
+            'raw_payload' => [],
+        ]);
+
+        $ticket = Xs2Ticket::query()->create([
+            'external_ticket_id' => 'abd5efacfaf0471b8680108bee207f1d_spt',
+            'external_event_id' => $event->external_event_id,
+            'xs2_event_id' => $event->id,
+            'is_sandbox' => false,
+            'ticket_status' => 'available',
+            'stock' => 5,
+            'net_rate' => 686300,
+            'currency_code' => 'EUR',
+            'category_name' => 'Distinti',
+            'sync_status' => 'pending',
+            'raw_payload' => [
+                'currency_code' => 'EUR',
+                'net_rate' => 6863,
+            ],
+        ]);
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67884',
+            'booking_status' => SbOrder::STATUS_CANCELLED,
+            'booking_status_text' => 'Cancelled',
+            'quantity' => 1,
+            'ticket_amount' => 59.00,
+            'currency_type' => 'GBP',
+            'match_name' => 'AS Roma vs Atalanta',
+            'match_date' => '2026-09-05',
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->getJson("/api/admin/sb-orders/{$sbOrder->id}/preview-xs2-order")
+            ->assertOk()
+            ->assertJsonPath('data.skip_reason', 'SB order must be Pending Confirmation to create an XS2 order (current: Cancelled).')
+            ->assertJsonPath('data.reservation_request.items.0.ticket_id', $ticket->external_ticket_id)
+            ->assertJsonPath('data.reservation_request.items.0.net_rate', 6863)
+            ->assertJsonPath('data.reservation_request.items.0.currency_code', 'EUR')
+            ->assertJsonPath('data.main_listing.xs2_ticket_id', $ticket->id)
+            ->assertJsonPath('data.main_listing.external_ticket_id', $ticket->external_ticket_id)
+            ->assertJsonPath('data.main_listing.original_price', 68.63)
+            ->assertJsonPath('data.main_listing.original_currency', 'EUR');
+    }
+
     public function test_manual_create_xs2_order_returns_success_when_booking_already_exists(): void
     {
         $ticket = $this->seedSandboxTicketMapping('906584');
