@@ -468,35 +468,14 @@ class SbOrderXs2SandboxOrderService
      */
     public function resolveOriginalInventoryPrice(Xs2Ticket $ticket): array
     {
-        $currency = $this->resolveXs2InventoryCurrency($ticket)
-            ?? $this->normalizeCurrencyCode($ticket->currency_code)
-            ?? 'EUR';
-        $payload = is_array($ticket->raw_payload) ? $ticket->raw_payload : [];
-        $payloadCurrency = $this->resolveXs2InventoryCurrency($ticket);
-        $columnCurrency = $this->normalizeCurrencyCode($ticket->currency_code);
+        $currency = $this->resolveReservationCurrency($ticket);
         $divisor = max(1, (int) config('services.xs2.minor_unit_divisor'));
 
         $minor = 0;
-        if ($payloadCurrency === null || $payloadCurrency === $currency) {
-            foreach (['net_rate', 'face_value', 'sales_price', 'gross_rate'] as $key) {
-                $candidate = $this->positiveIntFromPayload($payload, $key);
-                if ($candidate > 0) {
-                    $minor = $candidate;
-                    break;
-                }
-            }
-        }
-
-        if ($minor <= 0 && ($columnCurrency === null || $columnCurrency === $currency)) {
-            foreach ([
-                (int) ($ticket->net_rate ?? 0),
-                (int) ($ticket->face_value ?? 0),
-                (int) ($ticket->package_price ?? 0),
-            ] as $candidate) {
-                if ($candidate > 0) {
-                    $minor = $candidate;
-                    break;
-                }
+        foreach ($this->reservationRateCandidates($ticket, $currency) as $rate) {
+            if ($rate > 0) {
+                $minor = $rate;
+                break;
             }
         }
 
