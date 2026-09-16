@@ -17,6 +17,7 @@ class CronJobManagementService
         'xs2-sb-failed-listing-publish-retry',
         'xs2-sb-listing-inventory',
         'xs2-sb-order-sync',
+        'xs2-sb-order-xs2-retry',
         'xs2-sb-order-guest-data-sync',
         'xs2-events-sync',
         'sb-events-sync',
@@ -166,6 +167,7 @@ class CronJobManagementService
             'xs2-sb-failed-listing-publish-retry',
             'xs2-sb-listing-inventory',
             'xs2-sb-order-sync',
+            'xs2-sb-order-xs2-retry',
             'xs2-sb-order-guest-data-sync',
             'sb-events-sync',
             'sanctum-prune-expired' => true,
@@ -321,6 +323,20 @@ class CronJobManagementService
                 'command' => 'xs2:sync-order-guest-data',
                 'exit_code' => $exitCode,
                 'message' => trim(Artisan::output()) ?: 'SB order guest data → XS2 sync completed.',
+            ];
+        }
+
+        if ($cronJobId === 'xs2-sb-order-xs2-retry') {
+            $exitCode = Artisan::call('xs2:retry-failed-sb-order-sync');
+            if ($exitCode !== 0) {
+                throw new \RuntimeException(trim(Artisan::output()) ?: 'SB order XS2 sync retry failed.');
+            }
+
+            return [
+                'action' => 'command',
+                'command' => 'xs2:retry-failed-sb-order-sync',
+                'exit_code' => $exitCode,
+                'message' => trim(Artisan::output()) ?: 'SB order XS2 sync retry completed.',
             ];
         }
 

@@ -114,7 +114,7 @@ $sbBookingsSchedule
     ->withoutOverlapping($overlapMinutes)
     ->onOneServer();
 
-$sbOrderXs2RetryInterval = max(1, min(60, (int) config('xs2.sb_order_xs2_sync.retry_interval_minutes', 5)));
+$sbOrderXs2RetryInterval = $intervals->minutesFor('xs2-sb-order-xs2-retry');
 $sbOrderXs2RetrySchedule = Schedule::command('xs2:retry-failed-sb-order-sync');
 if ($sbOrderXs2RetryInterval <= 1) {
     $sbOrderXs2RetrySchedule->everyMinute();

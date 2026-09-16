@@ -62,6 +62,11 @@ class CronTaskIdentifier
             return 'xs2-sb-order-sync';
         }
 
+        if (str_contains($normalized, 'xs2:retry-failed-sb-order-sync')
+            || str_contains($command, 'xs2:retry-failed-sb-order-sync')) {
+            return 'xs2-sb-order-xs2-retry';
+        }
+
         if (str_contains($normalized, 'xs2:sync-order-guest-data')
             || str_contains($command, 'xs2:sync-order-guest-data')) {
             return 'xs2-sb-order-guest-data-sync';

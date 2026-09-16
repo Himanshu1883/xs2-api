@@ -73,6 +73,8 @@ class IntegrationSettingService
 
     public const XS2_SB_ORDER_GUEST_DATA_SYNC_INTERVAL_MINUTES = 'XS2_SB_ORDER_GUEST_DATA_SYNC_INTERVAL_MINUTES';
 
+    public const XS2_SB_ORDER_XS2_SYNC_RETRY_INTERVAL_MINUTES = 'XS2_SB_ORDER_XS2_SYNC_RETRY_INTERVAL_MINUTES';
+
     /** @var list<string> */
     public const SELLER_API_KEYS = [
         self::SELLER_LISTING_BASE_URL,

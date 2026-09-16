@@ -20,6 +20,7 @@ class CronToggleService
         'xs2-sb-failed-listing-publish-retry',
         'xs2-sb-listing-inventory',
         'xs2-sb-order-sync',
+        'xs2-sb-order-xs2-retry',
         'xs2-sb-order-guest-data-sync',
         'xs2-events-sync',
         'sanctum-prune-expired',

@@ -62,6 +62,13 @@ class CronIntervalService
                 'max' => 60,
                 'presets' => self::DEFAULT_PRESETS,
             ],
+            'xs2-sb-order-xs2-retry' => [
+                'config_key' => 'xs2.sb_order_xs2_sync.retry_interval_minutes',
+                'setting_key' => IntegrationSettingService::XS2_SB_ORDER_XS2_SYNC_RETRY_INTERVAL_MINUTES,
+                'min' => 1,
+                'max' => 60,
+                'presets' => self::DEFAULT_PRESETS,
+            ],
             'xs2-sb-order-guest-data-sync' => [
                 'config_key' => 'xs2.sb_order_guest_data_sync.sync_interval_minutes',
                 'setting_key' => IntegrationSettingService::XS2_SB_ORDER_GUEST_DATA_SYNC_INTERVAL_MINUTES,

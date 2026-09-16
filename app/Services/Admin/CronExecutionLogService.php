@@ -330,6 +330,7 @@ class CronExecutionLogService
             'xs2-sb-failed-listing-publish-retry' => 'xs2:retry-failed-listing-publish',
             'xs2-sb-listing-inventory' => 'xs2:sync-sb-listing-inventory',
             'xs2-sb-order-sync' => 'seller-api:sync-bookings',
+            'xs2-sb-order-xs2-retry' => 'xs2:retry-failed-sb-order-sync',
             'xs2-sb-order-guest-data-sync' => 'xs2:sync-order-guest-data',
             default => null,
         };

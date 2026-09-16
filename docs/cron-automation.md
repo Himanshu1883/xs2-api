@@ -153,6 +153,63 @@ ORDER BY split_order;
 2. On SB Orders admin page, confirm XS2 push status / payloads on order rows.
 3. Use **Create manual** for a single order if needed.
 
+### 8. SB order → XS2 (env + toggles)
+
+**Env keys (Railway / `.env`)**
+
+| Env var | Config key | Notes |
+|---------|------------|--------|
+| `XS2_SANDBOX_AUTO_CREATE_ORDERS_FROM_SB=true` | `xs2.sandbox.auto_create_orders_from_sb` | Env only — not stored in `integration_settings`. Cron Config shows `auto_create_enabled` from config. |
+| `XS2_ORDERS_RESERVATION_CURRENCY=EUR` | `xs2.sb_order_xs2_sync.reservation_currency` | **Admin API Config can override** via `integration_settings` key `XS2_ORDERS_RESERVATION_CURRENCY` (wins over env). |
+| `XS2_SB_ORDER_XS2_SYNC_RETRY_ENABLED=true` | `xs2.sb_order_xs2_sync.retry_enabled` | Env only; disables scheduled + manual retry command when `false`. |
+| `SB_BOOKINGS_SYNC_ENABLED=true` | `xs2.sb_bookings_sync.enabled` | Gates `seller-api:sync-bookings` schedule. |
+
+**Admin UI**
+
+1. **Cron Config** (`/admin` → Cron / scheduler): confirm **Scheduler: enabled**, **Start All** on (or per-cron toggles on).
+2. Tasks **SB order → XS2 sandbox order sync** (`xs2-sb-order-sync`) and **SB order → XS2 sync retry** (`xs2-sb-order-xs2-retry`) should show **toggle on**, **will_run: true**, and a **Next run** time.
+3. Open task detail — `extra.auto_create_enabled` should be `true` when Railway has `XS2_SANDBOX_AUTO_CREATE_ORDERS_FROM_SB=true` (redeploy after env change so `config:cache` picks it up).
+4. **Queue** page: `GET /api/admin/queues` — `xs2-sync` pending should drain when workers run; failed jobs at `GET /api/admin/queues/failed-jobs?queue=xs2-sync`.
+5. **Run now** on `xs2-sb-order-sync` or `xs2-sb-order-xs2-retry` from Cron Jobs UI; watch **execution logs** and `cron_execution_logs` for `cron_job_id` matching the toggle id.
+
+**SQL**
+
+```sql
+-- XS2 jobs for SB orders (processed by xs2-sync worker)
+SELECT id, queue, payload, attempts, available_at, created_at
+FROM jobs
+WHERE queue = 'xs2-sync'
+ORDER BY id DESC
+LIMIT 20;
+
+-- SB → XS2 sync attempt history
+SELECT sb_order_id, status, error, updated_at
+FROM sb_order_xs2_sync_logs
+ORDER BY updated_at DESC
+LIMIT 20;
+
+-- Cron toggle + scheduler overrides (not env vars)
+SELECT key, value FROM integration_settings
+WHERE key IN (
+  'START_ALL_ENABLED',
+  'APP_SCHEDULER_ENABLED',
+  'CRON_INDIVIDUAL_TOGGLES',
+  'XS2_ORDERS_RESERVATION_CURRENCY'
+);
+```
+
+**Railway one-off (`railway run`)**
+
+```bash
+php artisan config:show xs2.sandbox.auto_create_orders_from_sb
+php artisan config:show xs2.sb_order_xs2_sync.reservation_currency
+php artisan seller-api:sync-bookings
+php artisan xs2:retry-failed-sb-order-sync --dry-run
+php artisan queue:work --queue=xs2-sync --once
+```
+
+Workers: `docker-entrypoint.sh` runs a **general** worker on `admin-cron,xs2-mapping,xs2-reconcile,xs2-listing-gen,xs2-sync,xs2-guest,default` plus a dedicated **seller-api** worker. `QUEUE_CONNECTION=database` (Dockerfile default).
+
 ### SQL quick checks
 
 ```sql

@@ -5,6 +5,7 @@ namespace App\Services\Admin;
 use App\Jobs\SyncXs2EventInventory;
 use App\Models\EventMapping;
 use App\Models\SbOrder;
+use App\Models\SbOrderXs2SyncLog;
 use App\Models\Xs2Event;
 use App\Models\Xs2Order;
 use App\Models\Xs2EventInventorySyncState;
@@ -80,6 +81,7 @@ class CronConfigService
             ],
             $this->xs2EventTasks($states, $scheduleByTaskId, $xs2Enabled),
             $this->xs2SbOrderSyncTasks($scheduleByTaskId, $states, $xs2Enabled),
+            $this->xs2SbOrderXs2RetryTasks($scheduleByTaskId),
             $this->xs2SbOrderGuestDataSyncTasks($scheduleByTaskId, $states, $xs2Enabled),
         );
 
@@ -765,6 +767,75 @@ class CronConfigService
             'sb_orders_total' => $sbOrdersTotal,
             'xs2_orders_from_sb' => $xs2FromSb,
         ];
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $scheduleByTaskId
+     * @return list<array<string, mixed>>
+     */
+    private function xs2SbOrderXs2RetryTasks(array $scheduleByTaskId): array
+    {
+        $enabled = (bool) config('xs2.sb_order_xs2_sync.retry_enabled', true);
+        $interval = max(1, min(60, (int) config('xs2.sb_order_xs2_sync.retry_interval_minutes', 5)));
+        $orderQueue = (string) config('xs2.sandbox.order_queue', config('xs2.queue', 'xs2-sync'));
+        $telemetry = $this->xs2SbOrderXs2RetryTelemetry();
+
+        return [
+            $this->finalizeTask(
+                $this->task(
+                    id: 'xs2-sb-order-xs2-retry',
+                    name: 'SB order → XS2 sync retry',
+                    type: 'command',
+                    command: 'xs2:retry-failed-sb-order-sync',
+                    schedule: match (true) {
+                        $interval <= 1 => 'Every minute',
+                        $interval === 2 => 'Every 2 minutes',
+                        default => 'Every '.$interval.' minutes',
+                    },
+                    scheduleDetail: 'Re-queues CreateXs2SandboxOrderFromSbOrder for SB orders whose xs2 sync log is failed or stuck in queued/processing. Complements real-time webhook/sync-bookings paths.',
+                    queue: $orderQueue,
+                    syncResource: null,
+                    state: null,
+                    extra: [
+                        'cron_role' => 'sb_order_xs2_retry',
+                        'cron_role_label' => 'Failed / stuck XS2 order retry',
+                        'what_it_does' => 'Scans sb_order_xs2_sync_logs for failed or long-running queued/processing rows and dispatches CreateXs2SandboxOrderFromSbOrder on the xs2-sync queue.',
+                        'does_not_do' => 'Does not import SB bookings (use xs2-sb-order-sync). Does not fetch attendee data (use xs2-sb-order-guest-data-sync).',
+                        'manual_command' => 'php artisan xs2:retry-failed-sb-order-sync',
+                        'worker_hint' => 'php artisan queue:work --queue='.$orderQueue,
+                        'retry_enabled' => $enabled,
+                        'eligible_failed_or_stuck' => $telemetry['eligible_failed_or_stuck'] ?? 0,
+                        'sync_interval_minutes' => $interval,
+                    ],
+                    enabled: $enabled,
+                    category: 'xs2',
+                ),
+                $scheduleByTaskId['xs2-sb-order-xs2-retry'] ?? null,
+            ),
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function xs2SbOrderXs2RetryTelemetry(): array
+    {
+        if (! Schema::hasTable('sb_order_xs2_sync_logs')) {
+            return ['eligible_failed_or_stuck' => 0];
+        }
+
+        $stuckBefore = now()->subMinutes(max(5, (int) config('xs2.sb_order_xs2_sync.stuck_queued_minutes', 15)));
+        $count = (int) SbOrderXs2SyncLog::query()
+            ->where(function ($query) use ($stuckBefore): void {
+                $query->where('status', SbOrderXs2SyncLog::STATUS_FAILED)
+                    ->orWhere(function ($query) use ($stuckBefore): void {
+                        $query->whereIn('status', [
+                            SbOrderXs2SyncLog::STATUS_QUEUED,
+                            SbOrderXs2SyncLog::STATUS_PROCESSING,
+                        ])->where('updated_at', '<=', $stuckBefore);
+                    });
+            })
+            ->count();
+
+        return ['eligible_failed_or_stuck' => $count];
     }
 
     /**

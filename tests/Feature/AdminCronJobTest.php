@@ -319,6 +319,39 @@ class AdminCronJobTest extends TestCase
         Queue::assertPushed(\App\Jobs\RunAdminCronJob::class, fn (\App\Jobs\RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-sb-order-sync');
     }
 
+    public function test_cron_config_exposes_sb_order_xs2_retry_task(): void
+    {
+        config()->set('xs2.sb_order_xs2_sync.retry_enabled', true);
+
+        $token = $this->adminToken();
+
+        $response = $this->withToken($token)
+            ->getJson('/api/admin/cron-config')
+            ->assertOk();
+
+        $task = collect($response->json('data.tasks'))->firstWhere('id', 'xs2-sb-order-xs2-retry');
+        $this->assertNotNull($task);
+        $this->assertSame('xs2:retry-failed-sb-order-sync', $task['command']);
+        $this->assertTrue($task['toggleable']);
+        $this->assertTrue($task['will_run']);
+        $this->assertSame('sb_order_xs2_retry', $task['extra']['cron_role']);
+    }
+
+    public function test_admin_can_run_sb_order_xs2_retry(): void
+    {
+        Queue::fake();
+
+        $token = $this->adminToken();
+
+        $this->withToken($token)
+            ->postJson('/api/admin/queue/cron-jobs/xs2-sb-order-xs2-retry/run')
+            ->assertAccepted()
+            ->assertJsonPath('data.cron_job_id', 'xs2-sb-order-xs2-retry')
+            ->assertJsonPath('data.status', 'queued');
+
+        Queue::assertPushed(\App\Jobs\RunAdminCronJob::class, fn (\App\Jobs\RunAdminCronJob $job): bool => $job->cronJobId === 'xs2-sb-order-xs2-retry');
+    }
+
     private function adminToken(): string
     {
         $user = User::factory()->create(['user_type' => 6]);
