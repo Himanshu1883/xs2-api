@@ -220,38 +220,8 @@ class SellerEventImportService
             throw new \RuntimeException('Could not resolve a local match id from the Seatsbroker event_id.');
         }
 
-        if (DB::table('match_info')->where('m_id', $mId)->exists()) {
-            return [
-                'status' => 'already_exists',
-                'm_id' => $mId,
-                'event_id' => (string) $event['event_id'],
-                'match_name' => (string) ($event['match_name'] ?? 'Untitled event'),
-                'created' => [
-                    'event' => false,
-                    'venue' => false,
-                    'teams' => 0,
-                    'tournament' => false,
-                    'category' => false,
-                    'city' => false,
-                    'country' => false,
-                    'sections' => 0,
-                    'seat_categories' => 0,
-                ],
-            ];
-        }
-
         return DB::transaction(function () use ($event, $mId, $environment): array {
-            $created = [
-                'event' => false,
-                'venue' => false,
-                'teams' => 0,
-                'tournament' => false,
-                'category' => false,
-                'city' => false,
-                'country' => false,
-                'sections' => 0,
-                'seat_categories' => 0,
-            ];
+            $created = $this->emptyCreatedFlags();
 
             $categoryId = $this->ensureGameCategory($event, $created);
             $tournamentId = $this->ensureTournament($event, $categoryId, $created);
@@ -269,6 +239,58 @@ class SellerEventImportService
 
             $matchName = $this->nullableString($event['match_name'] ?? null) ?? "Event #{$mId}";
             $eventType = $this->nullableString($event['event_type'] ?? null) ?? 'match';
+            $catalogFields = [
+                'match_name' => $matchName,
+                'team_1' => $team1Id !== null ? (string) $team1Id : '',
+                'team_2' => $team2Id !== null ? (string) $team2Id : '',
+                'hometown' => $team1Id !== null ? (string) $team1Id : '0',
+                'tournament' => $tournamentId !== null ? (string) $tournamentId : '',
+                'match_date' => $matchDate,
+                'match_time' => $matchTime ?? '',
+                'venue' => $stadiumId,
+                'city' => $cityId !== null ? (string) $cityId : '',
+                'country' => $countryId !== null ? (string) $countryId : '',
+                'event_type' => $eventType,
+                'price_type' => $this->resolveImportPriceType($event),
+                'category' => $categoryId !== null ? (string) $categoryId : '',
+            ];
+
+            $existing = DB::table('match_info')->where('m_id', $mId)->first();
+            $columns = array_column(Schema::getColumns('match_info'), 'name');
+
+            if ($existing !== null) {
+                $update = [];
+                foreach ($catalogFields as $column => $value) {
+                    if (! in_array($column, $columns, true)) {
+                        continue;
+                    }
+
+                    if (! $this->catalogScalarEquals($existing->{$column} ?? null, $value)) {
+                        $update[$column] = $value;
+                    }
+                }
+
+                if ($update === []) {
+                    return [
+                        'status' => 'already_exists',
+                        'm_id' => $mId,
+                        'event_id' => (string) $event['event_id'],
+                        'match_name' => $matchName,
+                        'created' => $created,
+                    ];
+                }
+
+                DB::table('match_info')->where('m_id', $mId)->update($update);
+
+                return [
+                    'status' => 'updated',
+                    'm_id' => $mId,
+                    'event_id' => (string) $event['event_id'],
+                    'match_name' => $matchName,
+                    'created' => $created,
+                ];
+            }
+
             $slug = Str::slug($matchName);
             if ($slug === '') {
                 $slug = "event-{$mId}";
@@ -277,14 +299,9 @@ class SellerEventImportService
                 $slug .= '-tickets';
             }
 
-            $row = [
+            $row = array_merge($catalogFields, [
                 'm_id' => $mId,
-                'match_name' => $matchName,
                 'extra_title' => '',
-                'team_1' => $team1Id !== null ? (string) $team1Id : '',
-                'team_2' => $team2Id !== null ? (string) $team2Id : '',
-                'hometown' => $team1Id !== null ? (string) $team1Id : '0',
-                'tournament' => $tournamentId !== null ? (string) $tournamentId : '',
                 'slug' => $slug,
                 'status' => '1',
                 'availability' => '1',
@@ -294,27 +311,18 @@ class SellerEventImportService
                 'meta_title' => '',
                 'meta_description' => '',
                 'hot_tickets' => '0',
-                'match_date' => $matchDate,
-                'match_time' => $matchTime ?? '',
-                'venue' => $stadiumId,
-                'city' => $cityId !== null ? (string) $cityId : '',
-                'country' => $countryId !== null ? (string) $countryId : '',
                 'create_date' => now()->format('Y-m-d H:i:s'),
-                'event_type' => $eventType,
-                'price_type' => $this->resolveImportPriceType($event),
                 'store_id' => 13,
                 'xs2event_id' => '',
                 'source_type' => '1boxoffice',
-                'category' => $categoryId !== null ? (string) $categoryId : '',
                 'tixstock_status' => 1,
                 'oneclicket_status' => 1,
                 'xs2event_status' => 1,
                 'oneboxoffice_status' => 1,
-            ];
+            ]);
 
             $row = $this->applyLegacyMatchInfoDefaults($row);
 
-            $columns = array_column(Schema::getColumns('match_info'), 'name');
             $insert = [];
             foreach ($row as $column => $value) {
                 if (in_array($column, $columns, true)) {
@@ -339,6 +347,7 @@ class SellerEventImportService
      * @param  list<array{event_id:string,payload?:array<string, mixed>|null}>  $events
      * @return array{
      *     created:int,
+     *     updated:int,
      *     skipped:int,
      *     failed:int,
      *     results:list<array<string, mixed>>,
@@ -349,6 +358,7 @@ class SellerEventImportService
     {
         $environment = $this->normalizeCatalogEnvironment($environment);
         $created = 0;
+        $updated = 0;
         $skipped = 0;
         $failed = 0;
         /** @var list<array<string, mixed>> $results */
@@ -368,11 +378,11 @@ class SellerEventImportService
                 $result = $this->import($eventId, $payload, $environment);
                 $results[] = $result;
 
-                if (($result['status'] ?? null) === 'already_exists') {
-                    $skipped++;
-                } else {
-                    $created++;
-                }
+                match ($result['status'] ?? null) {
+                    'already_exists' => $skipped++,
+                    'updated' => $updated++,
+                    default => $created++,
+                };
             } catch (\Throwable $exception) {
                 $failed++;
                 $message = trim($exception->getMessage());
@@ -385,6 +395,7 @@ class SellerEventImportService
 
         return [
             'created' => $created,
+            'updated' => $updated,
             'skipped' => $skipped,
             'failed' => $failed,
             'results' => $results,
@@ -521,6 +532,7 @@ class SellerEventImportService
         $summary = array_merge([
             'fetched' => 0,
             'created' => 0,
+            'updated' => 0,
             'skipped' => 0,
             'failed' => 0,
             'created_events' => [],
@@ -573,6 +585,12 @@ class SellerEventImportService
                     $result = $this->import($eventId, $event, $environment);
                     if ($result['status'] === 'already_exists') {
                         $summary['skipped']++;
+
+                        continue;
+                    }
+
+                    if ($result['status'] === 'updated') {
+                        $summary['updated']++;
 
                         continue;
                     }
@@ -1075,9 +1093,47 @@ class SellerEventImportService
     }
 
     /**
-     * @param  array<string, mixed>  $row
-     * @return array<string, mixed>
+     * @return array{
+     *     event:bool,
+     *     venue:bool,
+     *     teams:int,
+     *     tournament:bool,
+     *     category:bool,
+     *     city:bool,
+     *     country:bool,
+     *     sections:int,
+     *     seat_categories:int
+     * }
      */
+    private function emptyCreatedFlags(): array
+    {
+        return [
+            'event' => false,
+            'venue' => false,
+            'teams' => 0,
+            'tournament' => false,
+            'category' => false,
+            'city' => false,
+            'country' => false,
+            'sections' => 0,
+            'seat_categories' => 0,
+        ];
+    }
+
+    private function catalogScalarEquals(mixed $current, mixed $next): bool
+    {
+        return $this->normalizeCatalogCompare($current) === $this->normalizeCatalogCompare($next);
+    }
+
+    private function normalizeCatalogCompare(mixed $value): string
+    {
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        return trim((string) $value);
+    }
+
     private function applyLegacyMatchInfoDefaults(array $row): array
     {
         $knownDefaults = [

@@ -193,15 +193,17 @@ class SellerApiEventController extends Controller
         $debug = $recorder->flush();
         $preview = $import->previewSingleEventImport($eventId, $environment);
 
-        $message = $result['status'] === 'already_exists'
-            ? sprintf('Event “%s” already exists locally (m_id %d).', $result['match_name'], $result['m_id'])
-            : sprintf('Imported “%s” as local event m_id %d.', $result['match_name'], $result['m_id']);
+        $message = match ($result['status']) {
+            'already_exists' => sprintf('Event “%s” already exists locally (m_id %d).', $result['match_name'], $result['m_id']),
+            'updated' => sprintf('Updated local event “%s” (m_id %d) from the Seats Broker catalog.', $result['match_name'], $result['m_id']),
+            default => sprintf('Imported “%s” as local event m_id %d.', $result['match_name'], $result['m_id']),
+        };
 
         return response()->json([
             'message' => $message,
             'data' => $result,
             'meta' => $this->sellerApiMeta($environment, $preview['request_url'], $debug),
-        ], $result['status'] === 'already_exists' ? 200 : 201);
+        ], $result['status'] === 'created' ? 201 : 200);
     }
 
     public function bulkImport(
@@ -236,27 +238,29 @@ class SellerApiEventController extends Controller
 
         $debug = $recorder->flush();
         $created = (int) ($result['created'] ?? 0);
+        $updated = (int) ($result['updated'] ?? 0);
         $skipped = (int) ($result['skipped'] ?? 0);
         $failed = (int) ($result['failed'] ?? 0);
         $total = count($events);
 
         $message = match (true) {
-            $failed > 0 && ($created > 0 || $skipped > 0) => sprintf(
-                'Imported %d of %d event(s): %d added, %d already existed, %d failed.',
-                $created + $skipped,
+            $failed > 0 && ($created > 0 || $updated > 0 || $skipped > 0) => sprintf(
+                'Imported %d of %d event(s): %d added, %d updated, %d unchanged, %d failed.',
+                $created + $updated + $skipped,
                 $total,
                 $created,
+                $updated,
                 $skipped,
                 $failed,
             ),
             $failed > 0 => sprintf('Bulk import failed for all %d selected event(s).', $total),
-            $created > 0 && $skipped > 0 => sprintf(
-                'Imported %d event(s): %d added, %d already existed.',
-                $created + $skipped,
+            $created > 0 || $updated > 0 => sprintf(
+                'Imported %d event(s): %d added, %d updated, %d unchanged.',
+                $created + $updated + $skipped,
                 $created,
+                $updated,
                 $skipped,
             ),
-            $created > 0 => sprintf('Added %d event(s) to the local catalogue.', $created),
             $skipped > 0 => sprintf('All %d selected event(s) already exist locally.', $skipped),
             default => 'No events were imported.',
         };

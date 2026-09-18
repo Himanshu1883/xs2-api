@@ -357,6 +357,89 @@ class SellerApiEventImportTest extends TestCase
             ->assertJsonPath('data.status', 'already_exists');
     }
 
+    public function test_reimport_updates_stale_match_date_from_catalog(): void
+    {
+        $mId = 10457;
+        $eventId = SeatsbrokerCatalogId::hash($mId);
+        $stadiumId = 1580;
+        $tournamentId = 56;
+
+        DB::table('stadium')->insert([
+            's_id' => $stadiumId,
+            'stadium_type' => 1,
+            'stadium_name' => 'Jose de Alivalade Stadium',
+            'map_code' => '',
+            'status' => '1',
+            'attendee_status' => '0',
+            'create_date' => '',
+            'stadium_name_ar' => '',
+        ]);
+
+        DB::table('match_info')->insert([
+            'm_id' => $mId,
+            'match_name' => 'Sporting CP vs FC Arouca',
+            'team_1' => '0',
+            'team_2' => '0',
+            'match_date' => '2026-08-23 20:00:00',
+            'match_time' => '20:00',
+            'tournament' => (string) $tournamentId,
+            'venue' => $stadiumId,
+            'upcoming_events' => 0,
+            'status' => '1',
+            'create_date' => (string) time(),
+            'slug' => 'sporting-cp-vs-fc-arouca-tickets',
+            'event_type' => 'match',
+        ]);
+
+        Http::fake([
+            'https://externalapi.test/api/events*event_id*' => Http::response([
+                'data' => [[
+                    'event_id' => $eventId,
+                    'tournament_id' => SeatsbrokerCatalogId::hash($tournamentId),
+                    'stadium_id' => SeatsbrokerCatalogId::hash($stadiumId),
+                    'team_image_a' => null,
+                    'team_image_b' => null,
+                    'match_name' => 'Sporting CP vs FC Arouca',
+                    'team_name_a' => 'Sporting CP',
+                    'team_name_b' => 'FC Arouca',
+                    'team_id_a' => null,
+                    'team_id_b' => null,
+                    'match_date' => '2026-09-19 20:30:00',
+                    'match_time' => '20:30',
+                    'event_type' => 'match',
+                    'category_name' => 'Football',
+                    'tournament_name' => 'Liga Portugal',
+                    'stadium_name' => 'Jose de Alivalade Stadium',
+                    'stadium_image' => null,
+                    'country_name' => 'Portugal',
+                    'city_name' => 'Lisbon',
+                ]],
+                'meta' => ['current_page' => 1, 'last_page' => 1],
+            ]),
+            'https://externalapi.test/api/venues*' => Http::response([
+                'data' => [],
+                'meta' => ['current_page' => 1, 'last_page' => 1],
+            ]),
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->postJson('/api/admin/seller-api/events/import', [
+                'event_id' => $eventId,
+                'environment' => 'production',
+            ])
+            ->assertOk()
+            ->assertJsonPath('data.status', 'updated')
+            ->assertJsonPath('data.m_id', $mId);
+
+        $this->assertDatabaseHas('match_info', [
+            'm_id' => $mId,
+            'match_name' => 'Sporting CP vs FC Arouca',
+            'match_date' => '2026-09-19 20:30:00',
+            'match_time' => '20:30',
+            'tournament' => (string) $tournamentId,
+        ]);
+    }
+
     public function test_bulk_import_creates_new_events_and_skips_existing(): void
     {
         $existingEventId = SeatsbrokerCatalogId::hash(11411);
@@ -695,13 +778,15 @@ class SellerApiEventImportTest extends TestCase
             ->assertJsonPath('data.result.environment', 'production')
             ->assertJsonPath('data.result.fetched', 2)
             ->assertJsonPath('data.result.created', 1)
-            ->assertJsonPath('data.result.skipped', 1)
+            ->assertJsonPath('data.result.updated', 1)
+            ->assertJsonPath('data.result.skipped', 0)
             ->assertJsonPath('data.result.failed', 0)
             ->assertJsonPath('data.result.created_events.0.m_id', $newMId);
 
         $this->assertDatabaseHas('match_info', [
             'm_id' => $existingMId,
             'match_name' => 'Existing Derby',
+            'match_date' => '2026-09-10 20:00:00',
         ]);
         $this->assertDatabaseHas('match_info', [
             'm_id' => $newMId,
