@@ -7,15 +7,17 @@ use App\Models\Xs2Ticket;
 use Illuminate\Support\Facades\Schema;
 
 /**
- * Runs the full publish gate (mapping + transform + payload) before any SB HTTP call
- * is queued. Auto-publish paths must pass this check first.
+ * Local publish gate before a Seller API job is queued.
+ *
+ * Incomplete rows (unmapped event, no price, no stock, empty category name)
+ * stay blocked. Pending category/stadium mapping is allowed when the ticket
+ * already carries an XS2 category name — the queued job builds the payload.
  */
 class ListingPublishReadinessService
 {
     public function __construct(
         private readonly Xs2TicketMappingStatusService $mappingStatuses,
         private readonly ListingPublishValidator $validator,
-        private readonly Xs2SellerListingTransformer $transformer,
     ) {}
 
     /**
@@ -46,11 +48,10 @@ class ListingPublishReadinessService
 
             $this->validator->validateForPublish($ticket, $mapping, $mappingState, $strictPublish);
 
-            $payload = $mappingState
-                ? $this->transformer->transform($ticket, $mapping, $mappingState, $transformOverrides)
-                : $this->transformer->transform($ticket, $mapping, null, $transformOverrides);
-
-            $this->validator->validatePayload($payload);
+            // Payload transform talks to Seller API (dropdown/catalog). Do not
+            // require it here — that blocked dispatch for mapped events that
+            // publish with the XS2 category name. PushXs2TicketToSellerApi /
+            // PublishSplitListings still transform + validatePayload.
 
             return ['ready' => true, 'error' => null];
         } catch (ListingTransformationException $exception) {

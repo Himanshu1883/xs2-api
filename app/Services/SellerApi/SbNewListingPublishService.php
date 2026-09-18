@@ -119,6 +119,70 @@ class SbNewListingPublishService
     }
 
     /**
+     * Queue a first-time Seller API publish as soon as the event is mapped and
+     * the listing is locally complete (stock, price, XS2 category name).
+     * Does not wait for xs2:publish-new-sb-listings.
+     */
+    public function dispatchIfReady(Xs2Ticket $ticket, bool $manualPublish = false): bool
+    {
+        if (! (bool) config('xs2.sb_new_listing_publish.enabled', true)
+            || ! (bool) config('services.seller_api.enabled', true)) {
+            return false;
+        }
+
+        $ticket->loadMissing(['xs2Event.mapping', 'mappingState', 'listingMapping', 'listingSplits']);
+
+        if (! ($ticket->xs2Event?->isSellable() ?? false)) {
+            return false;
+        }
+
+        if ($ticket->ticket_status !== 'available' || (int) $ticket->stock <= 0) {
+            return false;
+        }
+
+        $mapping = $ticket->xs2Event?->mapping;
+        if (! $mapping || ! in_array($mapping->status, ['mapped', 'created'], true) || ! $mapping->m_id) {
+            return false;
+        }
+
+        $state = Schema::hasTable('xs2_ticket_mapping_states')
+            ? $this->mappingStatuses->resolveIfStale($ticket)
+            : null;
+
+        if (! $this->mappingStatuses->canAutoPublish($ticket, $state?->mapping_status)) {
+            return false;
+        }
+
+        if ($this->hasPublishFailure($ticket) || $this->isPublishedOnSb($ticket)) {
+            return false;
+        }
+
+        $readiness = $this->readiness->assess($ticket, strictPublish: $manualPublish);
+        if (! $readiness['ready']) {
+            return false;
+        }
+
+        try {
+            $this->queuePublish($ticket, inline: false, manualPublish: $manualPublish, delayUntil: null);
+
+            return true;
+        } catch (Throwable $exception) {
+            $message = $this->safeMessage($exception);
+            $this->mappingStatuses->markPublishFailed($ticket, $message);
+            Log::channel(config('services.seller_api.log_channel', 'stack'))->warning(
+                'Seats Broker listing could not be queued immediately after mapping.',
+                [
+                    'ticket_id' => $ticket->id,
+                    'external_ticket_id' => $ticket->external_ticket_id,
+                    'error' => $message,
+                ],
+            );
+
+            return false;
+        }
+    }
+
+    /**
      * @param  array<string, mixed>  $summary
      */
     private function processTicket(
@@ -249,41 +313,11 @@ class SbNewListingPublishService
                 ? null
                 : $firstDispatchAt->copy()->addSeconds($queueIndex * $dispatchSpacingSeconds);
 
-            if ($this->splitRestock->canRepublishAfterRestock($ticket)) {
-                $config = $this->splitRestock->resolveSplitConfig($ticket);
-                if ($config === null) {
-                    $summary['skipped']++;
-                    $summary['skip_reasons']['validation_failed']++;
-                    $summary['needs_publish']--;
-
-                    return;
-                }
-
-                if ($inline) {
-                    PublishSplitListings::dispatchSync($ticket->id, $config);
-                    $summary['published_inline']++;
-                } else {
-                    $pending = PublishSplitListings::dispatch($ticket->id, $config);
-                    if ($delayUntil !== null) {
-                        $pending->delay($delayUntil);
-                    }
-                    $summary['queued']++;
-                    $queueIndex++;
-                }
-
-                return;
-            }
+            $this->queuePublish($ticket, $inline, $manualPublish, $delayUntil);
 
             if ($inline) {
-                $this->publisher->publishTicket($ticket->id, strictPublish: $manualPublish, sync: true);
                 $summary['published_inline']++;
             } else {
-                $this->publisher->publishTicket(
-                    $ticket->id,
-                    strictPublish: $manualPublish,
-                    sync: false,
-                    delayUntil: $delayUntil,
-                );
                 $summary['queued']++;
                 $queueIndex++;
             }
@@ -301,6 +335,44 @@ class SbNewListingPublishService
                 ],
             );
         }
+    }
+
+    private function queuePublish(
+        Xs2Ticket $ticket,
+        bool $inline,
+        bool $manualPublish,
+        ?\Illuminate\Support\Carbon $delayUntil,
+    ): void {
+        if ($this->splitRestock->canRepublishAfterRestock($ticket)) {
+            $config = $this->splitRestock->resolveSplitConfig($ticket);
+            if ($config === null) {
+                throw new \RuntimeException('Split listing configuration is missing.');
+            }
+
+            if ($inline) {
+                PublishSplitListings::dispatchSync($ticket->id, $config);
+            } else {
+                $pending = PublishSplitListings::dispatch($ticket->id, $config);
+                if ($delayUntil !== null) {
+                    $pending->delay($delayUntil);
+                }
+            }
+
+            return;
+        }
+
+        if ($inline) {
+            $this->publisher->publishTicket($ticket->id, strictPublish: $manualPublish, sync: true);
+
+            return;
+        }
+
+        $this->publisher->publishTicket(
+            $ticket->id,
+            strictPublish: $manualPublish,
+            sync: false,
+            delayUntil: $delayUntil,
+        );
     }
 
     /**

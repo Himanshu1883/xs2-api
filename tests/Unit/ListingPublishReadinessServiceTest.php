@@ -2,14 +2,12 @@
 
 namespace Tests\Unit;
 
-use App\Exceptions\Integrations\ListingTransformationException;
 use App\Models\EventMapping;
 use App\Models\Xs2Event;
 use App\Models\Xs2Ticket;
 use App\Models\Xs2TicketMappingState;
 use App\Services\Xs2\ListingPublishReadinessService;
 use App\Services\Xs2\ListingPublishValidator;
-use App\Services\Xs2\Xs2SellerListingTransformer;
 use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Support\Facades\Schema;
 use Mockery;
@@ -35,7 +33,6 @@ class ListingPublishReadinessServiceTest extends TestCase
         $service = new ListingPublishReadinessService(
             Mockery::mock(Xs2TicketMappingStatusService::class),
             Mockery::mock(ListingPublishValidator::class),
-            Mockery::mock(Xs2SellerListingTransformer::class),
         );
 
         $result = $service->assess($ticket);
@@ -44,7 +41,7 @@ class ListingPublishReadinessServiceTest extends TestCase
         $this->assertStringContainsString('event mapping', strtolower((string) $result['error']));
     }
 
-    public function test_assess_returns_ready_when_validation_and_transform_succeed(): void
+    public function test_assess_returns_ready_when_event_is_mapped_and_validation_succeeds(): void
     {
         Schema::shouldReceive('hasTable')->with('xs2_ticket_mapping_states')->andReturn(true);
 
@@ -63,28 +60,14 @@ class ListingPublishReadinessServiceTest extends TestCase
         $ticket->setRelation('xs2Event', $event);
 
         $mappingState = new Xs2TicketMappingState(['mapping_status' => 'ready_to_publish']);
-        $payload = [
-            'match_id' => 45,
-            'seller_reference' => 'XS2-ref',
-            'category_name' => 'Longside',
-            'ticket_type' => 2,
-            'split_type' => 3,
-            'seller_id' => 77,
-            'quantity' => 2,
-            'price' => '100.00',
-        ];
 
         $mappingStatuses = Mockery::mock(Xs2TicketMappingStatusService::class);
         $mappingStatuses->shouldReceive('resolveIfStale')->once()->andReturn($mappingState);
 
         $validator = Mockery::mock(ListingPublishValidator::class);
         $validator->shouldReceive('validateForPublish')->once();
-        $validator->shouldReceive('validatePayload')->once()->with($payload);
 
-        $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
-        $transformer->shouldReceive('transform')->once()->andReturn($payload);
-
-        $service = new ListingPublishReadinessService($mappingStatuses, $validator, $transformer);
+        $service = new ListingPublishReadinessService($mappingStatuses, $validator);
 
         $result = $service->assess($ticket);
 
@@ -92,7 +75,7 @@ class ListingPublishReadinessServiceTest extends TestCase
         $this->assertNull($result['error']);
     }
 
-    public function test_assess_returns_not_ready_when_transform_fails(): void
+    public function test_assess_returns_ready_when_category_mapping_is_pending_and_xs2_name_is_present(): void
     {
         Schema::shouldReceive('hasTable')->with('xs2_ticket_mapping_states')->andReturn(true);
 
@@ -104,13 +87,13 @@ class ListingPublishReadinessServiceTest extends TestCase
         $event->setRelation('mapping', $mapping);
 
         $ticket = new Xs2Ticket([
-            'category_name' => 'Longside',
+            'category_name' => 'Matchday Premium',
             'currency_code' => 'EUR',
-            'net_rate' => 10000,
+            'net_rate' => 46500,
         ]);
         $ticket->setRelation('xs2Event', $event);
 
-        $mappingState = new Xs2TicketMappingState(['mapping_status' => 'ready_to_publish']);
+        $mappingState = new Xs2TicketMappingState(['mapping_status' => 'pending_category_mapping']);
 
         $mappingStatuses = Mockery::mock(Xs2TicketMappingStatusService::class);
         $mappingStatuses->shouldReceive('resolveIfStale')->once()->andReturn($mappingState);
@@ -118,17 +101,12 @@ class ListingPublishReadinessServiceTest extends TestCase
         $validator = Mockery::mock(ListingPublishValidator::class);
         $validator->shouldReceive('validateForPublish')->once();
 
-        $transformer = Mockery::mock(Xs2SellerListingTransformer::class);
-        $transformer->shouldReceive('transform')
-            ->once()
-            ->andThrow(new ListingTransformationException('Category does not match SB dropdown.'));
-
-        $service = new ListingPublishReadinessService($mappingStatuses, $validator, $transformer);
+        $service = new ListingPublishReadinessService($mappingStatuses, $validator);
 
         $result = $service->assess($ticket);
 
-        $this->assertFalse($result['ready']);
-        $this->assertSame('Category does not match SB dropdown.', $result['error']);
+        $this->assertTrue($result['ready']);
+        $this->assertNull($result['error']);
     }
 
     public function test_assess_returns_not_ready_when_mapping_resolve_throws(): void
@@ -157,7 +135,6 @@ class ListingPublishReadinessServiceTest extends TestCase
         $service = new ListingPublishReadinessService(
             $mappingStatuses,
             Mockery::mock(ListingPublishValidator::class),
-            Mockery::mock(Xs2SellerListingTransformer::class),
         );
 
         $result = $service->assess($ticket);

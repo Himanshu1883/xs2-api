@@ -129,8 +129,7 @@ class ResolvePendingXs2Listings implements ShouldBeUniqueUntilProcessing, Should
             return;
         }
 
-        // Mapping resolution only updates local state — never auto-publishes or
-        // retires listings for pending stadium/category mapping alone.
+        $sbPublish->dispatchIfReady($ticket);
     }
 
     private function shouldRetireListing(Xs2Ticket $ticket, Xs2TicketMappingState $state): bool
@@ -144,14 +143,17 @@ class ResolvePendingXs2Listings implements ShouldBeUniqueUntilProcessing, Should
             return true;
         }
 
-        $liveCategoryMapping = Xs2CategoryMapping::query()
-            ->whereHas('category', function ($query) use ($ticket): void {
-                $query->where('xs2_event_id', $ticket->xs2_event_id)
-                    ->where('external_category_id', (string) ($ticket->category_id ?? ''));
-            })
-            ->first();
-        if ($liveCategoryMapping?->status === 'ignored') {
-            return true;
+        $liveCategoryId = (string) ($ticket->category_id ?? '');
+        if ($liveCategoryId !== '') {
+            $liveCategoryMapping = Xs2CategoryMapping::query()
+                ->whereHas('category', function ($query) use ($ticket, $liveCategoryId): void {
+                    $query->where('xs2_event_id', $ticket->xs2_event_id)
+                        ->where('external_category_id', $liveCategoryId);
+                })
+                ->first();
+            if ($liveCategoryMapping?->status === 'ignored') {
+                return true;
+            }
         }
 
         $ticket->loadMissing('xs2Event.venue.stadiumMapping');

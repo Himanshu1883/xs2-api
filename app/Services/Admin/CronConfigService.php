@@ -506,7 +506,7 @@ class CronConfigService
                         'does_not_do' => 'Does not update quantities or remove splits for listings that already exist on SB. Use Seats Broker existing listing qty sync when stock changes on published listings.',
                         'algorithm' => [
                             'Find available XS2 tickets with stock on events mapped to a local match (status mapped/created, m_id set).',
-                            'Resolve ticket mapping status; auto-publish only when ready_to_publish or published (full validation via ListingPublishReadinessService).',
+                            'Resolve ticket mapping status; auto-publish when the event is mapped and the listing has stock, price, and an XS2 category name (pending category mapping is not a hard block).',
                             'Skip tickets that already have an active SB master listing id or active split listing ids.',
                             'Apply listing publish rules (single vs split mode, qty caps, pairs-only) and queue Seller API create jobs.',
                             'Typical triggers: admin maps an event; XS2 inventory sync imports a new category/ticket row; category mapping becomes confirmed.',

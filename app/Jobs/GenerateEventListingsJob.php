@@ -109,10 +109,12 @@ class GenerateEventListingsJob implements ShouldBeUnique, ShouldQueue
             && (int) $ticket->stock > 0;
 
         try {
-            // Listing generation never creates SB listings — only the dedicated publish cron
-            // runs after full validation. Here we only retire listings for unavailable tickets.
             if ($available) {
-                $summary['skipped']++;
+                if ($sbPublish->dispatchIfReady($ticket)) {
+                    $summary['published']++;
+                } else {
+                    $summary['skipped']++;
+                }
 
                 return;
             }
