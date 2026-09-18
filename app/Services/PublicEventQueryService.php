@@ -95,7 +95,12 @@ class PublicEventQueryService
             ->firstOrFail();
     }
 
-    /** @return Builder<MatchInfo> */
+    /**
+     * Local catalogue rows (including imported Seats Broker events with no
+     * tickets / no public XS2 mapping). Ignored mappings stay hidden.
+     *
+     * @return Builder<MatchInfo>
+     */
     private function publicEventsQuery(): Builder
     {
         return MatchInfo::query()
@@ -103,13 +108,6 @@ class PublicEventQueryService
             ->select('match_info.*')
             ->tap(fn (Builder $query) => $this->englishLabels->apply($query))
             ->whereDoesntHave('eventMappings', fn (Builder $query) => $query->where('status', 'ignored'))
-            ->where(function (Builder $query): void {
-                $query->whereDoesntHave('eventMappings')
-                    ->orWhereHas('publicXs2Mappings', fn (Builder $mappingQuery) => $mappingQuery->whereHas(
-                        'xs2Event',
-                        fn (Builder $xs2Query) => $this->applyXs2Availability($xs2Query),
-                    ));
-            })
             ->with([
                 'publicXs2Mappings.xs2Event' => fn (Builder|BelongsTo $query) => $this->applyXs2Availability($query),
             ]);

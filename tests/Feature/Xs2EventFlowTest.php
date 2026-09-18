@@ -1097,7 +1097,7 @@ class Xs2EventFlowTest extends TestCase
             ->assertJsonMissingPath('data.0.raw_payload');
     }
 
-    public function test_public_event_details_return_not_found_for_unavailable_mapped_events(): void
+    public function test_public_event_details_keep_unavailable_mapped_local_events_in_the_catalogue(): void
     {
         DB::table('match_info')->insert($this->localEvent(48, 'xs2-cancelled'));
         $xs2Event = $this->xs2Event('xs2-cancelled');
@@ -1110,11 +1110,12 @@ class Xs2EventFlowTest extends TestCase
         ]);
 
         $this->getJson('/api/events/48')
-            ->assertNotFound()
-            ->assertJsonPath('message', 'The requested resource was not found.');
+            ->assertOk()
+            ->assertJsonPath('data.id', 48)
+            ->assertJsonPath('data.xs2_mapped', false);
     }
 
-    public function test_public_event_routes_hide_events_missing_from_the_supplier_snapshot(): void
+    public function test_public_event_routes_keep_local_events_missing_from_the_supplier_snapshot(): void
     {
         DB::table('match_info')->insert($this->localEvent(481, 'xs2-missing-public-event'));
         $xs2Event = $this->xs2Event('xs2-missing-public-event');
@@ -1128,10 +1129,12 @@ class Xs2EventFlowTest extends TestCase
 
         $this->getJson('/api/events')
             ->assertOk()
-            ->assertJsonCount(0, 'data');
+            ->assertJsonPath('data.0.id', 481)
+            ->assertJsonPath('data.0.xs2_mapped', false);
         $this->getJson('/api/events/481')
-            ->assertNotFound()
-            ->assertJsonPath('message', 'The requested resource was not found.');
+            ->assertOk()
+            ->assertJsonPath('data.id', 481)
+            ->assertJsonPath('data.xs2_mapped', false);
     }
 
     public function test_admin_mapping_list_returns_normalized_suggestions_and_filters(): void

@@ -76,45 +76,93 @@ class LegacyLocalEventEnglishQuery
     /**
      * Match the same English labels exposed in event resources, not only raw
      * legacy columns that may hold IDs or non-display placeholders.
+     *
+     * Phrase search stays available, but multi-word queries also require each
+     * significant token so Seats Broker catalog titles like
+     * "Sporting CP vs Moreirense FC" still hit local names such as
+     * "Sporting vs Moreirense".
      */
     public function applySearch(Builder $query, string $search): void
     {
-        $query->where(function (Builder $query) use ($search): void {
-            $query->where('match_info.match_name', 'like', "%{$search}%")
-                ->orWhere('match_info.team_1', 'like', "%{$search}%")
-                ->orWhere('match_info.team_2', 'like', "%{$search}%")
-                ->orWhere('match_info.city', 'like', "%{$search}%")
-                ->orWhere('match_info.tournament', 'like', "%{$search}%")
-                ->orWhere('legacy_home_teams.team_name', 'like', "%{$search}%")
-                ->orWhere('legacy_away_teams.team_name', 'like', "%{$search}%")
-                ->orWhere('legacy_cities.name', 'like', "%{$search}%")
-                ->orWhere('legacy_tournaments.tournament_name', 'like', "%{$search}%")
-                ->orWhere('legacy_venues.stadium_name', 'like', "%{$search}%");
+        $needle = trim($search);
+        if ($needle === '') {
+            return;
+        }
 
-            if ($this->supportsMatchTranslations()) {
-                $query->orWhere('legacy_match_names.match_name', 'like', "%{$search}%");
+        $tokens = $this->searchTokens($needle);
+
+        $query->where(function (Builder $query) use ($needle, $tokens): void {
+            $query->where(function (Builder $query) use ($needle): void {
+                $this->applySearchNeedle($query, $needle);
+            });
+
+            if (ctype_digit($needle)) {
+                $query->orWhere('match_info.m_id', (int) $needle);
             }
 
-            if ($this->supportsTeamTranslations()) {
-                $query->orWhere('legacy_home_teams_en.team_name', 'like', "%{$search}%")
-                    ->orWhere('legacy_away_teams_en.team_name', 'like', "%{$search}%");
-            }
-
-            if ($this->supportsTournamentTranslations()) {
-                $query->orWhere('legacy_tournaments_en.tournament_name', 'like', "%{$search}%");
-            }
-
-            $query->orWhereHas('publicXs2Mappings.xs2Event', function (Builder $xs2Query) use ($search): void {
-                $xs2Query->where(function (Builder $xs2Query) use ($search): void {
-                    $xs2Query->where('event_name', 'like', "%{$search}%")
-                        ->orWhere('hometeam_name', 'like', "%{$search}%")
-                        ->orWhere('visitingteam_name', 'like', "%{$search}%")
-                        ->orWhere('venue_name', 'like', "%{$search}%")
-                        ->orWhere('tournament_name', 'like', "%{$search}%")
-                        ->orWhere('city', 'like', "%{$search}%");
+            if (count($tokens) > 1) {
+                $query->orWhere(function (Builder $query) use ($tokens): void {
+                    foreach ($tokens as $token) {
+                        $query->where(function (Builder $query) use ($token): void {
+                            $this->applySearchNeedle($query, $token);
+                        });
+                    }
                 });
+            }
+        });
+    }
+
+    private function applySearchNeedle(Builder $query, string $search): void
+    {
+        $query->where('match_info.match_name', 'like', "%{$search}%")
+            ->orWhere('match_info.team_1', 'like', "%{$search}%")
+            ->orWhere('match_info.team_2', 'like', "%{$search}%")
+            ->orWhere('match_info.city', 'like', "%{$search}%")
+            ->orWhere('match_info.tournament', 'like', "%{$search}%")
+            ->orWhere('legacy_home_teams.team_name', 'like', "%{$search}%")
+            ->orWhere('legacy_away_teams.team_name', 'like', "%{$search}%")
+            ->orWhere('legacy_cities.name', 'like', "%{$search}%")
+            ->orWhere('legacy_tournaments.tournament_name', 'like', "%{$search}%")
+            ->orWhere('legacy_venues.stadium_name', 'like', "%{$search}%");
+
+        if ($this->supportsMatchTranslations()) {
+            $query->orWhere('legacy_match_names.match_name', 'like', "%{$search}%");
+        }
+
+        if ($this->supportsTeamTranslations()) {
+            $query->orWhere('legacy_home_teams_en.team_name', 'like', "%{$search}%")
+                ->orWhere('legacy_away_teams_en.team_name', 'like', "%{$search}%");
+        }
+
+        if ($this->supportsTournamentTranslations()) {
+            $query->orWhere('legacy_tournaments_en.tournament_name', 'like', "%{$search}%");
+        }
+
+        $query->orWhereHas('publicXs2Mappings.xs2Event', function (Builder $xs2Query) use ($search): void {
+            $xs2Query->where(function (Builder $xs2Query) use ($search): void {
+                $xs2Query->where('event_name', 'like', "%{$search}%")
+                    ->orWhere('hometeam_name', 'like', "%{$search}%")
+                    ->orWhere('visitingteam_name', 'like', "%{$search}%")
+                    ->orWhere('venue_name', 'like', "%{$search}%")
+                    ->orWhere('tournament_name', 'like', "%{$search}%")
+                    ->orWhere('city', 'like', "%{$search}%");
             });
         });
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function searchTokens(string $search): array
+    {
+        $parts = preg_split('/[^\p{L}\p{N}]+/u', $search, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        $stopWords = ['vs', 'v', 'versus', 'fc', 'cf', 'sc', 'ac', 'afc', 'cp'];
+
+        return array_values(array_filter(
+            $parts,
+            fn (string $token): bool => mb_strlen($token) >= 3
+                && ! in_array(mb_strtolower($token), $stopWords, true),
+        ));
     }
 
     private function supportsMatchTranslations(): bool

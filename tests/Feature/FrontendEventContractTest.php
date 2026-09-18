@@ -78,6 +78,62 @@ class FrontendEventContractTest extends TestCase
             ->assertJsonPath('data.0.name', 'Legacy Home vs Legacy Away');
     }
 
+    public function test_public_events_search_matches_seats_broker_catalog_title_against_local_name(): void
+    {
+        $startsAt = now()->addDays(2)->setTime(20, 30);
+        $this->insertReferencedLocalEvent(10467, $startsAt, [
+            'match_name' => 'Sporting vs Moreirense',
+            'home_team' => 'Sporting',
+            'away_team' => 'Moreirense',
+        ]);
+
+        $this->getJson('/api/events?search='.urlencode('Sporting CP vs Moreirense FC'))
+            ->assertOk()
+            ->assertJsonPath('meta.total', 1)
+            ->assertJsonPath('data.0.id', 10467)
+            ->assertJsonPath('data.0.name', 'Sporting vs Moreirense')
+            ->assertJsonPath('data.0.xs2_mapped', false)
+            ->assertJsonPath('data.0.inventory.has_xs2_inventory', false);
+
+        $this->getJson('/api/events?search=10467')
+            ->assertOk()
+            ->assertJsonPath('data.0.id', 10467);
+    }
+
+    public function test_public_events_list_includes_local_events_with_pending_or_unavailable_xs2_mappings(): void
+    {
+        $startsAt = now()->addDays(2)->setTime(20, 30);
+        $this->insertReferencedLocalEvent(10467, $startsAt, [
+            'match_name' => 'Sporting vs Moreirense',
+            'home_team' => 'Sporting',
+            'away_team' => 'Moreirense',
+        ]);
+        $xs2Event = Xs2Event::create([
+            'external_event_id' => 'xs2-pending-sporting',
+            'event_name' => 'Sporting CP vs Moreirense FC',
+            'date_start_local' => $startsAt->format('Y-m-d H:i:s'),
+            'event_status' => 'cancelled',
+            'number_of_tickets' => 0,
+            'raw_payload' => [],
+        ]);
+        EventMapping::create([
+            'xs2_event_id' => $xs2Event->id,
+            'm_id' => 10467,
+            'status' => 'pending',
+            'mapping_method' => 'automatic',
+        ]);
+
+        $this->getJson('/api/events?search='.urlencode('Sporting CP vs Moreirense FC'))
+            ->assertOk()
+            ->assertJsonPath('data.0.id', 10467)
+            ->assertJsonPath('data.0.xs2_mapped', false)
+            ->assertJsonPath('data.0.inventory.has_xs2_inventory', false);
+
+        $this->getJson('/api/events/10467')
+            ->assertOk()
+            ->assertJsonPath('data.id', 10467);
+    }
+
     public function test_admin_resources_use_legacy_display_names_and_timezone_less_local_datetimes(): void
     {
         $startsAt = now()->addDays(2)->setTime(19, 30);
@@ -149,18 +205,21 @@ class FrontendEventContractTest extends TestCase
             ->assertJsonPath('data.xs2_event_name', 'Legacy Home vs Legacy Away');
     }
 
-    private function insertReferencedLocalEvent(int $id, Carbon $startsAt): void
+    private function insertReferencedLocalEvent(int $id, Carbon $startsAt, array $overrides = []): void
     {
+        $homeTeam = $overrides['home_team'] ?? 'Legacy Home';
+        $awayTeam = $overrides['away_team'] ?? 'Legacy Away';
+
         DB::table('teams')->insert([
-            ['id' => 501, 'team_name' => 'Legacy Home'],
-            ['id' => 502, 'team_name' => 'Legacy Away'],
+            ['id' => 501, 'team_name' => $homeTeam],
+            ['id' => 502, 'team_name' => $awayTeam],
         ]);
         DB::table('cities')->insert(['id' => 601, 'name' => 'Legacy City']);
         DB::table('tournament')->insert(['t_id' => 701, 'tournament_name' => 'Legacy Cup']);
         DB::table('stadium')->insert(['s_id' => 801, 'stadium_name' => 'Legacy Park']);
         DB::table('match_info')->insert([
             'm_id' => $id,
-            'match_name' => 'Legacy Home vs Legacy Away',
+            'match_name' => $overrides['match_name'] ?? 'Legacy Home vs Legacy Away',
             'team_1' => '501',
             'team_2' => '502',
             'city' => '601',
