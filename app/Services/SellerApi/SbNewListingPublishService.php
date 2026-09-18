@@ -24,6 +24,8 @@ class SbNewListingPublishService
 
     public const SYNC_RESOURCE_FAILED_RETRY = 'sb-listings:failed-publish-retry';
 
+    private const SCAN_CHUNK_SIZE = 50;
+
     public function __construct(
         private readonly MappedListingPublishService $publisher,
         private readonly Xs2TicketMappingStatusService $mappingStatuses,
@@ -43,14 +45,6 @@ class SbNewListingPublishService
         bool $failedOnly = false,
     ): array {
         $syncResource = $failedOnly ? self::SYNC_RESOURCE_FAILED_RETRY : self::SYNC_RESOURCE;
-
-        if (Schema::hasTable('xs2_sync_states')) {
-            Xs2SyncState::query()->firstOrCreate(['resource' => $syncResource])->update([
-                'status' => 'running',
-                'last_attempted_at' => now(),
-                'last_error' => null,
-            ]);
-        }
 
         $summary = [
             'eligible_tickets' => 0,
@@ -72,137 +66,240 @@ class SbNewListingPublishService
         ];
 
         try {
-            $tickets = $this->eligibleTickets($ticketId, $failedOnly)->get();
-            $summary['eligible_tickets'] = $tickets->count();
+            $this->markRunning($syncResource);
 
             $dispatchSpacingSeconds = max(1, (int) config('xs2.sb_new_listing_publish.dispatch_interval_seconds', 2));
             $firstDispatchAt = now();
             $queueIndex = 0;
+            $stopScanning = false;
 
-            foreach ($tickets as $ticket) {
-                if (! ($ticket->xs2Event?->isSellable() ?? false)) {
-                    $summary['skipped']++;
-                    $summary['skip_reasons']['event_not_sellable']++;
-
-                    continue;
-                }
-
-                $state = Schema::hasTable('xs2_ticket_mapping_states')
-                    ? $this->mappingStatuses->resolveIfStale($ticket)
-                    : null;
-
-                $mappingStatus = $state?->mapping_status;
-                $mappingAllowed = $this->mappingStatuses->canAutoPublish($ticket, $mappingStatus);
-
-                if (! $mappingAllowed) {
-                    $summary['skipped']++;
-                    $summary['skip_reasons']['mapping_not_ready']++;
-
-                    continue;
-                }
-
-                if ($failedOnly) {
-                    if (! $this->hasPublishFailure($ticket)) {
-                        $summary['skipped']++;
-                        $summary['skip_reasons']['publish_failed']++;
-
-                        continue;
-                    }
-                } elseif ($this->hasPublishFailure($ticket)) {
-                    $summary['skipped']++;
-                    $summary['skip_reasons']['publish_failed']++;
-
-                    continue;
-                }
-
-                $readiness = $this->readiness->assess($ticket, strictPublish: $manualPublish);
-                if (! $readiness['ready']) {
-                    $summary['skipped']++;
-                    $summary['skip_reasons']['validation_failed']++;
-
-                    continue;
-                }
-
-                if ($this->isPublishedOnSb($ticket)) {
-                    $summary['skipped']++;
-                    $summary['skip_reasons']['already_published_on_sb']++;
-
-                    continue;
-                }
-
-                $summary['needs_publish']++;
-
-                if ($dryRun) {
-                    continue;
-                }
-
-                if (! $inline && $maxDispatch !== null && $summary['queued'] >= $maxDispatch) {
-                    $summary['deferred']++;
-
-                    continue;
-                }
-
-                try {
-                    $delayUntil = $inline
-                        ? null
-                        : $firstDispatchAt->copy()->addSeconds($queueIndex * $dispatchSpacingSeconds);
-
-                    if ($this->splitRestock->canRepublishAfterRestock($ticket)) {
-                        $config = $this->splitRestock->resolveSplitConfig($ticket);
-                        if ($config === null) {
-                            $summary['skipped']++;
-                            $summary['skip_reasons']['validation_failed']++;
+            $this->eligibleTickets($ticketId, $failedOnly)
+                ->orderBy('id')
+                ->chunkById(self::SCAN_CHUNK_SIZE, function ($tickets) use (
+                    &$summary,
+                    &$queueIndex,
+                    &$stopScanning,
+                    $inline,
+                    $dryRun,
+                    $maxDispatch,
+                    $manualPublish,
+                    $failedOnly,
+                    $dispatchSpacingSeconds,
+                    $firstDispatchAt,
+                ): bool {
+                    foreach ($tickets as $ticket) {
+                        if ($stopScanning) {
+                            $summary['deferred']++;
 
                             continue;
                         }
 
-                        if ($inline) {
-                            PublishSplitListings::dispatchSync($ticket->id, $config);
-                            $summary['published_inline']++;
-                        } else {
-                            $pending = PublishSplitListings::dispatch($ticket->id, $config);
-                            if ($delayUntil !== null) {
-                                $pending->delay($delayUntil);
-                            }
-                            $summary['queued']++;
-                            $queueIndex++;
-                        }
-
-                        continue;
-                    }
-
-                    if ($inline) {
-                        $this->publisher->publishTicket($ticket->id, strictPublish: $manualPublish, sync: true);
-                        $summary['published_inline']++;
-                    } else {
-                        $this->publisher->publishTicket(
-                            $ticket->id,
-                            strictPublish: $manualPublish,
-                            sync: false,
-                            delayUntil: $delayUntil,
+                        $this->processTicket(
+                            $ticket,
+                            $summary,
+                            $queueIndex,
+                            $stopScanning,
+                            $inline,
+                            $dryRun,
+                            $maxDispatch,
+                            $manualPublish,
+                            $failedOnly,
+                            $dispatchSpacingSeconds,
+                            $firstDispatchAt,
                         );
-                        $summary['queued']++;
-                        $queueIndex++;
                     }
-                } catch (Throwable $exception) {
-                    $message = $this->safeMessage($exception);
-                    $this->mappingStatuses->markPublishFailed($ticket, $message);
-                    $summary['failed']++;
-                    $summary['errors'][] = $ticket->external_ticket_id.': '.$message;
-                    Log::channel(config('services.seller_api.log_channel', 'stack'))->warning(
-                        'Seats Broker new listing publish could not be queued or completed.',
-                        [
-                            'ticket_id' => $ticket->id,
-                            'external_ticket_id' => $ticket->external_ticket_id,
-                            'error' => $message,
-                        ],
-                    );
-                }
-            }
+
+                    return ! $stopScanning;
+                });
 
             return $this->finalizeRun($summary, syncResource: $syncResource);
         } catch (Throwable $exception) {
             return $this->finalizeRun($summary, $exception->getMessage(), syncResource: $syncResource);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $summary
+     */
+    private function processTicket(
+        Xs2Ticket $ticket,
+        array &$summary,
+        int &$queueIndex,
+        bool &$stopScanning,
+        bool $inline,
+        bool $dryRun,
+        ?int $maxDispatch,
+        bool $manualPublish,
+        bool $failedOnly,
+        int $dispatchSpacingSeconds,
+        \Illuminate\Support\Carbon $firstDispatchAt,
+    ): void {
+        try {
+            $this->processEligibleTicket(
+                $ticket,
+                $summary,
+                $queueIndex,
+                $stopScanning,
+                $inline,
+                $dryRun,
+                $maxDispatch,
+                $manualPublish,
+                $failedOnly,
+                $dispatchSpacingSeconds,
+                $firstDispatchAt,
+            );
+        } catch (Throwable $exception) {
+            $message = $this->safeMessage($exception);
+            $summary['failed']++;
+            $summary['errors'][] = ($ticket->external_ticket_id ?? (string) $ticket->id).': '.$message;
+            Log::channel(config('services.seller_api.log_channel', 'stack'))->warning(
+                'Seats Broker new listing publish skipped a ticket after an unexpected error.',
+                [
+                    'ticket_id' => $ticket->id,
+                    'external_ticket_id' => $ticket->external_ticket_id,
+                    'error' => $message,
+                ],
+            );
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $summary
+     */
+    private function processEligibleTicket(
+        Xs2Ticket $ticket,
+        array &$summary,
+        int &$queueIndex,
+        bool &$stopScanning,
+        bool $inline,
+        bool $dryRun,
+        ?int $maxDispatch,
+        bool $manualPublish,
+        bool $failedOnly,
+        int $dispatchSpacingSeconds,
+        \Illuminate\Support\Carbon $firstDispatchAt,
+    ): void {
+        $summary['eligible_tickets']++;
+
+        if (! ($ticket->xs2Event?->isSellable() ?? false)) {
+            $summary['skipped']++;
+            $summary['skip_reasons']['event_not_sellable']++;
+
+            return;
+        }
+
+        $state = Schema::hasTable('xs2_ticket_mapping_states')
+            ? $this->mappingStatuses->resolveIfStale($ticket)
+            : null;
+
+        $mappingStatus = $state?->mapping_status;
+        $mappingAllowed = $this->mappingStatuses->canAutoPublish($ticket, $mappingStatus);
+
+        if (! $mappingAllowed) {
+            $summary['skipped']++;
+            $summary['skip_reasons']['mapping_not_ready']++;
+
+            return;
+        }
+
+        if ($failedOnly) {
+            if (! $this->hasPublishFailure($ticket)) {
+                $summary['skipped']++;
+                $summary['skip_reasons']['publish_failed']++;
+
+                return;
+            }
+        } elseif ($this->hasPublishFailure($ticket)) {
+            $summary['skipped']++;
+            $summary['skip_reasons']['publish_failed']++;
+
+            return;
+        }
+
+        if ($this->isPublishedOnSb($ticket)) {
+            $summary['skipped']++;
+            $summary['skip_reasons']['already_published_on_sb']++;
+
+            return;
+        }
+
+        if (! $dryRun && ! $inline && $maxDispatch !== null && $summary['queued'] >= $maxDispatch) {
+            $summary['deferred']++;
+            $stopScanning = true;
+
+            return;
+        }
+
+        $readiness = $this->readiness->assess($ticket, strictPublish: $manualPublish);
+        if (! $readiness['ready']) {
+            $summary['skipped']++;
+            $summary['skip_reasons']['validation_failed']++;
+
+            return;
+        }
+
+        $summary['needs_publish']++;
+
+        if ($dryRun) {
+            return;
+        }
+
+        try {
+            $delayUntil = $inline
+                ? null
+                : $firstDispatchAt->copy()->addSeconds($queueIndex * $dispatchSpacingSeconds);
+
+            if ($this->splitRestock->canRepublishAfterRestock($ticket)) {
+                $config = $this->splitRestock->resolveSplitConfig($ticket);
+                if ($config === null) {
+                    $summary['skipped']++;
+                    $summary['skip_reasons']['validation_failed']++;
+                    $summary['needs_publish']--;
+
+                    return;
+                }
+
+                if ($inline) {
+                    PublishSplitListings::dispatchSync($ticket->id, $config);
+                    $summary['published_inline']++;
+                } else {
+                    $pending = PublishSplitListings::dispatch($ticket->id, $config);
+                    if ($delayUntil !== null) {
+                        $pending->delay($delayUntil);
+                    }
+                    $summary['queued']++;
+                    $queueIndex++;
+                }
+
+                return;
+            }
+
+            if ($inline) {
+                $this->publisher->publishTicket($ticket->id, strictPublish: $manualPublish, sync: true);
+                $summary['published_inline']++;
+            } else {
+                $this->publisher->publishTicket(
+                    $ticket->id,
+                    strictPublish: $manualPublish,
+                    sync: false,
+                    delayUntil: $delayUntil,
+                );
+                $summary['queued']++;
+                $queueIndex++;
+            }
+        } catch (Throwable $exception) {
+            $message = $this->safeMessage($exception);
+            $this->mappingStatuses->markPublishFailed($ticket, $message);
+            $summary['failed']++;
+            $summary['errors'][] = $ticket->external_ticket_id.': '.$message;
+            Log::channel(config('services.seller_api.log_channel', 'stack'))->warning(
+                'Seats Broker new listing publish could not be queued or completed.',
+                [
+                    'ticket_id' => $ticket->id,
+                    'external_ticket_id' => $ticket->external_ticket_id,
+                    'error' => $message,
+                ],
+            );
         }
     }
 
@@ -263,7 +360,16 @@ class SbNewListingPublishService
             ->whereHas('xs2Event', fn ($event) => $event->where('event_status', '!=', 'cancelled'))
             ->whereHas('xs2Event.mapping', fn ($mapping) => $mapping
                 ->whereIn('status', ['mapped', 'created'])
-                ->whereNotNull('m_id'));
+                ->whereNotNull('m_id'))
+            ->whereDoesntHave('listingMapping', function (Builder $mapping): void {
+                $mapping->where('provider', 'xs2event')
+                    ->whereNotNull('seller_listing_id')
+                    ->where('status', 'active');
+            })
+            ->whereDoesntHave('listingSplits', function (Builder $splits): void {
+                $splits->where('status', 'active')
+                    ->whereNotNull('seatsbroker_listing_id');
+            });
 
         if ($failedOnly) {
             $query->where(function (Builder $failed): void {
@@ -333,6 +439,19 @@ class SbNewListingPublishService
         $summary['completed_at'] = now()->toIso8601String();
 
         return $summary;
+    }
+
+    private function markRunning(string $syncResource): void
+    {
+        if (! Schema::hasTable('xs2_sync_states')) {
+            return;
+        }
+
+        Xs2SyncState::query()->firstOrCreate(['resource' => $syncResource])->update([
+            'status' => 'running',
+            'last_attempted_at' => now(),
+            'last_error' => null,
+        ]);
     }
 
     private function hasPublishFailure(Xs2Ticket $ticket): bool

@@ -129,8 +129,8 @@ class PushXs2TicketToSellerApi implements ShouldBeUniqueUntilProcessing, ShouldQ
             // against current event/stadium/category state instead of trusting
             // a previously "published" snapshot.
             $mappingState = app(Xs2TicketMappingStatusService::class)
-                ->resolveIfStale($ticket)
-                ->loadMissing('categoryMapping.details');
+                ->resolveIfStale($ticket);
+            $mappingState?->loadMissing('categoryMapping.details');
         }
         $mappingStatusService = app(Xs2TicketMappingStatusService::class);
         $canPublish = $mappingState && (

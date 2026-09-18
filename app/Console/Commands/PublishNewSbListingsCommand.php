@@ -50,13 +50,20 @@ class PublishNewSbListingsCommand extends Command
 
         $this->info('Scanning mapped XS2 events for inventory not yet published on Seats Broker...');
 
-        $summary = $publisher->run(
-            inline: (bool) $this->option('sync'),
-            ticketId: $ticketId,
-            dryRun: (bool) $this->option('dry-run'),
-            maxDispatch: $maxDispatch,
-            manualPublish: (bool) $this->option('manual'),
-        );
+        try {
+            $summary = $publisher->run(
+                inline: (bool) $this->option('sync'),
+                ticketId: $ticketId,
+                dryRun: (bool) $this->option('dry-run'),
+                maxDispatch: $maxDispatch,
+                manualPublish: (bool) $this->option('manual'),
+            );
+        } catch (\Throwable $exception) {
+            $this->error($exception->getMessage());
+            report($exception);
+
+            return self::FAILURE;
+        }
 
         if (($summary['deferred'] ?? 0) > 0) {
             $this->warn(sprintf(
@@ -69,15 +76,36 @@ class PublishNewSbListingsCommand extends Command
             ['Metric', 'Value'],
             collect($summary)
                 ->except(['errors'])
-                ->map(fn (mixed $value, string $key): array => [$key, is_array($value) ? json_encode($value) : (string) $value])
+                ->map(fn (mixed $value, int|string $key): array => [(string) $key, $this->formatSummaryValue($value)])
                 ->values()
                 ->all(),
         );
 
         foreach ($summary['errors'] ?? [] as $error) {
-            $this->error($error);
+            $this->error(is_scalar($error) ? (string) $error : json_encode($error));
         }
 
         return ($summary['status'] ?? 'completed') === 'failed' ? self::FAILURE : self::SUCCESS;
+    }
+
+    private function formatSummaryValue(mixed $value): string
+    {
+        if (is_array($value)) {
+            return (string) json_encode($value);
+        }
+
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+
+        if (is_scalar($value) || $value === null) {
+            return (string) $value;
+        }
+
+        if ($value instanceof \Stringable) {
+            return (string) $value;
+        }
+
+        return $value::class;
     }
 }

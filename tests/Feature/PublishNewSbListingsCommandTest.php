@@ -12,6 +12,7 @@ use App\Models\Xs2TicketMappingState;
 use App\Services\SellerApi\SbNewListingPublishService;
 use App\Services\Xs2\ListingPublishReadinessService;
 use App\Services\Xs2\MappedListingPublishService;
+use App\Services\Xs2\Xs2TicketMappingStatusService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
@@ -195,12 +196,13 @@ class PublishNewSbListingsCommandTest extends TestCase
         ]);
 
         $readiness = Mockery::mock(ListingPublishReadinessService::class);
-        $readiness->shouldReceive('assess')->once()->andReturn(['ready' => true, 'error' => null]);
+        $readiness->shouldReceive('assess')->never();
         $this->instance(ListingPublishReadinessService::class, $readiness);
 
         $summary = app(SbNewListingPublishService::class)->run();
 
-        $this->assertSame(1, $summary['skip_reasons']['already_published_on_sb']);
+        $this->assertSame(0, $summary['eligible_tickets']);
+        $this->assertSame(0, $summary['skip_reasons']['already_published_on_sb']);
         Queue::assertNothingPushed();
     }
 
@@ -325,6 +327,113 @@ class PublishNewSbListingsCommandTest extends TestCase
         $this->assertSame(0, $summary['eligible_tickets']);
         $this->assertSame(0, $summary['needs_publish']);
         Queue::assertNothingPushed();
+    }
+
+    public function test_dispatch_budget_stops_readiness_scan(): void
+    {
+        Queue::fake();
+
+        foreach (range(1, 4) as $_) {
+            $ticket = $this->mappedTicket(stock: 8);
+            Xs2TicketMappingState::query()->create([
+                'xs2_ticket_id' => $ticket->id,
+                'event_mapping_id' => $ticket->xs2Event->mapping->id,
+                'mapping_status' => 'ready_to_publish',
+            ]);
+        }
+
+        $readiness = Mockery::mock(ListingPublishReadinessService::class);
+        $readiness->shouldReceive('assess')
+            ->times(2)
+            ->andReturn(['ready' => true, 'error' => null]);
+        $this->instance(ListingPublishReadinessService::class, $readiness);
+
+        $summary = app(SbNewListingPublishService::class)->run(maxDispatch: 2);
+
+        $this->assertSame('completed', $summary['status']);
+        $this->assertSame(2, $summary['queued']);
+        $this->assertGreaterThan(0, $summary['deferred']);
+        Queue::assertPushed(PublishSplitListings::class, 2);
+    }
+
+    public function test_chunked_scan_queues_more_than_one_page_of_unpublished_tickets(): void
+    {
+        Queue::fake();
+
+        foreach (range(1, 51) as $_) {
+            $ticket = $this->mappedTicket(stock: 8);
+            Xs2TicketMappingState::query()->create([
+                'xs2_ticket_id' => $ticket->id,
+                'event_mapping_id' => $ticket->xs2Event->mapping->id,
+                'mapping_status' => 'ready_to_publish',
+            ]);
+        }
+
+        $readiness = Mockery::mock(ListingPublishReadinessService::class);
+        $readiness->shouldReceive('assess')
+            ->times(51)
+            ->andReturn(['ready' => true, 'error' => null]);
+        $this->instance(ListingPublishReadinessService::class, $readiness);
+
+        $summary = app(SbNewListingPublishService::class)->run();
+
+        $this->assertSame('completed', $summary['status']);
+        $this->assertSame(51, $summary['eligible_tickets']);
+        $this->assertSame(51, $summary['queued']);
+        Queue::assertPushed(PublishSplitListings::class, 51);
+    }
+
+    public function test_one_mapping_resolve_failure_does_not_abort_the_run(): void
+    {
+        Queue::fake();
+
+        $broken = $this->mappedTicket(stock: 4);
+        $healthy = $this->mappedTicket(stock: 6);
+        foreach ([$broken, $healthy] as $ticket) {
+            Xs2TicketMappingState::query()->create([
+                'xs2_ticket_id' => $ticket->id,
+                'event_mapping_id' => $ticket->xs2Event->mapping->id,
+                'mapping_status' => 'ready_to_publish',
+            ]);
+        }
+
+        $readiness = Mockery::mock(ListingPublishReadinessService::class);
+        $readiness->shouldReceive('assess')
+            ->once()
+            ->withArgs(fn ($assessedTicket, bool $strictPublish): bool => $assessedTicket->is($healthy) && $strictPublish === false)
+            ->andReturn(['ready' => true, 'error' => null]);
+        $this->instance(ListingPublishReadinessService::class, $readiness);
+
+        $statuses = Mockery::mock(Xs2TicketMappingStatusService::class)->makePartial();
+        $statuses->shouldReceive('resolveIfStale')
+            ->andReturnUsing(function (Xs2Ticket $ticket) use ($broken): Xs2TicketMappingState {
+                if ($ticket->is($broken)) {
+                    throw new \RuntimeException('mapping state exploded');
+                }
+
+                return $ticket->mappingState;
+            });
+        $statuses->shouldReceive('canAutoPublish')->andReturn(true);
+        $this->instance(Xs2TicketMappingStatusService::class, $statuses);
+
+        $this->app->forgetInstance(SbNewListingPublishService::class);
+        $summary = app(SbNewListingPublishService::class)->run();
+
+        $this->assertSame('completed', $summary['status']);
+        $this->assertSame(1, $summary['failed']);
+        $this->assertSame(1, $summary['queued']);
+        Queue::assertPushed(PublishSplitListings::class, fn ($job): bool => $job->ticketId === $healthy->id);
+    }
+
+    public function test_command_returns_failure_instead_of_throwing_when_publisher_explodes(): void
+    {
+        $publisher = Mockery::mock(SbNewListingPublishService::class);
+        $publisher->shouldReceive('run')->once()->andThrow(new \RuntimeException('Allowed memory size exhausted'));
+        $this->instance(SbNewListingPublishService::class, $publisher);
+
+        $exitCode = \Illuminate\Support\Facades\Artisan::call('xs2:publish-new-sb-listings', ['--force' => true]);
+
+        $this->assertSame(1, $exitCode);
     }
 
     private function mappedTicket(int $stock): Xs2Ticket

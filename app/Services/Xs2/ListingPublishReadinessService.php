@@ -37,14 +37,13 @@ class ListingPublishReadinessService
             ];
         }
 
-        $mappingState = null;
-        if (Schema::hasTable('xs2_ticket_mapping_states')) {
-            $mappingState = $this->mappingStatuses
-                ->resolveIfStale($ticket)
-                ->loadMissing('categoryMapping.details');
-        }
-
         try {
+            $mappingState = null;
+            if (Schema::hasTable('xs2_ticket_mapping_states')) {
+                $mappingState = $this->mappingStatuses->resolveIfStale($ticket);
+                $mappingState?->loadMissing('categoryMapping.details');
+            }
+
             $this->validator->validateForPublish($ticket, $mapping, $mappingState, $strictPublish);
 
             $payload = $mappingState

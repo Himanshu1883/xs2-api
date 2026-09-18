@@ -130,4 +130,39 @@ class ListingPublishReadinessServiceTest extends TestCase
         $this->assertFalse($result['ready']);
         $this->assertSame('Category does not match SB dropdown.', $result['error']);
     }
+
+    public function test_assess_returns_not_ready_when_mapping_resolve_throws(): void
+    {
+        Schema::shouldReceive('hasTable')->with('xs2_ticket_mapping_states')->andReturn(true);
+
+        $event = new Xs2Event([
+            'event_status' => 'notstarted',
+            'date_start_local' => now()->addDay(),
+        ]);
+        $mapping = new EventMapping(['m_id' => 45, 'status' => 'mapped']);
+        $event->setRelation('mapping', $mapping);
+
+        $ticket = new Xs2Ticket([
+            'category_name' => 'Longside',
+            'currency_code' => 'EUR',
+            'net_rate' => 10000,
+        ]);
+        $ticket->setRelation('xs2Event', $event);
+
+        $mappingStatuses = Mockery::mock(Xs2TicketMappingStatusService::class);
+        $mappingStatuses->shouldReceive('resolveIfStale')
+            ->once()
+            ->andThrow(new \TypeError('loadMissing() on null'));
+
+        $service = new ListingPublishReadinessService(
+            $mappingStatuses,
+            Mockery::mock(ListingPublishValidator::class),
+            Mockery::mock(Xs2SellerListingTransformer::class),
+        );
+
+        $result = $service->assess($ticket);
+
+        $this->assertFalse($result['ready']);
+        $this->assertSame('loadMissing() on null', $result['error']);
+    }
 }
