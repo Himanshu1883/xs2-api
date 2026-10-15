@@ -45,7 +45,7 @@ class Xs2SandboxTestFlowService
     /**
      * @return array{order: Xs2SandboxTestOrder, already_created: bool}
      */
-    public function createXs2Order(Xs2SandboxTestOrder $order): array
+    public function createXs2Order(Xs2SandboxTestOrder $order, ?int $quantityOverride = null): array
     {
         if ($order->hasXs2Order()) {
             return ['order' => $order->fresh(), 'already_created' => true];
@@ -65,10 +65,19 @@ class Xs2SandboxTestFlowService
             throw new \RuntimeException('Sandbox listing is missing ticket_id or net_rate.');
         }
 
+        $quantity = $quantityOverride !== null && $quantityOverride >= 1
+            ? $this->resolveOrderQuantity($quantityOverride, $ticket)
+            : max(1, (int) $order->quantity);
+
+        if ($quantityOverride !== null && $quantity !== (int) $order->quantity) {
+            $order->quantity = $quantity;
+            $order->save();
+        }
+
         $reservationRequest = [
             'items' => [[
                 'ticket_id' => $ticketId,
-                'quantity' => $order->quantity,
+                'quantity' => $quantity,
                 'net_rate' => $netRate,
                 'currency_code' => $currency,
                 'sales_price' => $salesPrice > 0 ? $salesPrice : $netRate,

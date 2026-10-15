@@ -33,6 +33,7 @@ class SbOrderXs2SandboxOrderService
         private readonly ApiEnvironmentService $apiEnvironment,
         private readonly SbOrderXs2GuestDataSyncService $guestDataSync,
         private readonly SbOrderXs2SyncLogService $syncLogs,
+        private readonly Xs2TicketRuleService $ticketRules,
     ) {}
 
     /**
@@ -46,7 +47,7 @@ class SbOrderXs2SandboxOrderService
      *     reason: string|null
      * }
      */
-    public function createFromSbOrder(SbOrder $order): array
+    public function createFromSbOrder(SbOrder $order, ?int $quantityOverride = null): array
     {
         if ($this->isCancelled($order)) {
             return $this->skip(null, 'SB order is cancelled.', $order);
@@ -88,7 +89,12 @@ class SbOrderXs2SandboxOrderService
             );
         }
 
-        $quantity = max(1, (int) ($order->quantity ?? 1));
+        $quantity = $this->reservationQuantity($order, $quantityOverride);
+        $quantitySkip = $this->reservationQuantityNotAllowedSkipReason($order, $ticket, $quantityOverride);
+        if ($quantitySkip !== null) {
+            return $this->skip($existing, $quantitySkip, $order);
+        }
+
         $netRate = $this->resolveReservationNetRate($order, $ticket);
         if ($netRate === null || $netRate <= 0) {
             return $this->skip($existing, $this->missingTicketAmountSkipReason(), $order);
@@ -100,7 +106,7 @@ class SbOrderXs2SandboxOrderService
             return $this->skip($existing, $this->noTicketMappingSkipReason(), $order);
         }
 
-        $reservationRequest = $this->buildReservationRequest($order, $ticket);
+        $reservationRequest = $this->buildReservationRequest($order, $ticket, $quantityOverride);
         if ($reservationRequest === null) {
             return $this->skip($existing, $this->noTicketMappingSkipReason(), $order);
         }
@@ -126,8 +132,17 @@ class SbOrderXs2SandboxOrderService
             $this->syncLogs->recordReservationExchange($order->id, $reservationRequest, $reservationResult);
             if (! $reservationResult['success']) {
                 $reservationMessage = (string) ($reservationResult['message'] ?? 'XS2 reservation failed.');
+                $reservationBody = is_array($reservationResult['data'] ?? null) ? $reservationResult['data'] : [];
                 if ($this->isRateLimitMessage($reservationMessage)) {
                     throw new Xs2RateLimitException($this->retryAfterSecondsFromMessage($reservationMessage));
+                }
+
+                if ($this->isQuantityConstraintFailure($reservationMessage, $reservationBody)) {
+                    return $this->skip(
+                        $existing,
+                        $this->quantityConstraintFailureReason($reservationMessage, $reservationBody, $quantity, $ticket),
+                        $order,
+                    );
                 }
 
                 throw new \RuntimeException($reservationMessage);
@@ -250,6 +265,10 @@ class SbOrderXs2SandboxOrderService
                     'A matching synced XS2 order exists but could not be linked.',
                     $order,
                 );
+            }
+
+            if ($this->isQuantityConstraintFailure($message)) {
+                return $this->skip($existing, $message, $order);
             }
 
             $this->syncLogs->recordFailure($order->id, $message);
@@ -842,7 +861,7 @@ class SbOrderXs2SandboxOrderService
         return $this->resolveQueueSkipReason($order) === null;
     }
 
-    public function resolveQueueSkipReason(SbOrder $order): ?string
+    public function resolveQueueSkipReason(SbOrder $order, ?int $quantityOverride = null): ?string
     {
         if (! $this->isEnabled()) {
             return $this->autoOrderDisabledReason();
@@ -879,6 +898,13 @@ class SbOrderXs2SandboxOrderService
             return $this->missingTicketAmountSkipReason();
         }
 
+        if ($ticket !== null) {
+            $quantitySkip = $this->reservationQuantityNotAllowedSkipReason($order, $ticket, $quantityOverride);
+            if ($quantitySkip !== null) {
+                return $quantitySkip;
+            }
+        }
+
         return null;
     }
 
@@ -886,7 +912,7 @@ class SbOrderXs2SandboxOrderService
      * Synchronous validation for manual Create XS2 order (mapping + net_rate).
      * XS2 reservation/booking API calls run inline via dispatchSync on the manual admin endpoint.
      */
-    public function resolveManualCreateSkipReason(SbOrder $order): ?string
+    public function resolveManualCreateSkipReason(SbOrder $order, ?int $quantityOverride = null): ?string
     {
         $existing = $this->existingOrder($order);
         if ($existing !== null && $this->orderIsComplete($existing)) {
@@ -902,7 +928,7 @@ class SbOrderXs2SandboxOrderService
             return $this->notPendingConfirmationSkipReason($order);
         }
 
-        return $this->resolveQueueSkipReason($order);
+        return $this->resolveQueueSkipReason($order, $quantityOverride);
     }
 
     public function resolveTicketMappingSkipReason(SbOrder $order): ?string
@@ -967,14 +993,14 @@ class SbOrderXs2SandboxOrderService
     /**
      * @return array<string, mixed>|null
      */
-    public function buildReservationRequest(SbOrder $order, ?Xs2Ticket $ticket = null): ?array
+    public function buildReservationRequest(SbOrder $order, ?Xs2Ticket $ticket = null, ?int $quantityOverride = null): ?array
     {
         $ticket ??= $this->resolveMappedTicket($order);
         if ($ticket === null) {
             return null;
         }
 
-        $quantity = max(1, (int) ($order->quantity ?? 1));
+        $quantity = $this->reservationQuantity($order, $quantityOverride);
         $netRate = $this->resolveReservationNetRate($order, $ticket);
         if ($netRate === null || $netRate <= 0) {
             return null;
@@ -1013,12 +1039,15 @@ class SbOrderXs2SandboxOrderService
      *     booking_request_planned: array<string, mixed>|null,
      *     ticket_mapping: array<string, mixed>|null,
      *     skip_reason: string|null,
-     *     xs2_environment: string
+     *     xs2_environment: string,
+     *     quantity: int,
+     *     order_quantity: int,
+     *     allowed_quantities: list<int>
      * }
      */
-    public function previewXs2OrderFromSbOrder(SbOrder $order): array
+    public function previewXs2OrderFromSbOrder(SbOrder $order, ?int $quantityOverride = null): array
     {
-        $skipReason = $this->resolveManualCreateSkipReason($order);
+        $skipReason = $this->resolveManualCreateSkipReason($order, $quantityOverride);
         $ticket = $this->resolveMappedTicket($order);
         $listingResolution = $this->resolveXs2ListingResolutionsForOrders([$order])[$order->id]
             ?? ['xs2_listing_id' => null, 'external_ticket_id' => null];
@@ -1034,7 +1063,7 @@ class SbOrderXs2SandboxOrderService
             ];
         }
 
-        $reservationRequest = $this->buildReservationRequest($order, $ticket);
+        $reservationRequest = $this->buildReservationRequest($order, $ticket, $quantityOverride);
 
         $bookingRequestPlanned = null;
         if ($reservationRequest !== null) {
@@ -1059,6 +1088,9 @@ class SbOrderXs2SandboxOrderService
             'main_listing' => $mainListing,
             'skip_reason' => $skipReason,
             'xs2_environment' => $this->apiEnvironment->xs2OrdersEnvironment(),
+            'quantity' => $this->reservationQuantity($order, $quantityOverride),
+            'order_quantity' => max(1, (int) ($order->quantity ?? 1)),
+            'allowed_quantities' => $ticket !== null ? $this->ticketRules->allowedQuantities($ticket) : [],
         ];
     }
 
@@ -2310,6 +2342,77 @@ class SbOrderXs2SandboxOrderService
     private function missingTicketAmountSkipReason(): string
     {
         return 'Mapped XS2 ticket is missing net_rate.';
+    }
+
+    public function reservationQuantity(SbOrder $order, ?int $quantityOverride = null): int
+    {
+        if ($quantityOverride !== null && $quantityOverride >= 1) {
+            return $quantityOverride;
+        }
+
+        return max(1, (int) ($order->quantity ?? 1));
+    }
+
+    private function reservationQuantityNotAllowedSkipReason(
+        SbOrder $order,
+        Xs2Ticket $ticket,
+        ?int $quantityOverride = null,
+    ): ?string {
+        $quantity = $this->reservationQuantity($order, $quantityOverride);
+        $allowed = $this->ticketRules->allowedQuantities($ticket);
+        if (in_array($quantity, $allowed, true)) {
+            return null;
+        }
+
+        $allowedLabel = $allowed === [] ? 'none' : implode(', ', $allowed);
+        $flags = $this->ticketRules->resolvedFlags($ticket);
+        $flagLabel = $flags === [] ? 'none' : implode(', ', $flags);
+
+        return sprintf(
+            'XS2 ticket %s cannot be reserved for quantity %d (stock %d, flags [%s], allowed quantities: %s).',
+            (string) $ticket->external_ticket_id,
+            $quantity,
+            max(0, (int) $ticket->stock),
+            $flagLabel,
+            $allowedLabel,
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $body
+     */
+    private function isQuantityConstraintFailure(?string $message, array $body = []): bool
+    {
+        $type = (string) data_get($body, 'items.0.error.type', '');
+        $detail = (string) data_get($body, 'items.0.error.detail', data_get($body, 'detail', ''));
+        $blob = mb_strtolower(trim(($message ?? '').' '.$type.' '.$detail.' '.json_encode($body)));
+
+        return str_contains($blob, 'limited-stock')
+            || str_contains($blob, 'you can only book');
+    }
+
+    /**
+     * @param  array<string, mixed>  $body
+     */
+    private function quantityConstraintFailureReason(
+        string $message,
+        array $body,
+        int $quantity,
+        Xs2Ticket $ticket,
+    ): string {
+        $detail = $this->nullableString(data_get($body, 'items.0.error.detail'))
+            ?? $this->nullableString(data_get($body, 'detail'))
+            ?? $message;
+        $available = data_get($body, 'items.0.error.available');
+        $availableLabel = is_numeric($available) ? (string) (int) $available : 'unknown';
+
+        return sprintf(
+            'XS2 rejected quantity %d for ticket %s (%s; available %s). This is not retried automatically.',
+            $quantity,
+            (string) $ticket->external_ticket_id,
+            $detail,
+            $availableLabel,
+        );
     }
 
     /** @return array{order: Xs2Order, created: bool, updated: bool, linked: bool, skipped: bool, already_exists: bool, reason: null} */

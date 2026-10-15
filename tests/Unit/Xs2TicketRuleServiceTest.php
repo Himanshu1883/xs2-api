@@ -29,6 +29,13 @@ class Xs2TicketRuleServiceTest extends TestCase
         $this->assertSame([1, 2, 3, 5], app(Xs2TicketRuleService::class)->allowedQuantities($ticket));
     }
 
+    public function test_two_remaining_tickets_cannot_leave_one(): void
+    {
+        $ticket = new Xs2Ticket(['stock' => 2, 'min_order' => 1, 'flags' => ['no_max_minus_1']]);
+
+        $this->assertSame([2], app(Xs2TicketRuleService::class)->allowedQuantities($ticket));
+    }
+
     public function test_package_rates_allow_package_counts_up_to_stock(): void
     {
         $ticket = new Xs2Ticket(['stock' => 6, 'min_order' => 1, 'flags' => ['package_rate']]);

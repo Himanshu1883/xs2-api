@@ -269,6 +269,90 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         });
     }
 
+    public function test_skips_reservation_when_quantity_would_leave_one_ticket_like_1bx67975(): void
+    {
+        $ticket = $this->seedSandboxTicketMapping('67975');
+        $ticket->forceFill([
+            'external_ticket_id' => '3fdc56e872eb48b4954cd199d0bc4310_spp',
+            'stock' => 2,
+            'min_order' => 1,
+            'flags' => ['no_max_minus_1'],
+            'raw_payload' => ['flags' => ['no_max_minus_1']],
+        ])->save();
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67975',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
+            'ticket_id' => 67975,
+            'listing_id' => '67975',
+            'quantity' => 1,
+            'ticket_amount' => 160.00,
+            'match_name' => 'Example Match',
+            'match_date' => '2026-10-01',
+        ]);
+
+        $service = app(SbOrderXs2SandboxOrderService::class);
+        $reason = $service->resolveQueueSkipReason($sbOrder);
+
+        $this->assertFalse($service->queueIfEligible($sbOrder));
+        $this->assertNotNull($reason);
+        $this->assertStringContainsString('cannot be reserved for quantity 1', (string) $reason);
+        $this->assertStringContainsString('allowed quantities: 2', (string) $reason);
+
+        Http::fake();
+        $result = $service->createFromSbOrder($sbOrder);
+
+        $this->assertTrue($result['skipped']);
+        $this->assertSame($reason, $result['reason']);
+        Http::assertNothingSent();
+    }
+
+    public function test_skips_limited_stock_quantity_constraint_from_xs2_without_retrying(): void
+    {
+        $this->seedSandboxTicketMapping('67976');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => '1BX67976',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
+            'ticket_id' => 67976,
+            'listing_id' => '67976',
+            'quantity' => 1,
+            'ticket_amount' => 160.00,
+            'match_name' => 'Example Match',
+            'match_date' => '2026-10-01',
+        ]);
+
+        Http::fake([
+            'https://sandbox.xs2.test/v1/reservations' => Http::response([
+                'type' => 'user-input-error',
+                'title' => 'User input is incorrect',
+                'detail' => 'Input provided by the user should be corrected',
+                'status' => 422,
+                'items' => [[
+                    'error' => [
+                        'type' => '/errors/limited-stock',
+                        'detail' => 'You can only book 2 tickets',
+                        'instance' => '/v1/tickets/sandbox-ticket-barcelona_tck',
+                        'quantity' => 1,
+                        'available' => 2,
+                    ],
+                    'ticket_id' => 'sandbox-ticket-barcelona_tck',
+                    'quantity' => 1,
+                    'net_rate' => 16000,
+                    'currency' => 'EUR',
+                ]],
+            ], 422),
+        ]);
+
+        $result = app(SbOrderXs2SandboxOrderService::class)->createFromSbOrder($sbOrder);
+
+        $this->assertTrue($result['skipped']);
+        $this->assertStringContainsString('You can only book 2 tickets', (string) $result['reason']);
+        $this->assertStringContainsString('not retried automatically', (string) $result['reason']);
+        $this->assertFalse($result['retryable'] ?? false);
+    }
+
     public function test_split_order_maps_by_ticketid_and_sends_master_ticket_id_for_production_reservation(): void
     {
         app(IntegrationSettingService::class)->set(
@@ -541,6 +625,101 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->assertDatabaseMissing('sb_order_xs2_sync_logs', [
             'sb_order_id' => $sbOrder->id,
         ]);
+    }
+
+    public function test_preview_xs2_order_quantity_query_overrides_payload_without_writing_sb_order(): void
+    {
+        $ticket = $this->seedSandboxTicketMapping('906584');
+        $ticket->forceFill([
+            'stock' => 2,
+            'flags' => ['limited-stock'],
+            'raw_payload' => ['flags' => ['limited-stock', 'no_max_minus_1']],
+        ])->save();
+
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-PREVIEW-QTY',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+            'ticket_amount' => 120.00,
+            'match_name' => 'FC Barcelona vs Test',
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->getJson("/api/admin/sb-orders/{$sbOrder->id}/preview-xs2-order?quantity=2")
+            ->assertOk()
+            ->assertJsonPath('data.quantity', 2)
+            ->assertJsonPath('data.order_quantity', 1)
+            ->assertJsonPath('data.reservation_request.items.0.quantity', 2)
+            ->assertJsonPath('data.skip_reason', null);
+
+        $this->assertSame(1, (int) $sbOrder->fresh()->quantity);
+        $this->assertDatabaseMissing('sb_order_xs2_sync_logs', [
+            'sb_order_id' => $sbOrder->id,
+        ]);
+    }
+
+    public function test_manual_create_xs2_order_uses_quantity_override_in_reservation_payload(): void
+    {
+        app(IntegrationSettingService::class)->set(
+            ApiEnvironmentService::XS2_ORDERS_ACTIVE_ENVIRONMENT,
+            ApiEnvironmentService::ENV_SANDBOX,
+        );
+
+        Http::fake([
+            'https://sandbox.xs2.test/v1/reservations' => Http::response([
+                'reservation_id' => 'sandbox-reservation-qty-override_rsv',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookings' => Http::response([
+                'booking_id' => self::SANDBOX_BOOKING_ID,
+                'booking_code' => 'SBXQTY',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookingorders*' => Http::sequence()
+                ->push([
+                    'bookingorders' => [[
+                        'booking_id' => self::SANDBOX_BOOKING_ID,
+                        'bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+                    ]],
+                ])
+                ->push([
+                    'bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+                    'booking_id' => self::SANDBOX_BOOKING_ID,
+                    'event_name' => 'FC Barcelona vs Test',
+                    'booking_status' => 'confirmed',
+                ]),
+        ]);
+
+        $this->seedSandboxTicketMapping('906584');
+        $sbOrder = SbOrder::query()->create([
+            'booking_no' => 'SB-QTY-OVERRIDE',
+            'booking_status' => SbOrder::STATUS_PENDING,
+            'booking_status_text' => 'Pending Confirmation',
+            'ticket_id' => 906584,
+            'listing_id' => '841765',
+            'quantity' => 1,
+            'ticket_amount' => 120.00,
+            'match_name' => 'FC Barcelona vs Test',
+            'stadium_name' => 'Camp Nou',
+            'match_date' => '2026-10-01',
+        ]);
+
+        $this->withToken($this->adminToken())
+            ->postJson("/api/admin/sb-orders/{$sbOrder->id}/create-xs2-order", ['quantity' => 2])
+            ->assertOk()
+            ->assertJsonPath('data.quantity', 2)
+            ->assertJsonPath('data.xs2_order.xs2_booking_id', self::SANDBOX_BOOKING_ID);
+
+        $this->assertSame(2, (int) $sbOrder->fresh()->quantity);
+
+        Http::assertSent(function ($request): bool {
+            return $request->method() === 'POST'
+                && str_contains($request->url(), '/v1/reservations')
+                && data_get($request->data(), 'items.0.quantity') === 2;
+        });
+
+        $this->assertSame(2, data_get($sbOrder->fresh()->xs2SyncLog?->reservation_request, 'items.0.quantity'));
     }
 
     public function test_preview_xs2_order_includes_skip_reason_for_non_pending_sb_order(): void

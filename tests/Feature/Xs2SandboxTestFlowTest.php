@@ -207,6 +207,71 @@ class Xs2SandboxTestFlowTest extends TestCase
         $this->assertSame(3, Xs2SandboxTestOrder::query()->findOrFail($orderId)->quantity);
     }
 
+    public function test_create_xs2_order_quantity_override_updates_reservation_payload(): void
+    {
+        Http::fake([
+            'https://sandbox.xs2.test/v1/tickets?*' => Http::response([
+                'tickets' => [[
+                    'ticket_id' => 'sandbox-ticket-1_tck',
+                    'event_id' => 'sandbox-event-1',
+                    'ticket_name' => 'Category A',
+                    'ticket_status' => 'available',
+                    'stock' => 5,
+                    'net_rate' => 12000,
+                    'sales_price' => 12000,
+                    'currency_code' => 'EUR',
+                ]],
+                'pagination' => ['page' => 1, 'total_pages' => 1, 'total_size' => 1],
+            ]),
+            'https://sandbox.xs2.test/v1/events/sandbox-event-1' => Http::response([
+                'event_id' => 'sandbox-event-1',
+                'event_name' => 'Sandbox Derby',
+            ]),
+            'https://sandbox.xs2.test/v1/reservations' => Http::response([
+                'reservation_id' => 'sandbox-reservation-qty-override_rsv',
+                'status' => 'active',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookings' => Http::response([
+                'booking_id' => self::SANDBOX_BOOKING_ID,
+                'booking_code' => 'SBX789',
+                'reservation_id' => 'sandbox-reservation-qty-override_rsv',
+            ], 201),
+            'https://sandbox.xs2.test/v1/bookingorders*' => Http::response([
+                'bookingorders' => [[
+                    'booking_id' => self::SANDBOX_BOOKING_ID,
+                    'bookingorder_id' => self::SANDBOX_BOOKINGORDER_ID,
+                ]],
+            ]),
+        ]);
+
+        $token = $this->adminToken();
+
+        $eventResponse = $this->withToken($token)
+            ->getJson('/api/admin/xs2/sandbox-test/event')
+            ->assertOk();
+
+        $orderResponse = $this->withToken($token)
+            ->postJson('/api/admin/xs2/sandbox-test/orders', [
+                'event' => $eventResponse->json('data.event'),
+                'listing' => $eventResponse->json('data.listing'),
+                'quantity' => 1,
+            ])
+            ->assertCreated()
+            ->assertJsonPath('data.quantity', 1);
+
+        $orderId = (int) $orderResponse->json('data.id');
+
+        $this->withToken($token)
+            ->postJson("/api/admin/xs2/sandbox-test/orders/{$orderId}/xs2-order", ['quantity' => 2])
+            ->assertCreated()
+            ->assertJsonPath('data.quantity', 2)
+            ->assertJsonPath('data.xs2_reservation_request.items.0.quantity', 2);
+
+        Http::assertSent(fn ($request): bool => $request->method() === 'POST'
+            && str_contains($request->url(), '/v1/reservations')
+            && ($request->data()['items'][0]['quantity'] ?? null) === 2);
+    }
+
     public function test_dummy_order_rejects_quantity_above_listing_stock(): void
     {
         Http::fake([

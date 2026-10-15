@@ -14,6 +14,7 @@ use App\Services\SellerApi\SellerBookingSyncService;
 use App\Services\Xs2\SbOrderXs2GuestDataSyncService;
 use App\Services\Xs2\SbOrderXs2SandboxOrderService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 class SbOrderController extends Controller
 {
@@ -177,22 +178,36 @@ class SbOrderController extends Controller
         ]);
     }
 
-    public function previewXs2Order(SbOrder $sbOrder): JsonResponse
+    public function previewXs2Order(Request $request, SbOrder $sbOrder): JsonResponse
     {
         $this->authorize('viewAny', EventMapping::class);
+
+        $validated = $request->validate([
+            'quantity' => ['nullable', 'integer', 'min:1', 'max:500'],
+        ]);
+        $quantityOverride = array_key_exists('quantity', $validated) && $validated['quantity'] !== null
+            ? (int) $validated['quantity']
+            : null;
 
         $sbOrder->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
 
         return response()->json([
             'message' => 'XS2 order preview (read-only; no XS2 API calls).',
-            'data' => $this->xs2SandboxOrders->previewXs2OrderFromSbOrder($sbOrder),
+            'data' => $this->xs2SandboxOrders->previewXs2OrderFromSbOrder($sbOrder, $quantityOverride),
         ]);
     }
 
-    public function createXs2Order(SbOrder $sbOrder): JsonResponse
+    public function createXs2Order(Request $request, SbOrder $sbOrder): JsonResponse
     {
         $this->authorize('viewAny', EventMapping::class);
+
+        $validated = $request->validate([
+            'quantity' => ['nullable', 'integer', 'min:1', 'max:500'],
+        ]);
+        $quantityOverride = array_key_exists('quantity', $validated) && $validated['quantity'] !== null
+            ? (int) $validated['quantity']
+            : null;
 
         $sbOrder->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');
         $this->xs2SandboxOrders->attachXs2ListingResolutions([$sbOrder]);
@@ -212,15 +227,22 @@ class SbOrderController extends Controller
             ]);
         }
 
-        $skipReason = $this->xs2SandboxOrders->resolveManualCreateSkipReason($sbOrder);
+        $skipReason = $this->xs2SandboxOrders->resolveManualCreateSkipReason($sbOrder, $quantityOverride);
         if ($skipReason !== null) {
             return response()->json([
                 'message' => $skipReason,
             ], 422);
         }
 
+        if ($quantityOverride !== null && (int) $sbOrder->quantity !== $quantityOverride) {
+            // Update only quantity — the in-memory model may carry appended listing
+            // resolution attributes that are not database columns.
+            SbOrder::query()->whereKey($sbOrder->id)->update(['quantity' => $quantityOverride]);
+            $sbOrder->quantity = $quantityOverride;
+        }
+
         $this->xs2SandboxOrders->recordQueueDecision($sbOrder);
-        $result = $this->xs2SandboxOrders->createFromSbOrder($sbOrder->fresh(['attendees']));
+        $result = $this->xs2SandboxOrders->createFromSbOrder($sbOrder->fresh(['attendees']), $quantityOverride);
 
         $sbOrder->refresh();
         $sbOrder->load(['attendees', 'xs2Order', 'xs2SyncLog'])->loadCount('attendees');

@@ -166,11 +166,19 @@ class Xs2SandboxTestController extends Controller
     }
 
     public function createXs2Order(
+        Request $request,
         Xs2SandboxTestOrder $xs2SandboxTestOrder,
         Xs2SandboxTestFlowService $flow,
         Xs2ApiDebugRecorder $recorder,
     ): JsonResponse {
         $this->authorize('viewAny', EventMapping::class);
+
+        $validated = $request->validate([
+            'quantity' => ['nullable', 'integer', 'min:1'],
+        ]);
+        $quantityOverride = array_key_exists('quantity', $validated) && $validated['quantity'] !== null
+            ? (int) $validated['quantity']
+            : null;
 
         if ($xs2SandboxTestOrder->hasXs2Order()) {
             return response()->json([
@@ -187,7 +195,7 @@ class Xs2SandboxTestController extends Controller
         $recorder->enable();
 
         try {
-            $result = $flow->createXs2Order($xs2SandboxTestOrder);
+            $result = $flow->createXs2Order($xs2SandboxTestOrder, $quantityOverride);
         } catch (\Throwable $exception) {
             return $this->upstreamError(
                 $exception,
