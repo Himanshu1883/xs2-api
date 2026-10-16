@@ -116,7 +116,7 @@ class Xs2EventMappingController extends Controller
         return $this->resource($this->mappings->ignore(
             $mapping,
             $request->user()->getAuthIdentifier(),
-        ), 'Event mapping ignored successfully.');
+        ), 'Event unmapped successfully.');
     }
 
     public function reopen(EventMapping $mapping): EventMappingResource

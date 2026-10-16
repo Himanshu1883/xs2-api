@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Exceptions\Integrations\SellerApiRequestException;
+use App\Jobs\DeleteXs2SellerListing;
 use App\Jobs\DisableSellerListing;
 use App\Jobs\PushXs2TicketToSellerApi;
 use App\Jobs\ReconcileSellerListingsForMapping;
@@ -122,7 +123,7 @@ class SellerListingPublisherTest extends TestCase
         $this->assertSame('active', $listing->status);
     }
 
-    public function test_ignoring_a_mapping_enqueues_listing_reconciliation_and_disable_work(): void
+    public function test_ignoring_a_mapping_enqueues_listing_reconciliation_and_delete_work(): void
     {
         $ticket = $this->ticket();
         ExternalListingMapping::query()->create([
@@ -139,18 +140,17 @@ class SellerListingPublisherTest extends TestCase
 
         app(EventMappingService::class)->ignore($ticket->xs2Event->mapping, 1);
 
+        $this->assertSame('ignored', $ticket->xs2Event->mapping->fresh()->status);
+        $this->assertNull($ticket->xs2Event->mapping->fresh()->m_id);
+
         Queue::assertPushed(ReconcileSellerListingsForMapping::class, fn ($job): bool => $job->mappingId === $ticket->xs2Event->mapping->id);
 
         (new ReconcileSellerListingsForMapping($ticket->xs2Event->mapping->id))->handle(
             app(Xs2TicketMappingStatusService::class),
         );
 
-        Queue::assertPushed(DisableSellerListing::class, fn ($job): bool => $job->ticketId === $ticket->id);
-
-        Http::fake(['https://seller.test/api/ticket/update_status' => Http::response(['success' => true])]);
-        (new DisableSellerListing($ticket->id))->handle(app(SellerApiClient::class));
-
-        $this->assertSame('inactive', ExternalListingMapping::query()->sole()->status);
+        Queue::assertPushed(DeleteXs2SellerListing::class, fn ($job): bool => $job->ticketId === $ticket->id);
+        Queue::assertNotPushed(DisableSellerListing::class);
     }
 
     public function test_stale_publish_job_queues_disable_without_creating_a_cancelled_event_listing(): void

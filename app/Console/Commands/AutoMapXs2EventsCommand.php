@@ -33,14 +33,16 @@ class AutoMapXs2EventsCommand extends Command
 
         foreach ($query->get() as $event) {
             $mapping = $event->mapping;
+            // Unmapped (ignored) events stay unmapped until an admin maps them
+            // by hand. --force must never put them back onto the auto-map path.
+            if ($mapping?->status === 'ignored') {
+                $skipped++;
+
+                continue;
+            }
+
             if (! $this->option('force')) {
                 if ($mapping?->status === 'created') {
-                    $skipped++;
-
-                    continue;
-                }
-
-                if ($mapping?->status === 'ignored') {
                     $skipped++;
 
                     continue;

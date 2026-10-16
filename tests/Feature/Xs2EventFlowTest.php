@@ -1765,7 +1765,15 @@ class Xs2EventFlowTest extends TestCase
             ->assertConflict();
         $this->withToken($token)
             ->postJson("/api/admin/xs2/event-mappings/{$mapping->id}/ignore")
-            ->assertConflict();
+            ->assertOk()
+            ->assertJsonPath('data.status', 'ignored')
+            ->assertJsonPath('message', 'Event unmapped successfully.');
+
+        $this->withToken($token)
+            ->postJson("/api/admin/xs2/event-mappings/{$mapping->id}/map", ['event_id' => 54])
+            ->assertOk()
+            ->assertJsonPath('data.status', 'mapped')
+            ->assertJsonPath('data.mapping_method', 'manual');
 
         $ignoredEvent = $this->xs2Event('xs2-ignored-conflict');
         $ignored = EventMapping::create([
@@ -1777,11 +1785,30 @@ class Xs2EventFlowTest extends TestCase
         $this->withToken($token)
             ->postJson("/api/admin/xs2/event-mappings/{$ignored->id}/recalculate", ['force' => true])
             ->assertConflict();
-        $this->withToken($token)
-            ->postJson("/api/admin/xs2/event-mappings/{$ignored->id}/map", ['event_id' => 54])
-            ->assertConflict();
 
         $this->assertSame('ignored', app(EventMappingService::class)->map($ignoredEvent)->fresh()->status);
+    }
+
+    public function test_auto_map_events_command_skips_unmapped_events_even_with_force(): void
+    {
+        DB::table('match_info')->insert($this->localEvent(438));
+        $event = $this->xs2Event('xs2-unmapped-force');
+        EventMapping::create([
+            'xs2_event_id' => $event->id,
+            'status' => 'ignored',
+            'mapping_method' => 'manual',
+        ]);
+
+        Artisan::call('xs2:auto-map-events', [
+            '--min-score' => 100,
+            '--force' => true,
+            '--event-id' => $event->external_event_id,
+        ]);
+
+        $mapping = EventMapping::query()->where('xs2_event_id', $event->id)->first();
+        $this->assertNotNull($mapping);
+        $this->assertSame('ignored', $mapping->status);
+        $this->assertNull($mapping->m_id);
     }
 
     public function test_mapVenueForLocalEvent_links_stadium_from_local_event(): void

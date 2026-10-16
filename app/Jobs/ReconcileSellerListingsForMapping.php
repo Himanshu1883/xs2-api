@@ -76,7 +76,7 @@ class ReconcileSellerListingsForMapping implements ShouldBeUniqueUntilProcessing
 
         if (! $eventMappingReady) {
             if ($sbPublish->isPublishedOnSb($ticket)) {
-                DisableSellerListing::dispatch($ticket->id);
+                DeleteXs2SellerListing::dispatch($ticket->id);
             }
 
             return;

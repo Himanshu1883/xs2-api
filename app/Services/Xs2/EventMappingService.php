@@ -210,7 +210,7 @@ class EventMappingService
     {
         return DB::transaction(function () use ($mapping, $eventId, $reviewerId): EventMapping {
             $lockedMapping = $this->lockMapping($mapping);
-            $this->requireStatus($lockedMapping, ['pending', 'mapped'], 'map');
+            $this->requireStatus($lockedMapping, ['pending', 'mapped', 'ignored'], 'map');
             $event = MatchInfo::query()->lockForUpdate()->findOrFail($eventId);
             $localEventId = (int) $event->m_id;
 
@@ -277,7 +277,7 @@ class EventMappingService
     {
         return DB::transaction(function () use ($mapping, $reviewerId): EventMapping {
             $lockedMapping = $this->lockMapping($mapping);
-            $this->requireStatus($lockedMapping, ['pending', 'mapped'], 'ignore');
+            $this->requireStatus($lockedMapping, ['pending', 'mapped', 'created'], 'ignore');
 
             $lockedMapping->update([
                 // Ignored records must not remain linked to a public XS2 mapping.
