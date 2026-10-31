@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\CreateXs2SandboxOrderFromSbOrder;
+use App\Jobs\SyncSellerBookingsJob;
 use App\Models\EventMapping;
 use App\Models\ExternalListingMapping;
 use App\Models\ListingSplit;
@@ -919,6 +920,18 @@ class SbOrderXs2SandboxOrderTest extends TestCase
         $this->assertTrue($second['already_exists'] ?? false);
         $this->assertFalse($second['skipped']);
         Http::assertNothingSent();
+    }
+
+    public function test_admin_sb_order_sync_queues_background_job_without_blocking_http(): void
+    {
+        Queue::fake();
+
+        $this->withToken($this->adminToken())
+            ->postJson('/api/admin/sb-orders/sync')
+            ->assertStatus(202)
+            ->assertJsonPath('data.queued', true);
+
+        Queue::assertPushed(SyncSellerBookingsJob::class);
     }
 
     public function test_admin_sb_order_xs2_sync_log_endpoint_returns_log(): void

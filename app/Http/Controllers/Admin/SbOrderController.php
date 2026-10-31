@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\SbOrderIndexRequest;
 use App\Http\Resources\SbOrderResource;
 use App\Http\Resources\SbOrderXs2SyncLogResource;
+use App\Jobs\SyncSellerBookingsJob;
 use App\Models\EventMapping;
 use App\Models\SbOrder;
 use App\Models\SbOrderXs2SyncLog;
@@ -73,49 +74,25 @@ class SbOrderController extends Controller
         return new SbOrderResource($sbOrder);
     }
 
-    public function sync(SellerBookingSyncService $sync): JsonResponse
+    public function sync(): JsonResponse
     {
         $this->authorize('viewAny', EventMapping::class);
 
-        $summary = $sync->sync();
+        $host = $this->apiEnvironment->sellerListingBaseUrl();
+        $hostLabel = filled($host) ? $host : 'Seller API';
 
-        if (($summary['status'] ?? '') === 'failed') {
-            $error = trim((string) ($summary['error'] ?? ''));
-            $message = $error !== ''
-                ? $error
-                : 'Seller API booking sync failed.';
-
-            if (str_contains(strtolower($message), 'invalid api key')
-                || str_contains(strtolower($message), 'in-active')) {
-                $message .= ' Set SELLER_API_LISTING_API_KEY to your SeatsBrokers seller Sanctum key (apiKey header), not the external catalog Bearer token. Confirm SELLER_API_LISTING_BASE_URL matches the environment where the order exists (sandbox vs production sellerapi).';
-            }
-
-            return response()->json([
-                'message' => $message,
-                'data' => $summary,
-            ], 502);
-        }
-
-        $host = is_string($summary['listing_base_url'] ?? null) ? trim((string) $summary['listing_base_url']) : '';
-        $hostLabel = $host !== '' ? $host : 'Seller API';
-        $apiTotal = $summary['api_total'] ?? null;
-        $totalHint = is_numeric($apiTotal)
-            ? sprintf(', API total=%d', (int) $apiTotal)
-            : '';
+        SyncSellerBookingsJob::dispatch();
 
         return response()->json([
             'message' => sprintf(
-                'Synced %d booking(s) from %s (%d created, %d updated, %d attendee row(s), %d listing stock update(s) queued%s). Sync only imports what this listing host returns for the configured listing apiKey.',
-                $summary['fetched'],
+                'Seller booking sync queued. Orders will update from %s GET /api/booking in the background.',
                 $hostLabel,
-                $summary['created'],
-                $summary['updated'],
-                $summary['attendees'],
-                $summary['stock_reconcile_queued'] ?? 0,
-                $totalHint,
             ),
-            'data' => $summary,
-        ]);
+            'data' => [
+                'queued' => true,
+                'listing_base_url' => $host,
+            ],
+        ], 202);
     }
 
     public function refresh(SbOrder $sbOrder, SellerBookingSyncService $sync): JsonResponse
