@@ -72,8 +72,16 @@ start_worker_loop "seller-api" "$SELLER_API_QUEUE"
 # General pipeline + default cron worker (seller-api handled above).
 start_worker_loop "general" "$GENERAL_QUEUES"
 
-# Start scheduler in background
-php artisan schedule:work &
+# Scheduler must respawn like queue workers. A one-shot `schedule:work &`
+# dies on OOM/exception and then no cron runs until the container restarts.
+(
+    while true; do
+        php artisan schedule:work || true
+        echo "schedule:work exited, restarting in 2s..."
+        sleep 2
+    done
+) &
+echo "Started Laravel scheduler"
 
 # Run web server in foreground (no exec — keeps background processes alive)
 php artisan serve --host=0.0.0.0 --port="${PORT:-8080}"

@@ -984,6 +984,42 @@ class SplitListingServiceTest extends TestCase
         $this->assertSame(1, ListingSplit::query()->where('status', 'active')->count());
     }
 
+    public function test_sync_skips_when_event_mapping_is_not_confirmed(): void
+    {
+        $publisher = Mockery::mock(MarketplaceListingPublisher::class);
+        $publisher->shouldNotReceive('create');
+        $publisher->shouldNotReceive('update');
+        $publisher->shouldNotReceive('delete');
+        $publisher->shouldNotReceive('disable');
+
+        $service = new SplitListingService(
+            $publisher,
+            Mockery::mock(Xs2SellerListingTransformer::class),
+            Mockery::mock(SellerApiClient::class),
+            Mockery::mock(Xs2TicketMappingStatusService::class),
+            $this->publishValidatorMock(),
+        );
+
+        $ticket = $this->ticket(['split_enabled' => true, 'split_quantity' => 2, 'stock' => 4]);
+        $ticket->xs2Event->mapping->update(['status' => 'pending']);
+        ListingSplit::query()->create([
+            'master_listing_id' => $ticket->id,
+            'seatsbroker_listing_id' => 'sb-1',
+            'seller_reference' => 'XS2-t1-S1',
+            'quantity' => 2,
+            'price' => 100,
+            'split_order' => 1,
+            'status' => 'active',
+            'sync_status' => 'synced',
+        ]);
+
+        $result = $service->syncListings($ticket->fresh());
+
+        $this->assertSame('skipped', $result['action']);
+        $this->assertSame('event_mapping_not_confirmed', $result['reason']);
+        $this->assertSame(1, ListingSplit::query()->where('status', 'active')->count());
+    }
+
     /** @param  array<string, mixed>  $attrs */
     /** @param  array<string, mixed>  $transformBase */
     private function syncedSplitPayloadHash(

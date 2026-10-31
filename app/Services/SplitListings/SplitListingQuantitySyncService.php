@@ -122,6 +122,11 @@ class SplitListingQuantitySyncService
             return false;
         }
 
+        $ticket->loadMissing('xs2Event.mapping');
+        if (! $this->splits->eventMappingAllowsPublish($ticket->xs2Event?->mapping)) {
+            return false;
+        }
+
         $activeSplits = $this->activePublishedSplits($ticket);
         if ($activeSplits->isEmpty()) {
             return false;
@@ -244,6 +249,9 @@ class SplitListingQuantitySyncService
                     ->orderBy('split_order'),
             ])
             ->where('split_enabled', true)
+            ->whereHas('xs2Event.mapping', fn (Builder $mapping) => $mapping
+                ->whereIn('status', ['mapped', 'created'])
+                ->whereNotNull('m_id'))
             ->whereHas('listingSplits', fn (Builder $split) => $split
                 ->where('status', 'active')
                 ->whereNotNull('seatsbroker_listing_id'));

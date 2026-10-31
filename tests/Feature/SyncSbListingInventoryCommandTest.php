@@ -88,6 +88,30 @@ class SyncSbListingInventoryCommandTest extends TestCase
         Queue::assertNotPushed(PushXs2TicketToSellerApi::class);
     }
 
+    public function test_command_skips_split_sync_when_event_mapping_is_pending(): void
+    {
+        Queue::fake();
+
+        $ticket = $this->publishedSplitTicket(stock: 4, splitQuantity: 2);
+        $ticket->xs2Event->mapping->update(['status' => 'pending']);
+        ListingSplit::query()->create([
+            'master_listing_id' => $ticket->id,
+            'split_order' => 1,
+            'seller_reference' => 'XS2-TEST-S1',
+            'quantity' => 2,
+            'price' => 100,
+            'seatsbroker_listing_id' => '906611',
+            'status' => 'active',
+            'sync_status' => 'synced',
+        ]);
+
+        $this->artisan('xs2:sync-sb-listing-inventory')
+            ->assertSuccessful();
+
+        Queue::assertNotPushed(SyncSplitListings::class);
+        Queue::assertNotPushed(PushXs2TicketToSellerApi::class);
+    }
+
     public function test_command_skips_when_master_and_split_plans_already_match(): void
     {
         Queue::fake();

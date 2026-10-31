@@ -433,6 +433,12 @@ class Xs2EventInventorySyncService
             return false;
         }
 
+        $ticket->loadMissing('xs2Event.mapping');
+        $mapping = $ticket->xs2Event?->mapping;
+        if (! $mapping || ! in_array($mapping->status, ['mapped', 'created'], true) || ! filled($mapping->m_id)) {
+            return false;
+        }
+
         try {
             SyncSplitListings::dispatch($ticket->id);
 

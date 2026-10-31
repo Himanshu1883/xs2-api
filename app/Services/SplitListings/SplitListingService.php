@@ -290,6 +290,18 @@ class SplitListingService
             return ['action' => 'skipped', 'reason' => 'split_disabled', 'created' => 0, 'updated' => 0, 'deleted' => 0, 'disabled' => 0];
         }
 
+        $ticket->loadMissing('xs2Event.mapping');
+        $mapping = $ticket->xs2Event?->mapping;
+        if (! $this->eventMappingAllowsPublish($mapping)) {
+            if ($mapping?->status === 'ignored') {
+                $result = $this->deleteAllListings($ticket);
+
+                return ['action' => 'deleted_all', 'reason' => 'unmapped', ...$result];
+            }
+
+            return ['action' => 'skipped', 'reason' => 'event_mapping_not_confirmed', 'created' => 0, 'updated' => 0, 'deleted' => 0, 'disabled' => 0];
+        }
+
         if ($ticket->stock <= 0) {
             $result = $this->deleteAllListings($ticket);
 
@@ -436,6 +448,13 @@ class SplitListingService
      *
      * @return array{created: int, updated: int, deleted: int, disabled: int}
      */
+    public function eventMappingAllowsPublish(?EventMapping $mapping): bool
+    {
+        return $mapping !== null
+            && in_array($mapping->status, ['mapped', 'created'], true)
+            && filled($mapping->m_id);
+    }
+
     public function shouldDeleteForLowStock(Xs2Ticket $ticket): bool
     {
         $unpublishStockMax = max(0, (int) config('xs2.split_listings.unpublish_stock_max', 0));
